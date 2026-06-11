@@ -14,7 +14,7 @@ namespace p4gw {
 // See PLAN.md milestone M4.
 int cmdSubmit(const Args& args) {
     (void)args;
-    std::fprintf(stderr, "p4gw submit: not implemented yet (PLAN.md milestone M4)\n");
+    std::fprintf(stderr, "gw submit: not implemented yet (PLAN.md milestone M4)\n");
     return 1;
 }
 

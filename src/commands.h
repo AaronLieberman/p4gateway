@@ -6,7 +6,7 @@
 namespace p4gw {
 
 // Arguments remaining after the command name, e.g. for
-// `p4gw submit --shelve feature/foo` this holds {"--shelve", "feature/foo"}.
+// `gw submit --shelve feature/foo` this holds {"--shelve", "feature/foo"}.
 using Args = std::vector<std::string>;
 
 // Each command returns a process exit code (0 = success).

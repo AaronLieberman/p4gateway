@@ -8,11 +8,11 @@ namespace p4gw {
 //   - current branch and commits ahead of the baseline branch
 //   - working tree cleanliness
 //   - last synced changelist on the baseline branch
-//   - pending changelists created by p4gw
+//   - pending changelists created by gw
 // See PLAN.md milestone M5.
 int cmdStatus(const Args& args) {
     (void)args;
-    std::fprintf(stderr, "p4gw status: not implemented yet (PLAN.md milestone M5)\n");
+    std::fprintf(stderr, "gw status: not implemented yet (PLAN.md milestone M5)\n");
     return 1;
 }
 

@@ -1,4 +1,9 @@
-# p4gateway (p4gw)
+# p4gateway (gw)
+
+The repo and project are named **p4gateway**; the command-line binary it
+builds is **`gw`** (short, easy to type). The internal C++ namespace and
+static library keep the `p4gw` prefix (`p4gw::`, `p4gw_core`), as does the
+`.p4gw` config file — only the user-facing executable is `gw`.
 
 A Windows command-line tool, written in C++23, that lets a developer work in
 Git locally and submit to Perforce. It automates the "Git overlay on a P4
@@ -16,7 +21,7 @@ making significant changes.
 cmake -S . -B build
 cmake --build build            # add --config Debug/Release with MSVC
 ctest --test-dir build --output-on-failure
-build/p4gw --help              # build\p4gw.exe on Windows
+build/gw --help                # build\gw.exe on Windows
 ```
 
 - Primary target is Windows/MSVC (VS 2022), but the code must also build

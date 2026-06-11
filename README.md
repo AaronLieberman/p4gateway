@@ -2,7 +2,7 @@
 
 **Work in Git. Submit to Perforce.**
 
-`p4gw` is a small Windows command-line tool for developers stuck on a huge
+`gw` is a small Windows command-line tool for developers stuck on a huge
 Perforce depot who would rather spend their day in Git. It automates the
 *overlay workflow*: a normal Git repo lives inside one subtree of your P4
 workspace (say, `src/`), you do all your daily work with Git branches and
@@ -13,7 +13,7 @@ There is no import of P4 history into Git and no server-side anything. The
 core insight is that Perforce doesn't care *how* files reached their current
 state — so shipping a Git branch is just: make the working tree match the
 branch, run `p4 reconcile` scoped to your subtree, and put the opened files
-in a changelist whose description is built from your commit messages. `p4gw`
+in a changelist whose description is built from your commit messages. `gw`
 automates that, plus the bookkeeping around it.
 
 ## Status
@@ -27,27 +27,27 @@ milestone — see [PLAN.md](PLAN.md) for the roadmap and current state.
 ```
             you work here                        the rest of the team
    ┌────────────────────────────┐             ┌──────────────────────┐
-   │  Git branches inside the   │  p4gw sync  │                      │
+   │  Git branches inside the   │   gw sync   │                      │
    │  src/ subtree of your P4   │ ◄────────── │   Perforce depot     │
    │  workspace                 │ ──────────► │                      │
-   └────────────────────────────┘ p4gw submit └──────────────────────┘
+   └────────────────────────────┘  gw submit  └──────────────────────┘
 ```
 
 | Command | What it does |
 |---|---|
-| `p4gw init` | Sets up the Git overlay inside your synced P4 workspace subtree: writes the `.p4gw` config, creates the Git repo and a `p4-main` baseline branch from the current synced state. |
-| `p4gw sync` | Runs `p4 sync` (scoped to your subtree), commits the result to `p4-main`, and offers to rebase your feature branch onto it. |
-| `p4gw submit` | Turns the current branch into a pending P4 changelist: reconciles your subtree against the depot and fills the CL description from your commit messages. `--shelve` shelves it (for Swarm review); `--submit` submits it. |
-| `p4gw status` | One-screen view of where Git and P4 stand: branch, commits ahead of baseline, dirty files, last synced CL, pending CLs. |
-| `p4gw doctor` | Checks the environment for the classic overlay footguns: missing tools, P4 client not `allwrite`, line-ending mismatches between `core.autocrlf` and the client `LineEnd`. |
+| `gw init` | Sets up the Git overlay inside your synced P4 workspace subtree: writes the `.p4gw` config, creates the Git repo and a `p4-main` baseline branch from the current synced state. |
+| `gw sync` | Runs `p4 sync` (scoped to your subtree), commits the result to `p4-main`, and offers to rebase your feature branch onto it. |
+| `gw submit` | Turns the current branch into a pending P4 changelist: reconciles your subtree against the depot and fills the CL description from your commit messages. `--shelve` shelves it (for Swarm review); `--submit` submits it. |
+| `gw status` | One-screen view of where Git and P4 stand: branch, commits ahead of baseline, dirty files, last synced CL, pending CLs. |
+| `gw doctor` | Checks the environment for the classic overlay footguns: missing tools, P4 client not `allwrite`, line-ending mismatches between `core.autocrlf` and the client `LineEnd`. |
 
 Day to day:
 
 ```
-p4gw sync                      # morning: pick up the team's changes
+gw sync                      # morning: pick up the team's changes
 git switch -c fix-anim-blend   # work normally: branch, commit, rebase, bisect
 ...
-p4gw submit --shelve           # ship it: review the CL in P4/Swarm, then submit
+gw submit --shelve           # ship it: review the CL in P4/Swarm, then submit
 ```
 
 The golden rule of the overlay workflow: **never `p4 edit` files you're
@@ -67,15 +67,15 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure
 ```
 
-The binary lands at `build\Release\p4gw.exe` (MSVC) or `build/p4gw`.
+The binary lands at `build\Release\gw.exe` (MSVC) or `build/gw`.
 
-At runtime, `p4gw` needs `git` and `p4` on your `PATH` and a working P4
-connection (`P4PORT`/`P4USER`/`P4CLIENT` or a `.p4config`). Run `p4gw doctor`
+At runtime, `gw` needs `git` and `p4` on your `PATH` and a working P4
+connection (`P4PORT`/`P4USER`/`P4CLIENT` or a `.p4config`). Run `gw doctor`
 to check.
 
 ## Configuration
 
-`p4gw init` writes a `.p4gw` file at the root of the overlay repo
+`gw init` writes a `.p4gw` file at the root of the overlay repo
 (`key = value`, `#` comments):
 
 ```

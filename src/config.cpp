@@ -70,7 +70,7 @@ std::expected<Config, std::string> findAndLoadConfig(std::string& rootDir) {
         if (!dir.has_parent_path() || dir.parent_path() == dir) {
             return std::unexpected(
                 "no .p4gw config found in this directory or any parent; "
-                "run 'p4gw init' first");
+                "run 'gw init' first");
         }
         dir = dir.parent_path();
     }

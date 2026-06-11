@@ -10,9 +10,9 @@ constexpr const char* kVersion = "0.1.0-dev";
 
 void printUsage() {
     std::printf(
-        "p4gw %s - develop in Git, submit via p4 reconcile\n"
+        "gw %s - develop in Git, submit via p4 reconcile\n"
         "\n"
-        "usage: p4gw <command> [options]\n"
+        "usage: gw <command> [options]\n"
         "\n"
         "commands:\n"
         "  init    Set up a Git overlay inside a P4 workspace subtree\n"
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
         return argc < 2 ? 1 : 0;
     }
     if (std::strcmp(argv[1], "--version") == 0) {
-        std::printf("p4gw %s\n", kVersion);
+        std::printf("gw %s\n", kVersion);
         return 0;
     }
 
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     if (command == "status") return p4gw::cmdStatus(args);
     if (command == "doctor") return p4gw::cmdDoctor(args);
 
-    std::fprintf(stderr, "p4gw: unknown command '%s'\n\n", command.c_str());
+    std::fprintf(stderr, "gw: unknown command '%s'\n\n", command.c_str());
     printUsage();
     return 1;
 }

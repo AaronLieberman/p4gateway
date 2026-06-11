@@ -35,10 +35,10 @@ command, because every later bug report will otherwise trace back here.
       exact `p4`/`git` commands it would run
 - [ ] Decide on logging (`--verbose` echoing every spawned command line)
 
-**Exit criteria:** `p4gw doctor` against a real Windows P4 workspace catches
+**Exit criteria:** `gw doctor` against a real Windows P4 workspace catches
 each misconfiguration above when introduced deliberately.
 
-## M2 — `p4gw init`
+## M2 — `gw init`
 
 - [ ] Interactive-ish setup: take `--depot-path` (required), `--client`
       (default from `p4 set P4CLIENT`), validate against the client spec
@@ -52,7 +52,7 @@ each misconfiguration above when introduced deliberately.
 **Exit criteria:** fresh overlay created on a real workspace subtree in one
 command; rerun is a no-op.
 
-## M3 — `p4gw sync`
+## M3 — `gw sync`
 
 - [ ] Refuse to run on a dirty working tree (point user at stash/commit)
 - [ ] Remember current branch, switch to baseline, `p4 sync <depot_path>`
@@ -66,11 +66,11 @@ command; rerun is a no-op.
 **Exit criteria:** morning sync is one command; a deliberately conflicting
 local change produces a normal Git rebase conflict, not corruption.
 
-## M4 — `p4gw submit` (the payoff)
+## M4 — `gw submit` (the payoff)
 
 - [ ] Preflight: clean tree, on a feature branch, baseline is ancestor of
-      HEAD (else tell user to `p4gw sync` first), no files already opened in
-      the subtree outside p4gw changelists
+      HEAD (else tell user to `gw sync` first), no files already opened in
+      the subtree outside gw changelists
 - [ ] Build CL description from `git log baseline..HEAD` (oldest first),
       `--message` to override
 - [ ] Create numbered pending CL via `p4 change -i`
@@ -90,13 +90,13 @@ local change produces a normal Git rebase conflict, not corruption.
 and a rename becomes one correct pending CL; description matches the commit
 messages; `--shelve` produces a reviewable shelf.
 
-## M5 — `p4gw status` + quality of life
+## M5 — `gw status` + quality of life
 
 - [ ] `status`: branch, ahead-of-baseline count, dirty files, last synced CL,
-      pending p4gw CLs with numbers
+      pending gw CLs with numbers
 - [ ] Helpful error for the "someone else touched my files" case (depot
       changed under a pending CL → suggest sync + rebase + re-reconcile)
-- [ ] `p4gw submit --update <CL>` to refresh an existing pending CL after
+- [ ] `gw submit --update <CL>` to refresh an existing pending CL after
       rebase instead of creating a new one
 - [ ] Windows polish: UTF-8 output, long-path awareness, exit codes audited
 
@@ -116,7 +116,7 @@ messages; `--shelve` produces a reviewable shelf.
   cross-check are the mitigations; resolve before M4 ships.
 - **`allwrite` vs. teammates' expectations:** some studios' tooling assumes
   read-only-until-edit semantics. If `allwrite` is not acceptable on your
-  client, p4gw would need a pre-submit `p4 edit` pass instead — decide in M1.
+  client, gw would need a pre-submit `p4 edit` pass instead — decide in M1.
 - **Renames:** delete+add loses P4 integration history. Acceptable for a
   personal workflow at first; `p4 move` upgrade is queued in M4.
 - **Exclusive-lock filetypes (`+l`):** common for game assets/binaries.

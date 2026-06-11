@@ -13,7 +13,7 @@ namespace p4gw {
 // See PLAN.md milestone M3.
 int cmdSync(const Args& args) {
     (void)args;
-    std::fprintf(stderr, "p4gw sync: not implemented yet (PLAN.md milestone M3)\n");
+    std::fprintf(stderr, "gw sync: not implemented yet (PLAN.md milestone M3)\n");
     return 1;
 }
 

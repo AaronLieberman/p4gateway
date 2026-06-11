@@ -8,7 +8,7 @@ namespace p4gw {
 // Checks that the environment is sane for the overlay workflow. Currently
 // verifies the required tools are reachable; milestone M1 adds checks for
 // the P4 connection, client `allwrite` option, LineEnd vs core.autocrlf
-// agreement, and that no files are opened outside p4gw's changelists.
+// agreement, and that no files are opened outside gw's changelists.
 int cmdDoctor(const Args& args) {
     (void)args;
 

@@ -12,7 +12,7 @@ namespace p4gw {
 // See PLAN.md milestone M2.
 int cmdInit(const Args& args) {
     (void)args;
-    std::fprintf(stderr, "p4gw init: not implemented yet (PLAN.md milestone M2)\n");
+    std::fprintf(stderr, "gw init: not implemented yet (PLAN.md milestone M2)\n");
     return 1;
 }
 

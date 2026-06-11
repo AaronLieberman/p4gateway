@@ -29,8 +29,8 @@ add_library(p4gw_core STATIC
 )
 target_include_directories(p4gw_core PUBLIC src)
 
-add_executable(p4gw src/main.cpp)
-target_link_libraries(p4gw PRIVATE p4gw_core)
+add_executable(gw src/main.cpp)
+target_link_libraries(gw PRIVATE p4gw_core)
 
 enable_testing()
 add_subdirectory(tests)
