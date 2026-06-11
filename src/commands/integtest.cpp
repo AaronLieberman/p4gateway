@@ -154,19 +154,40 @@ void makeWritableRecursive(const fs::path& path) {
 
 // ---- shared discovery ----
 
+// The one-time prerequisites the tests cannot set up themselves; appended to
+// every precondition failure so the fix is right there.
+std::string setupInstructions() {
+    return
+        "\nSetting up the integration test (one time):\n"
+        "  1. Pick or create a P4 client whose view you can edit.\n"
+        "  2. Under that client's root, create a directory named 'p4gw-test'.\n"
+        "  3. Make sure 'p4' works from inside it — rely on ambient\n"
+        "     P4PORT/P4USER/P4CLIENT, or drop a p4.ini / .p4config there.\n"
+        "  4. Add a line at the END of the client view ('p4 client') that\n"
+        "     remaps the test's src subtree into the mirror, for example:\n"
+        "       //depot/.../p4gw-test/src/...   "
+        "//CLIENT/.../p4gw-test/.p4gw/mirror/src/...\n"
+        "     Later view lines win, so keep it last. (init verifies this and\n"
+        "     prints the exact line to use if it's off.)\n"
+        "  5. From inside p4gw-test, run:  gw integtest init\n"
+        "Full details: PLAN-integrationtests.md.\n";
+}
+
 std::expected<void, std::string> discover(ItContext& it) {
     it.testRoot = fs::current_path().string();
     if (fs::path(it.testRoot).filename() != "p4gw-test") {
         return std::unexpected(
             "integtest must be run from inside a directory named "
             "'p4gw-test' (integtest init DELETES everything under the "
-            "current directory); this is " + it.testRoot);
+            "current directory); this is " + it.testRoot +
+            "\n" + setupInstructions());
     }
     auto depot = trace(it, "p4 where " + it.testRoot,
                        p4::whereDepotDir(it.p4, it.testRoot));
     if (!depot) {
         return std::unexpected("cannot discover the depot path of " +
-                               it.testRoot + ": " + depot.error());
+                               it.testRoot + ": " + depot.error() +
+                               "\n" + setupInstructions());
     }
     it.depotRoot = *depot;
     it.p4.depotPath = it.depotRoot + "/...";
@@ -197,8 +218,9 @@ std::expected<void, std::string> itVerifyMapping(ItContext& it) {
                            p4::specField(*spec, "Root"), it.mirrorDir, "/...");
     if (!expected.empty()) {
         message += "add this line at the END of the client view "
-                   "(p4 client):\n  " + it.srcDepotPath + " " + expected;
+                   "('p4 client'):\n  " + it.srcDepotPath + " " + expected;
     }
+    message += "\n" + setupInstructions();
     return std::unexpected(message);
 }
 
