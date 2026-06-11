@@ -46,6 +46,114 @@ std::expected<bool, std::string> isDirty(const std::string& cwd) {
     return !output->empty();
 }
 
+std::expected<bool, std::string> branchExists(const std::string& branch,
+                                              const std::string& cwd) {
+    auto result = p4gw::run("git",
+                            {"rev-parse", "--verify", "--quiet",
+                             "refs/heads/" + branch},
+                            cwd);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return result->exitCode == 0;
+}
+
+std::expected<std::string, std::string> switchBranch(const std::string& branch,
+                                                     const std::string& cwd) {
+    return run({"switch", branch}, cwd);
+}
+
+std::expected<std::string, std::string> switchOrphanBranch(
+    const std::string& branch, const std::string& cwd) {
+    return run({"switch", "--orphan", branch}, cwd);
+}
+
+std::expected<bool, std::string> isAncestor(const std::string& ancestor,
+                                            const std::string& descendant,
+                                            const std::string& cwd) {
+    auto result = p4gw::run(
+        "git", {"merge-base", "--is-ancestor", ancestor, descendant}, cwd);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (result->exitCode == 0) return true;
+    if (result->exitCode == 1) return false;
+    return std::unexpected("git merge-base --is-ancestor " + ancestor + " " +
+                           descendant + " failed:\n" + result->output);
+}
+
+std::expected<std::vector<std::string>, std::string> lsFiles(
+    const std::string& cwd) {
+    auto output = run({"ls-files"}, cwd);
+    if (!output) {
+        return std::unexpected(output.error());
+    }
+    std::vector<std::string> files;
+    size_t pos = 0;
+    while (pos < output->size()) {
+        size_t end = output->find('\n', pos);
+        if (end == std::string::npos) end = output->size();
+        std::string line = output->substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) files.push_back(std::move(line));
+    }
+    return files;
+}
+
+std::expected<std::string, std::string> addAll(const std::string& cwd) {
+    return run({"add", "-A"}, cwd);
+}
+
+std::expected<bool, std::string> indexMatchesHead(const std::string& cwd) {
+    auto output = run({"status", "--porcelain"}, cwd);
+    if (!output) {
+        return std::unexpected(output.error());
+    }
+    return output->empty();
+}
+
+std::expected<std::string, std::string> commit(const std::string& message,
+                                               const std::string& cwd) {
+    return run({"commit", "-m", message}, cwd);
+}
+
+std::expected<std::string, std::string> rebase(const std::string& onto,
+                                               const std::string& cwd) {
+    return run({"rebase", onto}, cwd);
+}
+
+std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
+                                                      const std::string& path,
+                                                      const std::string& destFile,
+                                                      const std::string& cwd) {
+    RunOptions options;
+    options.cwd = cwd;
+    options.stdoutFile = destFile;
+    auto result = p4gw::run("git", {"cat-file", "blob", ref + ":" + path},
+                            options);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (result->exitCode != 0) {
+        return std::unexpected("git cat-file blob " + ref + ":" + path +
+                               " failed:\n" + result->output);
+    }
+    return result->output;
+}
+
+std::expected<std::string, std::string> configValue(const std::string& key,
+                                                    const std::string& cwd) {
+    auto result = p4gw::run("git", {"config", "--get", key}, cwd);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (result->exitCode != 0) {
+        return std::string{};  // unset key
+    }
+    return trimTrailing(result->output);
+}
+
 std::expected<std::vector<FileChange>, std::string> diffNameStatus(
     const std::string& fromRef, const std::string& toRef, const std::string& cwd) {
     auto output = run({"diff", "--name-status", "-M", fromRef, toRef}, cwd);

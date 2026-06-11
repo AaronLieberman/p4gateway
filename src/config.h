@@ -13,6 +13,11 @@ struct Config {
     // never touch (or crawl) the rest of the workspace.
     std::string depotPath;
 
+    // Directory the client view maps `depot_path` into — gw's staging area,
+    // which p4 syncs and gw reads/writes. Relative values are resolved
+    // against the directory containing the .p4gw file.
+    std::string mirrorPath;
+
     // P4 client (workspace) name. Empty means use the ambient P4CLIENT.
     std::string client;
 
@@ -28,5 +33,9 @@ std::expected<Config, std::string> loadConfig(const std::string& path);
 // loads it. Returns the loaded config and sets `rootDir` to the directory
 // containing the file.
 std::expected<Config, std::string> findAndLoadConfig(std::string& rootDir);
+
+// Absolute path of the mirror directory: `mirror_path` resolved against
+// `rootDir` (the directory containing the .p4gw file) when relative.
+std::string resolveMirrorPath(const Config& config, const std::string& rootDir);
 
 }  // namespace p4gw

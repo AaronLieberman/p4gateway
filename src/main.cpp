@@ -10,16 +10,16 @@ constexpr const char* kVersion = "0.1.0-dev";
 
 void printUsage() {
     std::printf(
-        "gw %s - develop in Git, submit via p4 reconcile\n"
+        "gw %s - work in Git, ship Perforce changelists\n"
         "\n"
         "usage: gw <command> [options]\n"
         "\n"
         "commands:\n"
-        "  init    Set up a Git overlay inside a P4 workspace subtree\n"
-        "  sync    p4 sync and commit the result to the baseline branch\n"
-        "  submit  Turn the current branch into a pending P4 changelist\n"
-        "  status  Show Git/P4 state at a glance\n"
-        "  doctor  Check the environment for common configuration problems\n"
+        "  init     Set up the Git repo, config, and mirror mapping instructions\n"
+        "  import   Commit the synced mirror state to the baseline branch (--rebase)\n"
+        "  prepare  Open the current branch's changes in a pending P4 changelist\n"
+        "  status   Show Git/P4 state at a glance\n"
+        "  doctor   Check the environment and the client-view mapping\n"
         "\n"
         "global options:\n"
         "  --help     Show this help\n"
@@ -44,8 +44,8 @@ int main(int argc, char** argv) {
     const p4gw::Args args(argv + 2, argv + argc);
 
     if (command == "init") return p4gw::cmdInit(args);
-    if (command == "sync") return p4gw::cmdSync(args);
-    if (command == "submit") return p4gw::cmdSubmit(args);
+    if (command == "import") return p4gw::cmdImport(args);
+    if (command == "prepare") return p4gw::cmdPrepare(args);
     if (command == "status") return p4gw::cmdStatus(args);
     if (command == "doctor") return p4gw::cmdDoctor(args);
 

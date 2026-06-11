@@ -1,59 +1,90 @@
 # p4gateway
 
-**Work in Git. Submit to Perforce.**
+**Work in Git. Ship Perforce changelists.**
 
 `gw` is a small Windows command-line tool for developers stuck on a huge
-Perforce depot who would rather spend their day in Git. It automates the
-*overlay workflow*: a normal Git repo lives inside one subtree of your P4
-workspace (say, `src/`), you do all your daily work with Git branches and
-rebases, and when a change is ready you hand it back to Perforce as a clean
-numbered changelist.
+Perforce depot who would rather spend their day in Git. One added line in
+your client view remaps the depot subtree you care about (say, `src/`) to a
+*mirror* directory off to the side; the directory your builds actually use
+becomes a normal Git repo that Perforce never touches. `gw` moves state
+across that boundary: depot → Git when you sync, Git → a pending changelist
+when you ship.
 
 There is no import of P4 history into Git and no server-side anything. The
 core insight is that Perforce doesn't care *how* files reached their current
-state — so shipping a Git branch is just: make the working tree match the
-branch, run `p4 reconcile` scoped to your subtree, and put the opened files
-in a changelist whose description is built from your commit messages. `gw`
-automates that, plus the bookkeeping around it.
+state — so shipping a Git branch is just: write the branch's files into the
+mirror, open them with the right `p4 edit/add/delete/move` (Git knows
+exactly what changed), and put them in a changelist whose description is
+built from your commit messages. You review and submit it from P4V.
 
 ## Status
 
-Early development. The CLI skeleton, config handling, and environment checks
-build and run; the core workflows are being implemented milestone by
-milestone — see [PLAN.md](PLAN.md) for the roadmap and current state.
+Early development. `init`, `import`, `prepare`, and `doctor` are implemented
+and exercised end-to-end on the Git side; verification against a real P4
+server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
+[docs/sample-session.md](docs/sample-session.md) for what using it feels like.
 
 ## The workflow
 
 ```
-            you work here                        the rest of the team
-   ┌────────────────────────────┐             ┌──────────────────────┐
-   │  Git branches inside the   │   gw sync   │                      │
-   │  src/ subtree of your P4   │ ◄────────── │   Perforce depot     │
-   │  workspace                 │ ──────────► │                      │
-   └────────────────────────────┘  gw submit  └──────────────────────┘
+      you work here               gw's staging area              the team
+┌─────────────────────┐  gw import  ┌──────────────┐  any p4 sync  ┌──────────┐
+│  Git repo at src/   │ ◄────────── │    mirror    │ ◄──────────── │ Perforce │
+│  (P4 never touches  │             │  directory   │               │  depot   │
+│   this tree)        │ ──────────► │  (P4-mapped) │ ────────────► │          │
+└─────────────────────┘  gw prepare └──────────────┘  p4 submit    └──────────┘
+                                                      (you, in P4V)
 ```
 
 | Command | What it does |
 |---|---|
-| `gw init` | Sets up the Git overlay inside your synced P4 workspace subtree: writes the `.p4gw` config, creates the Git repo and a `p4-main` baseline branch from the current synced state. |
-| `gw sync` | Runs `p4 sync` (scoped to your subtree), commits the result to `p4-main`, and offers to rebase your feature branch onto it. |
-| `gw submit` | Turns the current branch into a pending P4 changelist: reconciles your subtree against the depot and fills the CL description from your commit messages. `--shelve` shelves it (for Swarm review); `--submit` submits it. |
-| `gw status` | One-screen view of where Git and P4 stand: branch, commits ahead of baseline, dirty files, last synced CL, pending CLs. |
-| `gw doctor` | Checks the environment for the classic overlay footguns: missing tools, P4 client not `allwrite`, line-ending mismatches between `core.autocrlf` and the client `LineEnd`. |
+| `gw init` | Sets up the Git side: creates the repo (if needed), writes the `.p4gw` config and a starter `.gitignore`, and prints the exact client view line to add. Never edits your client spec. |
+| `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
+| `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
+| `gw status` | One-screen view of where Git and P4 stand (not implemented yet). |
+| `gw doctor` | Checks the environment, and above all the client view: the depot path must map into the mirror and nothing may map into the Git repo. Run it whenever something smells off. |
 
 Day to day:
 
 ```
-gw sync                      # morning: pick up the team's changes
-git switch -c fix-anim-blend   # work normally: branch, commit, rebase, bisect
+<sync however you like>          # P4V, p4 sync, your studio's sync tool...
+gw import --rebase               # absorb it: commit to p4-main, rebase your branch
+git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
-gw submit --shelve           # ship it: review the CL in P4/Swarm, then submit
+gw prepare                       # ship it: builds the pending CL
+<review and submit in P4V>
+gw import                        # absorb your own submit into p4-main
 ```
 
-The golden rule of the overlay workflow: **never `p4 edit` files you're
-working on in Git.** Perforce only gets involved at the boundaries (`sync`
-and `submit`), and every P4 operation is scoped to your subtree so the rest
-of the multi-terabyte depot is never touched.
+The golden rules of the mirror workflow: **P4 never touches your working
+tree, and you never touch the mirror.** Sync whenever and however you like —
+it can't conflict with your Git state. Don't edit files in the mirror or
+point builds at it; it belongs to `gw`. Every P4 operation gw runs is scoped
+to your subtree (or to explicit file lists), so the rest of the
+multi-terabyte depot is never touched.
+
+## Setup
+
+```
+cd C:\work\game\src              # the subtree you want to work on in Git
+gw init --depot-path //depot/game/main/src/... --client aaron-dev
+```
+
+`init` prints the one manual step: add a line like
+
+```
+//depot/game/main/src/...   //aaron-dev/p4gw-mirror/...
+```
+
+at the **end** of your client view (`p4 client`). Later view lines win, so
+this routes the subtree into the mirror while the rest of your view stays
+untouched; other custom mappings are fine as long as they don't involve the
+subtree. Then sync, and run `gw import` to create the `p4-main` baseline.
+`gw doctor` verifies all of it.
+
+Note for an existing synced workspace: after the view line is added, the
+next sync removes the old copies from `src/` (they now belong at the mirror)
+— that's expected; `gw import` then populates the Git repo from the mirror.
 
 ## Building
 
@@ -83,6 +114,11 @@ to check.
 # scoped to this path — required.
 depot_path = //depot/yourgame/src/...
 
+# Where the client view maps depot_path to — gw's staging area, synced by
+# p4 and never edited by hand. Relative paths are resolved against the
+# directory containing this file.
+mirror_path = ../p4gw-mirror
+
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
 
@@ -90,5 +126,5 @@ client = aaron-dev
 baseline_branch = p4-main
 ```
 
-Add `.p4gw` to the depot's ignore rules (or your client's exclusions) so it
-never gets reconciled into a CL.
+`.p4gw` is personal (it names your client); the starter `.gitignore` keeps
+it out of Git, and gw never opens it (or `.gitignore`) in a changelist.

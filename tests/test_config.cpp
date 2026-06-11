@@ -27,14 +27,31 @@ TEST(config_parses_all_keys) {
     auto config = loadFromString(
         "# overlay for the engine source tree\n"
         "depot_path = //depot/yourgame/src/...\n"
+        "mirror_path = ../p4gw-mirror\n"
         "client = aaron-dev\n"
         "baseline_branch = p4-base\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->depotPath == "//depot/yourgame/src/...");
+        CHECK(config->mirrorPath == "../p4gw-mirror");
         CHECK(config->client == "aaron-dev");
         CHECK(config->baselineBranch == "p4-base");
     }
+}
+
+TEST(config_resolves_relative_mirror_path) {
+    p4gw::Config config;
+    config.mirrorPath = "../p4gw-mirror";
+    const fs::path resolved =
+        p4gw::resolveMirrorPath(config, (fs::path("work") / "game" / "src").string());
+    CHECK(resolved == fs::path("work") / "game" / "p4gw-mirror");
+}
+
+TEST(config_keeps_absolute_mirror_path) {
+    p4gw::Config config;
+    const fs::path absolute = fs::temp_directory_path() / "mirror";
+    config.mirrorPath = absolute.string();
+    CHECK(fs::path(p4gw::resolveMirrorPath(config, "elsewhere")) == absolute);
 }
 
 TEST(config_defaults_baseline_branch) {

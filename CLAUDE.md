@@ -6,13 +6,17 @@ static library keep the `p4gw` prefix (`p4gw::`, `p4gw_core`), as does the
 `.p4gw` config file — only the user-facing executable is `gw`.
 
 A Windows command-line tool, written in C++23, that lets a developer work in
-Git locally and submit to Perforce. It automates the "Git overlay on a P4
-workspace" workflow: a Git repo lives inside a subtree of a (huge) P4
-workspace, daily work happens in Git, and shipping a change means scoping a
-`p4 reconcile` to that subtree and packaging the result into a numbered
-changelist. **There is no history import and no bidirectional bridge** — P4
-only ever sees filesystem state, which is the whole trick. Read README.md for
-the user-facing workflow and PLAN.md for the implementation roadmap before
+Git locally and ship Perforce changelists. The architecture is the **mirror
+workflow**: one client view line remaps the depot subtree to a mirror
+directory, so every p4 sync lands in the mirror and the canonical directory
+is purely a Git repo. `gw import` commits mirror state to the `p4-main`
+baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
+the current branch into the mirror with explicit `p4 edit/add/delete/move`
+(driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
+a pending CL that the user submits from P4V — gw itself never submits.
+**There is no history import and no bidirectional bridge** — P4 only ever
+sees filesystem state, which is the whole trick. Read README.md for the
+user-facing workflow and PLAN.md for the implementation roadmap before
 making significant changes.
 
 ## Build and test
@@ -36,10 +40,12 @@ build/gw --help                # build\gw.exe on Windows
 ```
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
-src/commands/*.cpp  one file per subcommand (init, sync, submit, status, doctor)
+src/commands/*.cpp  one file per subcommand (init, import, prepare, status, doctor)
 src/process.{h,cpp} subprocess runner — the ONLY place that spawns processes
 src/git.{h,cpp}     thin typed wrappers over the git CLI
-src/p4.{h,cpp}      thin typed wrappers over the p4 CLI
+src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks
+src/p4ops.{h,cpp}   pure mapping: git diff -> ordered p4 operations (prepare)
+src/mirror.{h,cpp}  mirror <-> working tree sync actions (import)
 src/config.{h,cpp}  .p4gw config file (key = value), found by walking parents
 tests/              zero-dependency harness (test_framework.h), one file per unit
 ```
@@ -57,9 +63,12 @@ wrapper function, not an inline `run("p4", ...)` call.
   constants. Namespaces: `p4gw`, `p4gw::git`, `p4gw::p4`.
 - Formatting: 4-space indent, ~90 columns, `{` on the same line.
 - Every p4 operation that touches files MUST be scoped to the configured
-  `depot_path`. An unscoped `p4 reconcile` or `p4 sync` against a game-studio
-  depot can run for hours and open thousands of files — treat an unscoped p4
-  call as a bug even when it happens to work.
+  `depot_path` or to an explicit file list. An unscoped `p4 reconcile` or
+  `p4 sync` against a game-studio depot can run for hours and open thousands
+  of files — treat an unscoped p4 call as a bug even when it happens to work.
+- P4 owns the mirror directory; gw owns moving state across the boundary.
+  Never write code that lets p4 touch the Git repo directory, and never let
+  gw absorb mirror state while it could be mid-sync without flagging it.
 - Destructive operations (anything that reverts, deletes, or overwrites user
   work in Git or P4) must be opt-in via an explicit flag, never the default.
 

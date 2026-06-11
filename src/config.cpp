@@ -43,6 +43,8 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
 
         if (key == "depot_path") {
             config.depotPath = value;
+        } else if (key == "mirror_path") {
+            config.mirrorPath = value;
         } else if (key == "client") {
             config.client = value;
         } else if (key == "baseline_branch") {
@@ -74,6 +76,14 @@ std::expected<Config, std::string> findAndLoadConfig(std::string& rootDir) {
         }
         dir = dir.parent_path();
     }
+}
+
+std::string resolveMirrorPath(const Config& config, const std::string& rootDir) {
+    fs::path mirror(config.mirrorPath);
+    if (mirror.is_relative()) {
+        mirror = fs::path(rootDir) / mirror;
+    }
+    return mirror.lexically_normal().string();
 }
 
 }  // namespace p4gw

@@ -1,6 +1,9 @@
 add_executable(p4gw_tests
     test_main.cpp
     test_config.cpp
+    test_p4view.cpp
+    test_prepare.cpp
+    test_mirror.cpp
 )
 target_link_libraries(p4gw_tests PRIVATE p4gw_core)
 

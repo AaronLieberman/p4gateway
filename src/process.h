@@ -11,6 +11,13 @@ struct RunResult {
     std::string output;  // stdout and stderr combined
 };
 
+struct RunOptions {
+    std::string cwd;         // run in this directory if non-empty
+    std::string stdinFile;   // redirect stdin from this file if non-empty
+    std::string stdoutFile;  // redirect stdout to this file if non-empty;
+                             // stderr is still captured in RunResult::output
+};
+
 // Runs an external command and captures its output. Arguments are quoted as
 // needed for the platform shell. If `cwd` is non-empty the command runs in
 // that directory.
@@ -20,5 +27,9 @@ struct RunResult {
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const std::string& cwd = {});
+
+std::expected<RunResult, std::string> run(const std::string& exe,
+                                          const std::vector<std::string>& args,
+                                          const RunOptions& options);
 
 }  // namespace p4gw

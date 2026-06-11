@@ -47,18 +47,27 @@ std::string quoteArg(const std::string& arg) {
 
 }  // namespace
 
-// NOTE: popen-based implementation merges stderr into stdout via shell
-// redirection and routes through the shell. PLAN.md milestone M1 replaces
-// this with CreateProcess/posix_spawn for separate streams and no shell.
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const std::string& cwd) {
+    RunOptions options;
+    options.cwd = cwd;
+    return run(exe, args, options);
+}
+
+// NOTE: popen-based implementation merges stderr into stdout via shell
+// redirection and routes through the shell, which is also how the stdin and
+// stdout file redirections are done. PLAN.md replaces this with
+// CreateProcess/posix_spawn for separate streams and no shell.
+std::expected<RunResult, std::string> run(const std::string& exe,
+                                          const std::vector<std::string>& args,
+                                          const RunOptions& options) {
     std::string cmdline;
-    if (!cwd.empty()) {
+    if (!options.cwd.empty()) {
 #ifdef _WIN32
-        cmdline += "cd /d " + quoteArg(cwd) + " && ";
+        cmdline += "cd /d " + quoteArg(options.cwd) + " && ";
 #else
-        cmdline += "cd " + quoteArg(cwd) + " && ";
+        cmdline += "cd " + quoteArg(options.cwd) + " && ";
 #endif
     }
     cmdline += quoteArg(exe);
@@ -66,7 +75,15 @@ std::expected<RunResult, std::string> run(const std::string& exe,
         cmdline += ' ';
         cmdline += quoteArg(arg);
     }
+    if (!options.stdinFile.empty()) {
+        cmdline += " < " + quoteArg(options.stdinFile);
+    }
+    // `2>&1` first so stderr is duplicated onto the capture pipe *before* a
+    // stdout file redirection takes stdout away from it.
     cmdline += " 2>&1";
+    if (!options.stdoutFile.empty()) {
+        cmdline += " > " + quoteArg(options.stdoutFile);
+    }
 
     FILE* pipe = POPEN(cmdline.c_str(), "r");
     if (!pipe) {
