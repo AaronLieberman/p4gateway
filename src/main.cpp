@@ -22,6 +22,9 @@ void printUsage() {
         "  status   Show Git/P4 state at a glance\n"
         "  doctor   Check the environment and the client-view mapping\n"
         "\n"
+        "  integtest  Live-P4 integration tests: init|run "
+        "(see PLAN-integrationtests.md)\n"
+        "\n"
         "global options:\n"
         "  --help     Show this help\n"
         "  --version  Show version\n",
@@ -50,6 +53,7 @@ int main(int argc, char** argv) {
     if (command == "prepare") return p4gw::cmdPrepare(args);
     if (command == "status") return p4gw::cmdStatus(args);
     if (command == "doctor") return p4gw::cmdDoctor(args);
+    if (command == "integtest") return p4gw::cmdIntegtest(argv[0], args);
 
     std::fprintf(stderr, "gw: unknown command '%s'\n\n", command.c_str());
     printUsage();

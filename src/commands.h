@@ -17,4 +17,8 @@ int cmdPrepare(const Args& args);
 int cmdStatus(const Args& args);
 int cmdDoctor(const Args& args);
 
+// Live-P4 integration tests; `gwExe` is the binary to spawn for the
+// commands under test (normally argv[0]).
+int cmdIntegtest(const std::string& gwExe, const Args& args);
+
 }  // namespace p4gw

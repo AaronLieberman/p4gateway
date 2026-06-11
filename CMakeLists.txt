@@ -29,6 +29,7 @@ add_library(p4gw_core STATIC
     src/commands/prepare.cpp
     src/commands/status.cpp
     src/commands/doctor.cpp
+    src/commands/integtest.cpp
 )
 target_include_directories(p4gw_core PUBLIC src)
 

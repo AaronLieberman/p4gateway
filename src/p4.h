@@ -108,4 +108,41 @@ std::expected<std::string, std::string> latestSubmittedCl(const Config& config);
 // `p4 opened` scoped to the configured depot path; empty if nothing is open.
 std::expected<std::string, std::string> openedFiles(const Config& config);
 
+// ---- workflow wrappers ----
+// Used by `gw integtest` today (and groundwork for a future submit
+// workflow). Callers must pass an explicitly scoped pathSpec — never an
+// unscoped wildcard.
+
+// Depot directory (no trailing /...) the client view maps `localDir` to,
+// from `p4 where`.
+std::expected<std::string, std::string> whereDepotDir(const Config& config,
+                                                      const std::string& localDir);
+
+// `p4 sync <pathSpec>`; already-up-to-date is success.
+std::expected<std::string, std::string> sync(const Config& config,
+                                             const std::string& pathSpec);
+
+// `p4 revert <pathSpec>`; nothing opened is success.
+std::expected<std::string, std::string> revert(const Config& config,
+                                               const std::string& pathSpec);
+
+// `p4 reconcile -c <cl> <pathSpec>` — the real thing, unlike
+// reconcilePreview; nothing to reconcile is success with empty output.
+std::expected<std::string, std::string> reconcileToCl(const Config& config,
+                                                      const std::string& cl,
+                                                      const std::string& pathSpec);
+
+// `p4 opened -c <cl>`; empty if the changelist has no open files.
+std::expected<std::string, std::string> openedInCl(const Config& config,
+                                                   const std::string& cl);
+
+// `p4 submit -c <cl>`. gw's own commands never call this — submitting is
+// the user's move (P4V); it exists for the integration tests.
+std::expected<std::string, std::string> submit(const Config& config,
+                                               const std::string& cl);
+
+// `p4 change -d <cl>` (empty pending changelists only).
+std::expected<std::string, std::string> deleteChangelist(const Config& config,
+                                                         const std::string& cl);
+
 }  // namespace p4gw::p4

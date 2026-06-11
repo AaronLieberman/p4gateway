@@ -43,7 +43,7 @@ build/gw --help                # build\gw.exe on Windows
 ```
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
-src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, doctor)
+src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, doctor, integtest)
 src/process.{h,cpp} subprocess runner — the ONLY place that spawns processes
 src/git.{h,cpp}     thin typed wrappers over the git CLI
 src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks
@@ -84,3 +84,5 @@ wrapper function, not an inline `run("p4", ...)` call.
   installed in the dev/CI environment — never write a test that requires it.
 - A real end-to-end check needs a Windows machine with a P4 workspace; flag
   changes that need that in your summary rather than claiming they're verified.
+  `gw integtest init|run` automates exactly that check on such a machine
+  (see PLAN-integrationtests.md) — it is never run by ctest or CI.

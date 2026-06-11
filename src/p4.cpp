@@ -3,6 +3,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include "process.h"
 
@@ -416,6 +417,88 @@ std::expected<std::string, std::string> openedFiles(const Config& config) {
                                result->output);
     }
     return result->output;
+}
+
+std::expected<std::string, std::string> whereDepotDir(const Config& config,
+                                                      const std::string& localDir) {
+    auto result = run(config, {"-ztag", "where", localDir + "/..."});
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    // -ztag records are blank-line separated; records for excluded view
+    // lines carry an "unmap" tag. Use the first mapped record's depotFile.
+    std::string depot;
+    bool unmapped = false;
+    std::istringstream lines(*result + "\n\n");  // sentinel ends the record
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            if (!depot.empty() && !unmapped) break;
+            depot.clear();
+            unmapped = false;
+            continue;
+        }
+        if (line.starts_with("... unmap")) unmapped = true;
+        if (line.starts_with("... depotFile ")) depot = line.substr(14);
+    }
+    if (depot.empty()) {
+        return std::unexpected("p4 where returned no mapping for " +
+                               localDir + ":\n" + *result);
+    }
+    if (depot.ends_with("/...")) {
+        depot.resize(depot.size() - 4);
+    }
+    return depot;
+}
+
+std::expected<std::string, std::string> sync(const Config& config,
+                                             const std::string& pathSpec) {
+    auto result = run(config, {"sync", pathSpec});
+    if (!result &&
+        result.error().find("up-to-date") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::expected<std::string, std::string> revert(const Config& config,
+                                               const std::string& pathSpec) {
+    auto result = run(config, {"revert", pathSpec});
+    if (!result && result.error().find("not opened") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::expected<std::string, std::string> reconcileToCl(const Config& config,
+                                                      const std::string& cl,
+                                                      const std::string& pathSpec) {
+    auto result = run(config, {"reconcile", "-c", cl, pathSpec});
+    if (!result &&
+        result.error().find("no file(s) to reconcile") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::expected<std::string, std::string> openedInCl(const Config& config,
+                                                   const std::string& cl) {
+    auto result = run(config, {"opened", "-c", cl});
+    if (!result && result.error().find("not opened") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::expected<std::string, std::string> submit(const Config& config,
+                                               const std::string& cl) {
+    return run(config, {"submit", "-c", cl});
+}
+
+std::expected<std::string, std::string> deleteChangelist(const Config& config,
+                                                         const std::string& cl) {
+    return run(config, {"change", "-d", cl});
 }
 
 }  // namespace p4gw::p4
