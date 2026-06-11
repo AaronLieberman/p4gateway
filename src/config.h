@@ -29,6 +29,11 @@ struct Config {
 // surface immediately.
 std::expected<Config, std::string> loadConfig(const std::string& path);
 
+// Path of the nearest `.p4gw` file at `startDir` or any parent directory;
+// empty if none. Entries named `.p4gw` that are not regular files (e.g. a
+// directory holding the mirror) are skipped.
+std::string findConfigFile(const std::string& startDir);
+
 // Searches the current directory and its parents for a `.p4gw` file and
 // loads it. Returns the loaded config and sets `rootDir` to the directory
 // containing the file.

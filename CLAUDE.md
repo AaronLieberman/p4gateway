@@ -14,6 +14,9 @@ baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
 a pending CL that the user submits from P4V — gw itself never submits.
+Getting started is split in two: `gw setup` writes the `.p4gw` template
+offline; `gw init` verifies the client view against it via p4 (hard failure
+on a wrong mapping) and creates the Git repo.
 **There is no history import and no bidirectional bridge** — P4 only ever
 sees filesystem state, which is the whole trick. Read README.md for the
 user-facing workflow and PLAN.md for the implementation roadmap before
@@ -40,7 +43,7 @@ build/gw --help                # build\gw.exe on Windows
 ```
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
-src/commands/*.cpp  one file per subcommand (init, import, prepare, status, doctor)
+src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, doctor)
 src/process.{h,cpp} subprocess runner — the ONLY place that spawns processes
 src/git.{h,cpp}     thin typed wrappers over the git CLI
 src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks

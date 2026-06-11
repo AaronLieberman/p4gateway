@@ -15,7 +15,8 @@ void printUsage() {
         "usage: gw <command> [options]\n"
         "\n"
         "commands:\n"
-        "  init     Set up the Git repo, config, and mirror mapping instructions\n"
+        "  setup    Write the .p4gw config template (offline; edit it, then run init)\n"
+        "  init     Verify the client-view mapping and set up the Git repo\n"
         "  import   Commit the synced mirror state to the baseline branch (--rebase)\n"
         "  prepare  Open the current branch's changes in a pending P4 changelist\n"
         "  status   Show Git/P4 state at a glance\n"
@@ -43,6 +44,7 @@ int main(int argc, char** argv) {
     const std::string command = argv[1];
     const p4gw::Args args(argv + 2, argv + argc);
 
+    if (command == "setup") return p4gw::cmdSetup(args);
     if (command == "init") return p4gw::cmdInit(args);
     if (command == "import") return p4gw::cmdImport(args);
     if (command == "prepare") return p4gw::cmdPrepare(args);

@@ -218,6 +218,51 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
     return problems;
 }
 
+std::string clientViewPath(const std::string& clientName,
+                           const std::string& clientRoot,
+                           const std::string& localDir,
+                           const std::string& suffix) {
+    std::error_code ec;
+    const fs::path rel = fs::relative(localDir, clientRoot, ec);
+    if (ec || rel.empty()) return {};
+    const std::string relStr = rel.generic_string();
+    if (relStr == "." || relStr == ".." || relStr.starts_with("../")) {
+        return {};
+    }
+    return "//" + clientName + "/" + relStr + suffix;
+}
+
+std::vector<std::string> checkSpecMapping(const std::string& spec,
+                                          const std::string& depotPath,
+                                          const std::string& repoDir,
+                                          const std::string& mirrorDir) {
+    const std::string clientName = specField(spec, "Client");
+    const std::string clientRoot = specField(spec, "Root");
+    if (clientName.empty() || clientRoot.empty()) {
+        return {"client spec has no Client:/Root: field"};
+    }
+    const std::string expectedClientPath =
+        clientViewPath(clientName, clientRoot, mirrorDir, "/...");
+    if (expectedClientPath.empty()) {
+        return {"mirror " + mirrorDir + " is not inside the client root " +
+                clientRoot + " — p4 cannot map it"};
+    }
+    const std::string repoPrefix =
+        clientViewPath(clientName, clientRoot, repoDir, "/");
+    return checkViewMapping(parseClientView(spec), depotPath,
+                            expectedClientPath, repoPrefix);
+}
+
+std::expected<std::vector<std::string>, std::string> verifyViewMapping(
+    const Config& config, const std::string& repoDir,
+    const std::string& mirrorDir) {
+    auto spec = clientSpec(config);
+    if (!spec) {
+        return std::unexpected(spec.error());
+    }
+    return checkSpecMapping(*spec, config.depotPath, repoDir, mirrorDir);
+}
+
 std::expected<std::string, std::string> info(const Config& config) {
     return run(config, {"info"});
 }

@@ -9,28 +9,41 @@ mirror directory the client view routes that subtree into.
 
 ## One-time setup
 
+Two halves: `gw setup` writes the config (offline — works on the train),
+then `gw init` verifies your client view actually matches it.
+
 ```
-C:\work\game\src> gw init --depot-path //depot/game/main/src/... --client aaron-dev
-Initialized empty Git repository in C:\work\game\src
-Wrote .p4gw
-Wrote starter .gitignore
+C:\work\game\src> gw setup --depot-path //depot/game/main/src/... --client aaron-dev
+Wrote C:\work\game\src\.p4gw
 
 Next steps:
 1. Add this line at the END of your client view (p4 client):
 
-     //depot/game/main/src/... //aaron-dev/p4gw-mirror/...
+     //depot/game/main/src/... //aaron-dev/<workspace-relative path of ../p4gw-mirror>/...
 
    so the depot subtree syncs into the mirror instead of this
    directory. Later view lines win, so keep it last.
-2. Run 'gw doctor' to verify the mapping.
-3. Sync (any tool you like) to populate the mirror.
-4. Run 'gw import' to create the 'p4-main' baseline branch from it.
+2. Run 'gw init' to verify the mapping and set up the Git repo.
 ```
 
-You add the view line, `gw doctor` confirms everything, you sync with the
-studio's sync tool like always — and the subtree lands in the mirror. (If
-`src/` was previously synced the old way, that sync also removes the old
-copies from it: they live in the mirror now.) Then:
+You add `//depot/game/main/src/... //aaron-dev/p4gw-mirror/...` to the view
+and run init, which checks it against the live spec before touching anything:
+
+```
+C:\work\game\src> gw init
+ok    client view maps //depot/game/main/src/... into the mirror
+Initialized empty Git repository in C:\work\game\src
+Wrote starter .gitignore
+Mirror directory C:\work\game\p4gw-mirror does not exist yet — it appears on the first sync.
+
+All set. Sync (any tool you like), then run 'gw import' to build the 'p4-main' baseline.
+```
+
+(Had you forgotten the view line, init would have refused with the exact
+line to add — that's its job.) You sync with the studio's sync tool like
+always — and the subtree lands in the mirror. (If `src/` was previously
+synced the old way, that sync also removes the old copies from it: they
+live in the mirror now.) Then:
 
 ```
 C:\work\game\src> gw import

@@ -42,6 +42,28 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
                                           const std::string& expectedClientPath,
                                           const std::string& repoClientPrefix);
 
+// "C:\work\game\mirror" under client root "C:\work\game" for client
+// "aaron-dev" -> "//aaron-dev/mirror" + suffix; empty if `localDir` is not
+// inside the client root.
+std::string clientViewPath(const std::string& clientName,
+                           const std::string& clientRoot,
+                           const std::string& localDir,
+                           const std::string& suffix);
+
+// Full mapping consistency check against `p4 client -o` output: `depotPath`
+// must map into the mirror directory and nothing may map into the repo
+// directory. Returns human-readable problems; empty means consistent.
+std::vector<std::string> checkSpecMapping(const std::string& spec,
+                                          const std::string& depotPath,
+                                          const std::string& repoDir,
+                                          const std::string& mirrorDir);
+
+// Fetches the client spec and runs checkSpecMapping on it. The outer error
+// is a failed p4 invocation (no connection, bad client, ...).
+std::expected<std::vector<std::string>, std::string> verifyViewMapping(
+    const Config& config, const std::string& repoDir,
+    const std::string& mirrorDir);
+
 // ---- wrappers over the p4 CLI ----
 
 std::expected<std::string, std::string> info(const Config& config);

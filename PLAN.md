@@ -50,9 +50,13 @@ worst external failure (the remap line vanishing from the client spec) is a
 - [x] `.p4gw` gains `mirror_path` (resolved against the config's directory)
 - [x] Process runner: stdin/stdout file redirection (for `p4 change -i` and
       binary-safe blob writes via `git cat-file blob`)
-- [x] `gw init`: git init if needed, write `.p4gw` + `.gitignore`, print the
-      exact view line to add — never edits the client spec, never moves
-      files, makes no p4 calls
+- [x] `gw setup`: write the `.p4gw` template (placeholders + comments for
+      anything not given as a flag; `--force` overwrites) — offline, no p4
+      or git calls
+- [x] `gw init`: require `.p4gw` (point at `gw setup` if missing), verify
+      the client view via p4 — hard failure on a wrong mapping or dead
+      connection — then git init if needed (`--force-git-init` starts the
+      repo over) + starter `.gitignore`; never edits the client spec
 - [x] `gw import`: clean-tree check, switch to baseline (orphan-created on
       first import), copy mirror → working tree / delete vanished tracked
       files, commit (best-effort CL label), switch back, `--rebase`

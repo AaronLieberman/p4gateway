@@ -10,6 +10,7 @@ namespace p4gw {
 using Args = std::vector<std::string>;
 
 // Each command returns a process exit code (0 = success).
+int cmdSetup(const Args& args);
 int cmdInit(const Args& args);
 int cmdImport(const Args& args);
 int cmdPrepare(const Args& args);

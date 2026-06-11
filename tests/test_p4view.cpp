@@ -103,3 +103,55 @@ TEST(view_check_ignores_unrelated_mappings) {
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     CHECK(problems.empty());
 }
+
+// POSIX-style fake paths keep these portable: fs::relative is lexical for
+// paths that don't exist.
+
+TEST(client_view_path_inside_root) {
+    CHECK(p4gw::p4::clientViewPath("aaron-dev", "/work/game",
+                                   "/work/game/p4gw-mirror", "/...") ==
+          "//aaron-dev/p4gw-mirror/...");
+    CHECK(p4gw::p4::clientViewPath("aaron-dev", "/work/game",
+                                   "/work/game/a/b", "/") ==
+          "//aaron-dev/a/b/");
+}
+
+TEST(client_view_path_outside_root_is_empty) {
+    CHECK(p4gw::p4::clientViewPath("c", "/work/game", "/elsewhere/mirror",
+                                   "/...").empty());
+    // The root itself can't be a view target for the mirror either.
+    CHECK(p4gw::p4::clientViewPath("c", "/work/game", "/work/game",
+                                   "/...").empty());
+}
+
+TEST(check_spec_mapping_end_to_end) {
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/game/... //c/game/...\n"
+        "\t//depot/game/src/... //c/mirror/src/...\n";
+    const auto good = p4gw::p4::checkSpecMapping(
+        spec, "//depot/game/src/...", "/work/game/src", "/work/mirror/src");
+    for (const auto& problem : good) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(good.empty());
+
+    // Without the remap line, the broad mapping is effective and points at
+    // the wrong client location.
+    const std::string broken =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/game/... //c/game/...\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        broken, "//depot/game/src/...", "/work/game/src", "/work/mirror/src");
+    CHECK(!problems.empty());
+}
+
+TEST(check_spec_mapping_requires_client_and_root) {
+    const auto problems = p4gw::p4::checkSpecMapping(
+        "View:\n\t//a/... //c/a/...\n", "//a/...", "/r", "/m");
+    CHECK(problems.size() == 1);
+}

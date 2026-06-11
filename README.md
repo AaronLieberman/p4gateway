@@ -38,7 +38,8 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 
 | Command | What it does |
 |---|---|
-| `gw init` | Sets up the Git side: creates the repo (if needed), writes the `.p4gw` config and a starter `.gitignore`, and prints the exact client view line to add. Never edits your client spec. |
+| `gw setup` | Writes the `.p4gw` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
+| `gw init` | Verifies the client view against `.p4gw` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
 | `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
 | `gw status` | One-screen view of where Git and P4 stand (not implemented yet). |
@@ -67,10 +68,11 @@ multi-terabyte depot is never touched.
 
 ```
 cd C:\work\game\src              # the subtree you want to work on in Git
-gw init --depot-path //depot/game/main/src/... --client aaron-dev
+gw setup --depot-path //depot/game/main/src/... --client aaron-dev
 ```
 
-`init` prints the one manual step: add a line like
+`setup` writes `.p4gw` (anything not given as a flag is left as a commented
+placeholder to edit) and prints the one manual step: add a line like
 
 ```
 //depot/game/main/src/...   //aaron-dev/p4gw-mirror/...
@@ -79,8 +81,16 @@ gw init --depot-path //depot/game/main/src/... --client aaron-dev
 at the **end** of your client view (`p4 client`). Later view lines win, so
 this routes the subtree into the mirror while the rest of your view stays
 untouched; other custom mappings are fine as long as they don't involve the
-subtree. Then sync, and run `gw import` to create the `p4-main` baseline.
-`gw doctor` verifies all of it.
+subtree. Then:
+
+```
+gw init
+```
+
+verifies that mapping against the live client spec — it fails loudly if the
+view line is missing or wrong — and creates the Git repo. Sync, and run
+`gw import` to create the `p4-main` baseline. `gw doctor` re-checks
+everything whenever you like.
 
 Note for an existing synced workspace: after the view line is added, the
 next sync removes the old copies from `src/` (they now belong at the mirror)
@@ -106,7 +116,7 @@ to check.
 
 ## Configuration
 
-`gw init` writes a `.p4gw` file at the root of the overlay repo
+`gw setup` writes a `.p4gw` file at the root of the overlay repo
 (`key = value`, `#` comments):
 
 ```

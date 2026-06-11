@@ -12,26 +12,6 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
-namespace {
-
-// "C:\work\game\p4gw-mirror" under root "C:\work\game" for client
-// "aaron-dev" -> "//aaron-dev/p4gw-mirror" + suffix; empty if not under root.
-std::string clientViewPath(const std::string& clientName,
-                           const std::string& clientRoot,
-                           const std::string& localDir,
-                           const std::string& suffix) {
-    std::error_code ec;
-    const fs::path rel = fs::relative(localDir, clientRoot, ec);
-    if (ec || rel.empty()) return {};
-    const std::string relStr = rel.generic_string();
-    if (relStr == "." || relStr == ".." || relStr.starts_with("../")) {
-        return {};
-    }
-    return "//" + clientName + "/" + relStr + suffix;
-}
-
-}  // namespace
-
 // Checks that the environment is sane for the mirror workflow. The central
 // check is the client view: the configured depot path must map into the
 // mirror, and nothing may map into the Git repo directory — if the spec
@@ -114,35 +94,18 @@ int cmdDoctor(const Args& args) {
             }
         }
         if (spec) {
-            const std::string clientName = p4::specField(*spec, "Client");
-            const std::string clientRoot = p4::specField(*spec, "Root");
             const std::string lineEnd = p4::specField(*spec, "LineEnd");
 
-            if (clientRoot.empty() || clientName.empty()) {
-                std::printf("FAIL  client spec has no Root:/Client: field\n");
-                ++failures;
-            } else if (!mirrorDir.empty()) {
-                const std::string expectedClientPath =
-                    clientViewPath(clientName, clientRoot, mirrorDir, "/...");
-                const std::string repoPrefix =
-                    clientViewPath(clientName, clientRoot, root, "/");
-                if (expectedClientPath.empty()) {
-                    std::printf("FAIL  mirror %s is not inside the client "
-                                "root %s — p4 cannot map it\n",
-                                mirrorDir.c_str(), clientRoot.c_str());
+            if (!mirrorDir.empty()) {
+                const auto problems = p4::checkSpecMapping(
+                    *spec, config->depotPath, root, mirrorDir);
+                if (problems.empty()) {
+                    std::printf("ok    client view maps %s to the mirror\n",
+                                config->depotPath.c_str());
+                }
+                for (const auto& problem : problems) {
+                    std::printf("FAIL  %s\n", problem.c_str());
                     ++failures;
-                } else {
-                    const auto problems = p4::checkViewMapping(
-                        p4::parseClientView(*spec), config->depotPath,
-                        expectedClientPath, repoPrefix);
-                    if (problems.empty()) {
-                        std::printf("ok    client view maps %s to the "
-                                    "mirror\n", config->depotPath.c_str());
-                    }
-                    for (const auto& problem : problems) {
-                        std::printf("FAIL  %s\n", problem.c_str());
-                        ++failures;
-                    }
                 }
             }
 
