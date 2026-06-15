@@ -91,8 +91,13 @@ conflict/abort) on Linux.
 
 ## M3 — `gw status` + quality of life
 
-- [ ] `status`: branch, ahead-of-baseline count, dirty files, last imported
-      CL, pending CLs created by gw
+- [x] `status`: branch, ahead/behind-of-baseline counts, dirty-file count,
+      last imported CL (parsed from the baseline commit), pending CLs created
+      by gw, and a single "next step" suggestion. Read-only; the Git side and
+      last-import CL work offline, the pending-CL line degrades to a note when
+      P4 is unreachable. Pure decision/format logic in `statusview` is unit
+      tested. **Needs real-workspace check**: pending-CL count parsing against
+      live `p4 opened` output.
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
       rebase instead of creating a new one
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to

@@ -1,5 +1,7 @@
 #include "git.h"
 
+#include <cstdio>
+
 #include "process.h"
 
 namespace p4gw::git {
@@ -80,6 +82,47 @@ std::expected<bool, std::string> isAncestor(const std::string& ancestor,
     if (result->exitCode == 1) return false;
     return std::unexpected("git merge-base --is-ancestor " + ancestor + " " +
                            descendant + " failed:\n" + result->output);
+}
+
+std::expected<AheadBehind, std::string> aheadBehind(const std::string& base,
+                                                    const std::string& ref,
+                                                    const std::string& cwd) {
+    auto output = run({"rev-list", "--left-right", "--count",
+                       base + "..." + ref},
+                      cwd);
+    if (!output) {
+        return std::unexpected(output.error());
+    }
+    // "<behind>\t<ahead>": left side is base-only, right side is ref-only.
+    AheadBehind counts;
+    if (std::sscanf(output->c_str(), "%d %d", &counts.behind, &counts.ahead) != 2) {
+        return std::unexpected("unexpected git rev-list output: " + *output);
+    }
+    return counts;
+}
+
+std::expected<std::vector<std::string>, std::string> statusLines(
+    const std::string& cwd) {
+    auto output = run({"status", "--porcelain"}, cwd);
+    if (!output) {
+        return std::unexpected(output.error());
+    }
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (pos < output->size()) {
+        size_t end = output->find('\n', pos);
+        if (end == std::string::npos) end = output->size();
+        std::string line = output->substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) lines.push_back(std::move(line));
+    }
+    return lines;
+}
+
+std::expected<std::string, std::string> commitSubject(const std::string& ref,
+                                                      const std::string& cwd) {
+    return run({"log", "-1", "--format=%s", ref}, cwd);
 }
 
 std::expected<std::vector<std::string>, std::string> lsFiles(

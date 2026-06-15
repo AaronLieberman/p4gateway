@@ -19,7 +19,7 @@ built from your commit messages. You review and submit it from P4V.
 
 ## Status
 
-Early development. `init`, `import`, `prepare`, and `doctor` are implemented
+Early development. `init`, `import`, `prepare`, `status`, and `doctor` are implemented
 and exercised end-to-end on the Git side; verification against a real P4
 server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 [docs/sample-session.md](docs/sample-session.md) for what using it feels like.
@@ -42,7 +42,7 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 | `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
 | `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
-| `gw status` | One-screen view of where Git and P4 stand (not implemented yet). |
+| `gw status` | One-screen view of where Git and P4 stand: current branch, commits ahead of / behind the baseline, working-tree cleanliness, the last imported changelist, and any pending changelist — plus the single most useful next step. Read-only; degrades gracefully when P4 isn't reachable. |
 | `gw doctor` | Checks the environment, and above all the client view: the depot path must map into the mirror and nothing may map into the Git repo. Run it whenever something smells off. |
 
 Day to day:

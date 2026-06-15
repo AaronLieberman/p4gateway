@@ -13,6 +13,14 @@ struct FileChange {
     std::string newPath;   // destination path for renames, otherwise empty
 };
 
+// Commit counts between two refs, as `git status` reports for an upstream:
+// `ahead` commits are on `ref` but not `base`; `behind` are on `base` but
+// not `ref`.
+struct AheadBehind {
+    int ahead = 0;
+    int behind = 0;
+};
+
 // Runs `git <args>` in `cwd` and returns trimmed stdout, or an error message
 // including git's output if the command failed.
 std::expected<std::string, std::string> run(const std::vector<std::string>& args,
@@ -43,6 +51,21 @@ std::expected<std::string, std::string> switchOrphanBranch(
 std::expected<bool, std::string> isAncestor(const std::string& ancestor,
                                             const std::string& descendant,
                                             const std::string& cwd = {});
+
+// Commits `ref` is ahead of / behind `base` (`git rev-list --left-right
+// --count base...ref`). Both refs must exist.
+std::expected<AheadBehind, std::string> aheadBehind(const std::string& base,
+                                                    const std::string& ref,
+                                                    const std::string& cwd = {});
+
+// Lines of `git status --porcelain` - one per changed or untracked (not
+// ignored) path. Empty means a clean working tree.
+std::expected<std::vector<std::string>, std::string> statusLines(
+    const std::string& cwd = {});
+
+// Subject line (first line of the message) of the commit at `ref`.
+std::expected<std::string, std::string> commitSubject(const std::string& ref,
+                                                      const std::string& cwd = {});
 
 // All tracked files, repo-relative with forward slashes.
 std::expected<std::vector<std::string>, std::string> lsFiles(
