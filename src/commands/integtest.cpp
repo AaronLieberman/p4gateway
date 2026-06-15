@@ -624,6 +624,17 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
     if (!reverted) return std::unexpected(reverted.error());
     std::error_code ec;
     fs::remove(mirrorNew, ec);
+
+    // The shelf (now reverted from the workspace) must still show up in
+    // `gw shelf list`, marked as shelved, so it can be picked for import.
+    auto listed = runGw(it, it.repoDir, {"shelf", "list"});
+    if (!listed) return std::unexpected(listed.error());
+    if (listed->find(*cl) == std::string::npos ||
+        listed->find("[shelved]") == std::string::npos) {
+        return std::unexpected("gw shelf list did not show shelved CL " + *cl +
+                               ":\n" + *listed);
+    }
+
     auto synced = trace(it, "p4 sync " + it.p4.depotPath,
                         p4::sync(it.p4, it.p4.depotPath));
     if (!synced) return std::unexpected(synced.error());

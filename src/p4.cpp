@@ -427,6 +427,30 @@ std::expected<std::string, std::string> openedFiles(const Config& config) {
     return result->output;
 }
 
+std::expected<std::string, std::string> currentUser(const Config& config) {
+    auto info = run(config, {"info"});
+    if (!info) {
+        return std::unexpected(info.error());
+    }
+    std::string user = specField(*info, "User name");
+    if (user.empty()) {
+        return std::unexpected("p4 info output has no 'User name' field");
+    }
+    return user;
+}
+
+std::expected<std::string, std::string> changes(const Config& config,
+                                                const std::string& status,
+                                                const std::string& user) {
+    std::vector<std::string> args{"-ztag", "changes", "-s", status};
+    if (!user.empty()) {
+        args.push_back("-u");
+        args.push_back(user);
+    }
+    args.push_back(config.depotPath);
+    return run(config, args);
+}
+
 std::expected<std::string, std::string> describeShelved(const Config& config,
                                                         const std::string& cl) {
     return run(config, {"-ztag", "describe", "-S", cl});

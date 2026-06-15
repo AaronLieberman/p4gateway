@@ -70,3 +70,35 @@ TEST(shelf_binary_type_detection) {
     CHECK(isBinaryType("ubinary"));
     CHECK(isBinaryType("apple"));
 }
+
+TEST(shelf_parse_changes_reads_records) {
+    const char* out =
+        "... change 4830\n"
+        "... time 1718000000\n"
+        "... user bob\n"
+        "... client bob-dev\n"
+        "... status pending\n"
+        "... desc WIP refactor\n"
+        "\n"
+        "... change 4821\n"
+        "... user bob\n"
+        "... status pending\n"
+        "... desc Fix anim blend\n"
+        "second line of the description\n"
+        "\n";
+    const auto changes = parseChanges(out);
+    CHECK(changes.size() == 2);
+    if (changes.size() == 2) {
+        CHECK(changes[0].change == "4830");
+        CHECK(changes[0].description == "WIP refactor");
+        CHECK(changes[0].shelved == false);
+        CHECK(changes[1].change == "4821");
+        // Multi-line descriptions are captured whole; the command shows line 1.
+        CHECK(changes[1].description ==
+              "Fix anim blend\nsecond line of the description");
+    }
+}
+
+TEST(shelf_parse_changes_empty_is_empty) {
+    CHECK(parseChanges("").empty());
+}

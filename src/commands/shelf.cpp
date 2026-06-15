@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -267,23 +269,102 @@ int shelfImport(const Args& args) {
     return 0;
 }
 
+// First line of a (possibly multi-line) description, trailing blanks trimmed.
+std::string firstLine(const std::string& desc) {
+    const size_t nl = desc.find('\n');
+    std::string line = (nl == std::string::npos) ? desc : desc.substr(0, nl);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+        line.pop_back();
+    }
+    return line;
+}
+
+// `gw shelf list`: the caller's pending and shelved changelists under the
+// configured subtree, newest first, so a CL number is easy to pick for
+// `gw shelf import`.
+int shelfList(const Args& args) {
+    if (!args.empty()) {
+        std::fprintf(stderr, "gw shelf list: unexpected argument '%s'\n",
+                     args.front().c_str());
+        std::fprintf(stderr, "usage: gw shelf list\n");
+        return 1;
+    }
+
+    std::string root;
+    auto config = findAndLoadConfig(root);
+    if (!config) {
+        std::fprintf(stderr, "gw shelf list: %s\n", config.error().c_str());
+        return 1;
+    }
+
+    auto user = p4::currentUser(*config);
+    if (!user) {
+        std::fprintf(stderr, "gw shelf list: %s\n", user.error().c_str());
+        return 1;
+    }
+    auto pending = p4::changes(*config, "pending", *user);
+    if (!pending) {
+        std::fprintf(stderr, "gw shelf list: %s\n", pending.error().c_str());
+        return 1;
+    }
+    auto shelved = p4::changes(*config, "shelved", *user);
+    if (!shelved) {
+        std::fprintf(stderr, "gw shelf list: %s\n", shelved.error().c_str());
+        return 1;
+    }
+
+    // Merge keyed by CL number (for newest-first ordering). Pending carries
+    // the listing; the shelved query sets the flag and adds any shelf whose
+    // files were reverted from the workspace (so it isn't in "pending").
+    std::map<long long, ChangeListing> byCl;
+    for (auto& c : parseChanges(*pending)) {
+        byCl[std::stoll(c.change)] = c;
+    }
+    for (auto& c : parseChanges(*shelved)) {
+        ChangeListing& entry = byCl[std::stoll(c.change)];
+        if (entry.change.empty()) entry = c;  // shelf not open in the workspace
+        entry.shelved = true;
+    }
+
+    if (byCl.empty()) {
+        std::printf("No pending or shelved changelists under %s.\n",
+                    config->depotPath.c_str());
+        return 0;
+    }
+
+    std::printf("Pending and shelved changelists under %s:\n\n",
+                config->depotPath.c_str());
+    for (auto it = byCl.rbegin(); it != byCl.rend(); ++it) {
+        const ChangeListing& c = it->second;
+        std::printf("  %-8s %-9s %s\n", c.change.c_str(),
+                    c.shelved ? "[shelved]" : "", firstLine(c.description).c_str());
+    }
+    std::printf("\nImport a shelf with: gw shelf import <changelist>\n");
+    return 0;
+}
+
 }  // namespace
 
-// `gw shelf <subcommand>`: work with P4 shelves. Today only `import` exists
-// (bring a shelf into Git as a branch); `list` is the planned next step.
+// `gw shelf <subcommand>`: work with P4 shelves. `list` shows pending/shelved
+// changelists; `import` brings a shelf into Git as a branch.
 int cmdShelf(const Args& args) {
+    auto usage = [] {
+        std::fprintf(stderr, "usage: gw shelf list\n"
+                             "       gw shelf import <changelist> "
+                             "[--branch <name>]\n");
+    };
     if (args.empty()) {
         std::fprintf(stderr, "gw shelf: missing subcommand\n");
-        std::fprintf(stderr, "usage: gw shelf import <changelist> "
-                             "[--branch <name>]\n");
+        usage();
         return 1;
     }
     const std::string sub = args.front();
     const Args rest(args.begin() + 1, args.end());
+    if (sub == "list") return shelfList(rest);
     if (sub == "import") return shelfImport(rest);
 
     std::fprintf(stderr, "gw shelf: unknown subcommand '%s'\n", sub.c_str());
-    std::fprintf(stderr, "usage: gw shelf import <changelist> [--branch <name>]\n");
+    usage();
     return 1;
 }
 

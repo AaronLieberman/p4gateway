@@ -86,10 +86,11 @@ are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
    must commit the depot head — not the un-submitted working copy — to
    `p4-main`. Revert and clean up afterward.
 8. Shelf import: build a shelved CL on the server (an edit plus an add),
-   revert the workspace so only the shelf remains, then `gw shelf import
-   <CL>` → a new `shelf-<CL>` branch off `p4-main` with one commit carrying
-   the shelved edit and add. Validates the `#rev` base-revision assumption
-   and the `p4 print`-only read path. Delete the shelf + CL afterward.
+   revert the workspace so only the shelf remains; `gw shelf list` must show
+   that CL flagged `[shelved]`; then `gw shelf import <CL>` → a new
+   `shelf-<CL>` branch off `p4-main` with one commit carrying the shelved
+   edit and add. Validates the `#rev` base-revision assumption and the
+   `p4 print`-only read path. Delete the shelf + CL afterward.
 9. Final checks: `gw doctor` exits 0; nothing opened under the test path;
    the root and `bin/` fixture files were never touched.
 
@@ -107,9 +108,9 @@ are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
   regular typed wrappers in `src/p4.{h,cpp}` — the submit wrapper doubles as
   groundwork for a possible future submit workflow.
 - The gw commands under test (`setup`, `init`, `import`, `prepare`,
-  `shelf import`, `doctor`) are spawned as child processes of the same
-  executable (argv[0]), so the real CLI surface is exercised; `--gw <path>`
-  overrides.
+  `shelf list`, `shelf import`, `doctor`) are spawned as child processes of
+  the same executable (argv[0]), so the real CLI surface is exercised;
+  `--gw <path>` overrides.
 - Built always; **never registered with ctest** (it requires p4 + a live
   server). All p4 calls are scoped to the discovered test depot path or
   explicit file lists, per the standing rule.

@@ -42,4 +42,16 @@ bool isBinaryType(const std::string& type);
 // p4::depotRelativePath (src/p4.h).
 std::expected<ShelfInfo, std::string> parseShelveDescribe(const std::string& out);
 
+// A pending or shelved changelist, for `gw shelf list`.
+struct ChangeListing {
+    std::string change;       // changelist number
+    std::string description;  // full description (callers display line 1)
+    bool shelved = false;     // the changelist has shelved files
+};
+
+// Parses `p4 -ztag changes ...` output into changelist records (change number
+// and description), in the order p4 returned them. `shelved` is left false;
+// the caller cross-references the `-s shelved` query to set it.
+std::vector<ChangeListing> parseChanges(const std::string& out);
+
 }  // namespace p4gw

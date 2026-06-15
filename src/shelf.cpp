@@ -7,6 +7,48 @@ namespace p4gw {
 
 namespace {
 
+// One field from p4's -ztag output.
+struct ZtagField {
+    std::string key;
+    std::string value;
+};
+
+// Collapses -ztag lines into (key, value) fields. A line "... key value"
+// starts a field; a line that does not start with "... " continues the
+// previous field's value (p4 emits multi-line descriptions that way).
+std::vector<ZtagField> collapseZtagFields(const std::string& out) {
+    std::vector<ZtagField> fields;
+    size_t pos = 0;
+    while (pos < out.size()) {
+        size_t end = out.find('\n', pos);
+        if (end == std::string::npos) end = out.size();
+        std::string line = out.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        // Blank lines separate -ztag records; never part of a field value.
+        if (line.empty()) continue;
+
+        if (line.starts_with("... ")) {
+            const std::string rest = line.substr(4);
+            const size_t space = rest.find(' ');
+            ZtagField field;
+            if (space == std::string::npos) {
+                field.key = rest;
+            } else {
+                field.key = rest.substr(0, space);
+                field.value = rest.substr(space + 1);
+            }
+            fields.push_back(std::move(field));
+        } else if (!fields.empty()) {
+            // Continuation of a multi-line value (e.g. the description).
+            fields.back().value += '\n';
+            fields.back().value += line;
+        }
+    }
+    return fields;
+}
+
 // Splits "depotFile0" into ("depotFile", 0). Returns false when the key has
 // no trailing digits (a global field like "change" or "desc").
 bool splitIndexedKey(const std::string& key, std::string& base, int& index) {
@@ -43,39 +85,7 @@ bool isBinaryType(const std::string& type) {
 
 std::expected<ShelfInfo, std::string> parseShelveDescribe(
     const std::string& out) {
-    // First pass: collapse tagged lines (and their continuation lines) into
-    // (key, value) fields. A line "... key value" starts a field; a line that
-    // does not start with "... " continues the previous field's value.
-    struct Field {
-        std::string key;
-        std::string value;
-    };
-    std::vector<Field> fields;
-    size_t pos = 0;
-    while (pos < out.size()) {
-        size_t end = out.find('\n', pos);
-        if (end == std::string::npos) end = out.size();
-        std::string line = out.substr(pos, end - pos);
-        pos = end + 1;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-
-        if (line.starts_with("... ")) {
-            const std::string rest = line.substr(4);
-            const size_t space = rest.find(' ');
-            Field field;
-            if (space == std::string::npos) {
-                field.key = rest;
-            } else {
-                field.key = rest.substr(0, space);
-                field.value = rest.substr(space + 1);
-            }
-            fields.push_back(std::move(field));
-        } else if (!fields.empty()) {
-            // Continuation of a multi-line value (e.g. the description).
-            fields.back().value += '\n';
-            fields.back().value += line;
-        }
-    }
+    const auto fields = collapseZtagFields(out);
 
     ShelfInfo info;
     std::map<int, ShelvedFile> byIndex;
@@ -102,6 +112,21 @@ std::expected<ShelfInfo, std::string> parseShelveDescribe(
         }
     }
     return info;
+}
+
+std::vector<ChangeListing> parseChanges(const std::string& out) {
+    const auto fields = collapseZtagFields(out);
+    std::vector<ChangeListing> changes;
+    for (const auto& field : fields) {
+        // Each record starts with the "change" field; later fields belong to
+        // it until the next "change".
+        if (field.key == "change") {
+            changes.push_back(ChangeListing{field.value, {}, false});
+        } else if (!changes.empty() && field.key == "desc") {
+            changes.back().description = field.value;
+        }
+    }
+    return changes;
 }
 
 }  // namespace p4gw

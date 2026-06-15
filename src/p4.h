@@ -108,6 +108,18 @@ std::expected<std::string, std::string> latestSubmittedCl(const Config& config);
 // `p4 opened` scoped to the configured depot path; empty if nothing is open.
 std::expected<std::string, std::string> openedFiles(const Config& config);
 
+// Current P4 user name, from `p4 info` ("User name:"). Used to scope
+// `gw shelf list` to the caller's own changelists.
+std::expected<std::string, std::string> currentUser(const Config& config);
+
+// `p4 -ztag changes -s <status> [-u <user>] <depot_path>`: pending or shelved
+// changelists under the configured subtree (status is "pending" or
+// "shelved"). When `user` is non-empty, limits to that user's changelists.
+// Returns raw -ztag output for shelf.h's parseChanges.
+std::expected<std::string, std::string> changes(const Config& config,
+                                                const std::string& status,
+                                                const std::string& user);
+
 // `p4 -ztag describe -S <cl>`: the shelved-file listing for a changelist.
 // Returns raw -ztag output for shelf.h's parseShelveDescribe.
 std::expected<std::string, std::string> describeShelved(const Config& config,

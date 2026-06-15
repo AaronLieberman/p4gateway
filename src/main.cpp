@@ -20,7 +20,7 @@ void printUsage() {
         "  import   Commit the synced mirror state to the baseline branch (--rebase)\n"
         "  prepare  Open the current branch's changes in a pending P4 changelist\n"
         "  status   Show Git/P4 state at a glance\n"
-        "  shelf    Work with P4 shelves: import <cl> brings a shelf into Git\n"
+        "  shelf    Work with P4 shelves: list, or import <cl> into Git\n"
         "  doctor   Check the environment and the client-view mapping\n"
         "\n"
         "  integtest  Live-P4 integration tests: init|run "

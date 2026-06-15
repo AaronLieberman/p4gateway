@@ -110,8 +110,11 @@ conflict/abort) on Linux.
       `#rev` base-revision assumption on a live server. **Still needs a
       real-workspace check** for binary files and the conflict (shelf based on
       an older depot state) path.
-- [ ] `gw shelf list`: pending and shelved CLs for the client, scoped to
-      `depot_path`, to pick one for `shelf import` (fold into `gw status`?)
+- [x] `gw shelf list`: the caller's pending and shelved CLs (`p4 -ztag
+      changes -s pending|shelved -u <user>`, scoped to `depot_path`), newest
+      first with shelved ones flagged, to pick one for `shelf import`.
+      `parseChanges` is pure/unit-tested; `gw integtest run` asserts a freshly
+      shelved CL shows up flagged.
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
       rebase instead of creating a new one
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to
