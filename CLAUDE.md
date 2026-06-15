@@ -70,8 +70,12 @@ wrapper function, not an inline `run("p4", ...)` call.
   `p4 sync` against a game-studio depot can run for hours and open thousands
   of files — treat an unscoped p4 call as a bug even when it happens to work.
 - P4 owns the mirror directory; gw owns moving state across the boundary.
-  Never write code that lets p4 touch the Git repo directory, and never let
-  gw absorb mirror state while it could be mid-sync without flagging it.
+  The recommended mirror is `.p4gw/` — a gitignored subdirectory *inside*
+  the repo. This is the deliberate exception to "p4 must not write into the
+  Git repo directory": the `.p4gw/` subtree is carved out by the client view
+  remap line and gitignored, so p4 never touches tracked files. Never write
+  code that lets p4 reach *outside* `.p4gw/` into the repo, and never let gw
+  absorb mirror state while it could be mid-sync without flagging it.
 - Destructive operations (anything that reverts, deletes, or overwrites user
   work in Git or P4) must be opt-in via an explicit flag, never the default.
 
