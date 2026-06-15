@@ -14,7 +14,7 @@ namespace p4gw {
 // The verifying half of getting started ('gw setup' writes the config):
 //   1. Load .p4gw (error pointing at 'gw setup' if absent or unfilled).
 //   2. Ask p4 for the client spec and verify the view maps depot_path into
-//      the mirror and nothing into this repo — fail loudly if not.
+//      the mirror and nothing into this repo - fail loudly if not.
 //   3. git init if needed (--force-git-init starts the repo over), write
 //      and commit a starter .gitignore.
 //   4. Point at the next steps: sync, then 'gw import'.
@@ -40,14 +40,14 @@ int cmdInit(const Args& args) {
     }
     if (!config->depotPath.ends_with("/...")) {
         std::fprintf(stderr,
-                     "gw init: depot_path must end with '/...' (got '%s') — "
+                     "gw init: depot_path must end with '/...' (got '%s') - "
                      "edit %s\n", config->depotPath.c_str(),
                      (fs::path(root) / ".p4gw").string().c_str());
         return 1;
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw init: no 'mirror_path' in .p4gw — edit %s "
+                     "gw init: no 'mirror_path' in .p4gw - edit %s "
                      "('gw setup' writes the template)\n",
                      (fs::path(root) / ".p4gw").string().c_str());
         return 1;
@@ -72,7 +72,7 @@ int cmdInit(const Args& args) {
         std::fprintf(stderr,
                      "Fix the client view ('p4 client'), then rerun "
                      "'gw init'. The mapping line belongs\nat the END of the "
-                     "view — later lines win.\n");
+                     "view - later lines win.\n");
         return 1;
     }
     std::printf("ok    client view maps %s into the mirror\n",
@@ -94,7 +94,7 @@ int cmdInit(const Args& args) {
     if (toplevel) {
         if (!fs::equivalent(fs::path(*toplevel), fs::path(root))) {
             std::fprintf(stderr,
-                         "gw init: %s is inside the Git repo at %s — the "
+                         "gw init: %s is inside the Git repo at %s - the "
                          "overlay root must be its own repo\n",
                          root.c_str(), toplevel->c_str());
             return 1;
@@ -115,12 +115,12 @@ int cmdInit(const Args& args) {
         {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
-            file << "# gw's local config — personal, never goes to Git or P4\n"
+            file << "# gw's local config - personal, never goes to Git or P4\n"
                     ".p4gw\n";
         }
         std::printf("Wrote starter .gitignore\n");
     } else {
-        std::printf("Keeping the existing .gitignore — make sure it ignores "
+        std::printf("Keeping the existing .gitignore - make sure it ignores "
                     ".p4gw\n");
     }
     // In a brand-new (or --force-git-init) repo, commit the .gitignore so
@@ -139,7 +139,7 @@ int cmdInit(const Args& args) {
     if (fs::exists(mirrorDir)) {
         std::printf("Mirror directory exists: %s\n", mirrorDir.c_str());
     } else {
-        std::printf("Mirror directory %s does not exist yet — it appears on "
+        std::printf("Mirror directory %s does not exist yet - it appears on "
                     "the first sync.\n", mirrorDir.c_str());
     }
     std::printf("\nAll set. Sync (any tool you like), then run 'gw import' "

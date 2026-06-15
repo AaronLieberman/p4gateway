@@ -105,7 +105,7 @@ external dependencies.
 ```
 cmake -S . -B build
 cmake --build build --config Release
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 The binary lands at `build\Release\gw.exe` (MSVC) or `build/gw`.

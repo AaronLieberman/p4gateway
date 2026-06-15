@@ -33,7 +33,7 @@ std::expected<bool, std::string> branchExists(const std::string& branch,
 std::expected<std::string, std::string> switchBranch(const std::string& branch,
                                                      const std::string& cwd = {});
 
-// `git switch --orphan` — a new branch with no history; tracked files of the
+// `git switch --orphan` - a new branch with no history; tracked files of the
 // previous branch are removed from the working tree (restored by switching
 // back), untracked files are left alone.
 std::expected<std::string, std::string> switchOrphanBranch(
@@ -78,7 +78,7 @@ std::expected<std::vector<FileChange>, std::string> diffNameStatus(
     const std::string& cwd = {});
 
 // Commit subjects and bodies from `fromRef` (exclusive) to `toRef`
-// (inclusive), oldest first — used to build the P4 changelist description.
+// (inclusive), oldest first - used to build the P4 changelist description.
 std::expected<std::string, std::string> commitMessages(const std::string& fromRef,
                                                        const std::string& toRef,
                                                        const std::string& cwd = {});

@@ -56,7 +56,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
     }
 
     if (config.depotPath.empty()) {
-        return std::unexpected(path + ": missing required key 'depot_path' — "
+        return std::unexpected(path + ": missing required key 'depot_path' - "
                                "edit .p4gw and set it ('gw setup' writes the "
                                "template)");
     }

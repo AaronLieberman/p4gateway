@@ -13,7 +13,7 @@ struct Config {
     // never touch (or crawl) the rest of the workspace.
     std::string depotPath;
 
-    // Directory the client view maps `depot_path` into — gw's staging area,
+    // Directory the client view maps `depot_path` into - gw's staging area,
     // which p4 syncs and gw reads/writes. Relative values are resolved
     // against the directory containing the .p4gw file.
     std::string mirrorPath;

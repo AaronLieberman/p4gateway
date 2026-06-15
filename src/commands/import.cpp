@@ -11,8 +11,8 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
-// Commits the current state of the mirror directory — whatever p4 last
-// synced into it, by any tool — as a new commit on the baseline branch.
+// Commits the current state of the mirror directory - whatever p4 last
+// synced into it, by any tool - as a new commit on the baseline branch.
 // Analogous to `git fetch` (or `git pull` with --rebase):
 //   1. Require a clean working tree; remember the current branch.
 //   2. Check out the baseline branch (created on first import).
@@ -38,7 +38,7 @@ int cmdImport(const Args& args) {
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw import: no 'mirror_path' in .p4gw — add it (see "
+                     "gw import: no 'mirror_path' in .p4gw - add it (see "
                      "'gw init') so gw knows where p4 syncs to\n");
         return 1;
     }
@@ -59,7 +59,7 @@ int cmdImport(const Args& args) {
     }
     if (*dirty) {
         std::fprintf(stderr,
-                     "gw import: working tree is not clean — commit, stash, "
+                     "gw import: working tree is not clean - commit, stash, "
                      "or gitignore your changes first\n");
         return 1;
     }
@@ -79,7 +79,7 @@ int cmdImport(const Args& args) {
         originalBranch = *branch;
         if (originalBranch == "HEAD") {
             std::fprintf(stderr,
-                         "gw import: HEAD is detached — switch to a branch "
+                         "gw import: HEAD is detached - switch to a branch "
                          "first\n");
             return 1;
         }
@@ -133,7 +133,7 @@ int cmdImport(const Args& args) {
     if (!clean) return fail(clean.error());
 
     if (*clean && hasCommits) {
-        std::printf("Already up to date — the mirror matches '%s'.\n",
+        std::printf("Already up to date - the mirror matches '%s'.\n",
                     baseline.c_str());
     } else {
         // Best-effort label: the company tool syncs different paths to

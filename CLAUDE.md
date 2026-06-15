@@ -27,7 +27,7 @@ making significant changes.
 ```
 cmake -S . -B build
 cmake --build build            # add --config Debug/Release with MSVC
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 build/gw --help                # build\gw.exe on Windows
 ```
 

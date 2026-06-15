@@ -48,14 +48,14 @@ int cmdSetup(const Args& args) {
     if (!existing.empty()) {
         if (fs::path(existing).parent_path() != cwd) {
             std::fprintf(stderr,
-                         "gw setup: a .p4gw already exists at %s — nested "
+                         "gw setup: a .p4gw already exists at %s - nested "
                          "overlays are not supported; run setup at that root "
                          "or remove it first\n", existing.c_str());
             return 1;
         }
         if (!force) {
             std::fprintf(stderr,
-                         "gw setup: .p4gw already exists here — edit it "
+                         "gw setup: .p4gw already exists here - edit it "
                          "directly, or rerun with --force to overwrite it\n");
             return 1;
         }
@@ -68,16 +68,16 @@ int cmdSetup(const Args& args) {
                          target.string().c_str());
             return 1;
         }
-        file << "# gw configuration — personal (it names your client and "
+        file << "# gw configuration - personal (it names your client and "
                 "local paths);\n"
                 "# keep it out of Git and P4. Read by every gw command.\n"
                 "\n"
                 "# Which slice of the depot this Git repo overlays. Every p4\n"
-                "# command is scoped to this path — required. Example:\n"
+                "# command is scoped to this path - required. Example:\n"
                 "#   depot_path = //depot/yourgame/src/...\n"
                 "depot_path = " << depotPath << "\n"
                 "\n"
-                "# Where the client view maps depot_path to — gw's staging\n"
+                "# Where the client view maps depot_path to - gw's staging\n"
                 "# area, synced by p4 and never edited by hand. Relative\n"
                 "# paths are resolved against the directory containing this\n"
                 "# file.\n"

@@ -14,7 +14,7 @@ namespace p4gw {
 
 // Checks that the environment is sane for the mirror workflow. The central
 // check is the client view: the configured depot path must map into the
-// mirror, and nothing may map into the Git repo directory — if the spec
+// mirror, and nothing may map into the Git repo directory - if the spec
 // ever loses the remap line, this is where it gets caught.
 int cmdDoctor(const Args& args) {
     (void)args;
@@ -44,7 +44,7 @@ int cmdDoctor(const Args& args) {
     std::string root;
     auto config = findAndLoadConfig(root);
     if (!config) {
-        std::printf("note  no .p4gw config found — run 'gw init' to set up "
+        std::printf("note  no .p4gw config found - run 'gw init' to set up "
                     "an overlay; skipping the workspace checks\n");
         if (failures == 0) {
             std::printf("\nAll checks passed.\n");
@@ -58,7 +58,7 @@ int cmdDoctor(const Args& args) {
 
     std::string mirrorDir;
     if (config->mirrorPath.empty()) {
-        std::printf("FAIL  .p4gw has no 'mirror_path' — the mirror workflow "
+        std::printf("FAIL  .p4gw has no 'mirror_path' - the mirror workflow "
                     "needs one (see 'gw init')\n");
         ++failures;
     } else {
@@ -67,7 +67,7 @@ int cmdDoctor(const Args& args) {
             std::printf("ok    mirror directory exists: %s\n",
                         mirrorDir.c_str());
         } else {
-            std::printf("WARN  mirror directory %s does not exist yet — it "
+            std::printf("WARN  mirror directory %s does not exist yet - it "
                         "appears on the first sync after the view line is "
                         "added\n", mirrorDir.c_str());
             ++warnings;
@@ -118,13 +118,13 @@ int cmdDoctor(const Args& args) {
             const bool winLineEnd = lineEnd == "win" || lineEnd == "local";
             if (winLineEnd && crlf != "true") {
                 std::printf("WARN  client LineEnd '%s' with core.autocrlf=%s "
-                            "— git will commit CRLF; consider autocrlf=true "
+                            "- git will commit CRLF; consider autocrlf=true "
                             "or LineEnd unix\n",
                             lineEnd.c_str(), crlf.c_str());
                 ++warnings;
             } else if (!winLineEnd && crlf == "true") {
                 std::printf("WARN  client LineEnd '%s' with core.autocrlf="
-                            "true — git will rewrite line endings the depot "
+                            "true - git will rewrite line endings the depot "
                             "doesn't have; consider autocrlf=input/false\n",
                             lineEnd.c_str());
                 ++warnings;
@@ -140,7 +140,7 @@ int cmdDoctor(const Args& args) {
             std::printf("ok    no files opened under %s\n",
                         config->depotPath.c_str());
         } else if (opened) {
-            std::printf("WARN  files are opened under %s — a pending gw "
+            std::printf("WARN  files are opened under %s - a pending gw "
                         "changelist, or someone ran p4 edit:\n%s",
                         config->depotPath.c_str(), opened->c_str());
             ++warnings;

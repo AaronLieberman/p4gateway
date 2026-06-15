@@ -46,7 +46,7 @@ std::expected<std::string, std::string> stageBlob(const std::string& root,
 //   1. Preflight: baseline is an ancestor of HEAD with commits on top.
 //   2. Create a numbered pending CL described by the commit messages.
 //   3. Stage the branch's file state into the mirror with explicit
-//      p4 edit/add/delete/move — we know exactly what changed from Git.
+//      p4 edit/add/delete/move - we know exactly what changed from Git.
 //   4. Verify with a scoped `p4 reconcile -n`: anything it still finds is
 //      an unexpected mirror/depot mismatch and gets a loud warning.
 // gw never submits; review the CL and submit it from P4V.
@@ -75,14 +75,14 @@ int cmdPrepare(const Args& args) {
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw prepare: no 'mirror_path' in .p4gw — add it (see "
+                     "gw prepare: no 'mirror_path' in .p4gw - add it (see "
                      "'gw init')\n");
         return 1;
     }
     const std::string mirrorDir = resolveMirrorPath(*config, root);
     if (!fs::exists(mirrorDir)) {
         std::fprintf(stderr,
-                     "gw prepare: mirror directory %s does not exist — check "
+                     "gw prepare: mirror directory %s does not exist - check "
                      "the client view mapping ('gw doctor')\n",
                      mirrorDir.c_str());
         return 1;
@@ -96,7 +96,7 @@ int cmdPrepare(const Args& args) {
     }
     if (*branch == baseline) {
         std::fprintf(stderr,
-                     "gw prepare: you are on '%s' (the baseline branch) — "
+                     "gw prepare: you are on '%s' (the baseline branch) - "
                      "switch to the feature branch you want to ship\n",
                      baseline.c_str());
         return 1;
@@ -108,7 +108,7 @@ int cmdPrepare(const Args& args) {
     }
     if (!*baselineExists) {
         std::fprintf(stderr,
-                     "gw prepare: baseline branch '%s' does not exist — run "
+                     "gw prepare: baseline branch '%s' does not exist - run "
                      "'gw import' first\n",
                      baseline.c_str());
         return 1;
@@ -120,7 +120,7 @@ int cmdPrepare(const Args& args) {
     }
     if (!*ancestor) {
         std::fprintf(stderr,
-                     "gw prepare: '%s' is not an ancestor of HEAD — run "
+                     "gw prepare: '%s' is not an ancestor of HEAD - run "
                      "'gw import --rebase' to rebase onto the latest depot "
                      "state first\n",
                      baseline.c_str());
@@ -263,7 +263,7 @@ int cmdPrepare(const Args& args) {
         }
     }
 
-    std::printf("\nChangelist %s is ready — review and submit it from P4V "
+    std::printf("\nChangelist %s is ready - review and submit it from P4V "
                 "(or: p4 submit -c %s).\nAfter it is submitted, run "
                 "'gw import' to absorb the new depot state into '%s'.\n",
                 cl->c_str(), cl->c_str(), baseline.c_str());

@@ -207,14 +207,14 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
         problems.push_back(
             (effective->depot == depotPath ? "depot path " : "part of ") +
             depotPath + " is excluded by view line '-" + effective->depot +
-            " " + effective->client + "' — the mirror would be incomplete");
+            " " + effective->client + "' - the mirror would be incomplete");
     } else if (effective->depot != depotPath ||
                effective->client != expectedClientPath) {
         problems.push_back(
             "the effective mapping for " + depotPath + " is '" +
             effective->depot + " " + effective->client + "'; expected '" +
             depotPath + " " + expectedClientPath +
-            "' (add it as the LAST view line — later lines win)");
+            "' (add it as the LAST view line - later lines win)");
     }
     return problems;
 }
@@ -246,7 +246,7 @@ std::vector<std::string> checkSpecMapping(const std::string& spec,
         clientViewPath(clientName, clientRoot, mirrorDir, "/...");
     if (expectedClientPath.empty()) {
         return {"mirror " + mirrorDir + " is not inside the client root " +
-                clientRoot + " — p4 cannot map it"};
+                clientRoot + " - p4 cannot map it"};
     }
     const std::string repoPrefix =
         clientViewPath(clientName, clientRoot, repoDir, "/");

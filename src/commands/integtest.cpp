@@ -35,7 +35,7 @@ struct ItContext {
     std::string testRoot;      // the p4gw-test directory (cwd)
     std::string depotRoot;     // its depot path, no trailing /...
     std::string srcDepotPath;  // depotRoot + "/src/..."
-    std::string repoDir;       // testRoot/src — the Git overlay repo
+    std::string repoDir;       // testRoot/src - the Git overlay repo
     std::string mirrorDir;     // testRoot/.p4gw/mirror/src
     Config p4;                 // ambient client; depotPath = depotRoot + "/..."
     std::string pendingCl;     // CL produced by the prepare step
@@ -55,7 +55,7 @@ constexpr FixtureFile kBinFixture[] = {
     {"bin/tool.txt", "p4gw-test fixture: bin file, outside the overlay\n"},
     {"bin/helper.txt", "p4gw-test fixture: another bin file\n"},
 };
-// The src set is created physically inside the mirror — with the remap
+// The src set is created physically inside the mirror - with the remap
 // active that is where the src depot paths live on disk.
 constexpr FixtureFile kSrcFixture[] = {
     {"main.cpp", "// fixture main.cpp\nint main() { return 0; }\n"},
@@ -161,7 +161,7 @@ std::string setupInstructions() {
         "\nSetting up the integration test (one time):\n"
         "  1. Pick or create a P4 client whose view you can edit.\n"
         "  2. Under that client's root, create a directory named 'p4gw-test'.\n"
-        "  3. Make sure 'p4' works from inside it — rely on ambient\n"
+        "  3. Make sure 'p4' works from inside it - rely on ambient\n"
         "     P4PORT/P4USER/P4CLIENT, or drop a p4.ini / .p4config there.\n"
         "  4. Add a line at the END of the client view ('p4 client') that\n"
         "     remaps the test's src subtree into the mirror, for example:\n"
@@ -280,7 +280,7 @@ std::expected<void, std::string> itSubmitFixture(ItContext& it) {
     if (opened->empty()) {
         auto deleted = p4::deleteChangelist(it.p4, *cl);
         if (!deleted) return std::unexpected(deleted.error());
-        std::printf("note  fixture already matches the depot — nothing "
+        std::printf("note  fixture already matches the depot - nothing "
                     "submitted\n");
         return {};
     }
@@ -564,7 +564,7 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
             if (!content) return std::unexpected(content.error());
             if (*content != files[i].content) {
                 return std::unexpected(std::string(files[i].rel) +
-                                       " was modified during the run — gw "
+                                       " was modified during the run - gw "
                                        "touched a file outside the overlay");
             }
         }
@@ -651,7 +651,7 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("require the fixture (gw integtest init first)",
                            [&]() -> std::expected<void, std::string> {
             if (!fs::is_regular_file(fs::path(it.repoDir) / ".p4gw")) {
-                return std::unexpected(it.repoDir + "/.p4gw not found — run "
+                return std::unexpected(it.repoDir + "/.p4gw not found - run "
                                        "'gw integtest init' first");
             }
             return {};

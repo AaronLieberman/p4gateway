@@ -19,7 +19,7 @@ struct P4Op {
 
 // Pure: maps git file changes onto P4 operations. Returns ops grouped in
 // execution order: deletes, then edits, then moves, then adds. gw metadata
-// files (.p4gw, .gitignore) are silently skipped — they never go to P4.
+// files (.p4gw, .gitignore) are silently skipped - they never go to P4.
 std::expected<std::vector<P4Op>, std::string> planP4Operations(
     const std::vector<git::FileChange>& changes);
 
