@@ -14,17 +14,29 @@ mkdir -p ~/p4root
 cd ~/p4root
 curl -O https://cdist2.perforce.com/perforce/r25.1/bin.linux26x86_64/p4d
 chmod +x p4d
+echo "integtest" > server.id
+```
+
+Create a startup script:
+
+```bash
+cat > ~/p4root/start-p4d.sh << 'EOF'
+#!/bin/sh
+cd ~/p4root
+exec ./p4d -r ~/p4root -p 1666
+EOF
+chmod +x ~/p4root/start-p4d.sh
 ```
 
 ### Start the server
 
 ```bash
-~/p4root/p4d -r ~/p4root -p 1666
+~/p4root/start-p4d.sh
 ```
 
 Leave this terminal open — p4d runs in the foreground. `Ctrl-C` stops it.
 To reset the server state completely, stop it, `rm -rf ~/p4root/*` (keep the
-binary), and restart.
+binary and `start-p4d.sh`), and restart.
 
 ### Find your WSL2 IP
 
@@ -34,10 +46,26 @@ hostname -I | awk '{print $1}'
 
 You'll need this address for the Windows side.
 
-## Part 2 — Configure the Windows p4 client (one time)
+## Part 2 — Install p4.exe on Windows (one time)
 
-Make sure `p4.exe` is on your `PATH`. Then tell the p4 client where to find
-`p4.ini` files:
+Download the single-file Windows client from Perforce and drop it on your PATH:
+
+```powershell
+curl -o "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\p4.exe" `
+     https://cdist2.perforce.com/perforce/r25.1/bin.ntx64/p4.exe
+```
+
+`WindowsApps` is already on the PATH for most Windows installs. If you prefer
+a different location, copy it anywhere that's on your `PATH`. Verify with:
+
+```
+p4 --version
+```
+
+## Part 3 — Configure the Windows p4 client (one time)
+
+
+Tell the p4 client where to find `p4.ini` files:
 
 ```
 p4 set P4CONFIG=p4.ini
@@ -51,15 +79,15 @@ p4 -p <WSL2_IP>:1666 -u <your_username> user -f
 
 Accept the defaults in the editor that opens (save and close it).
 
-Create a P4 client whose root is the directory that will contain `p4gw-test`.
-Pick a path you can write to, e.g. `C:\work\p4`:
+Create a P4 client whose root is the p4gateway repo root (the directory that
+contains `p4gw-test`). The `p4gw-test` subdirectory is already gitignored:
 
 ```
 p4 -p <WSL2_IP>:1666 -u <your_username> -c <client_name> client
 ```
 
-In the editor set `Root` to your chosen path (e.g. `C:\work\p4`) and add a
-view line that maps the depot into it:
+In the editor set `Root` to the repo root (e.g. `C:\Projects\GitHub\p4gateway`)
+and add a view line that maps the depot into it:
 
 ```
 //depot/...   //<client_name>/...
@@ -77,15 +105,15 @@ If you're not sure of the exact depot path yet, `gw integtest init` will
 print the exact line to add when it fails the mapping check — run it once,
 copy the line it shows, add it with `p4 client`, and re-run.
 
-## Part 3 — Set up the test directory
+## Part 4 — Set up the test directory
 
-Create `p4gw-test` under your client root and put a `p4.ini` in it:
+Create `p4gw-test` under the repo root and put a `p4.ini` in it:
 
 ```
-mkdir C:\work\p4\p4gw-test
+mkdir p4gw-test
 ```
 
-`C:\work\p4\p4gw-test\p4.ini`:
+`p4gw-test\p4.ini`:
 
 ```ini
 P4PORT=<WSL2_IP>:1666
@@ -96,13 +124,13 @@ P4CLIENT=<client_name>
 Verify the connection from inside the directory:
 
 ```
-cd C:\work\p4\p4gw-test
+cd p4gw-test
 p4 info
 ```
 
 You should see your server address, user, and client.
 
-## Part 4 — Build gw
+## Part 5 — Build gw
 
 From the repo root:
 
@@ -114,12 +142,12 @@ cmake --build build --config Release
 The binary lands at `build\Release\gw.exe`. Add it to your `PATH`, or use
 `--gw <path>` when calling `gw integtest` to point at it explicitly.
 
-## Part 5 — Run the tests
+## Part 6 — Run the tests
 
-From inside `p4gw-test`:
+From inside `p4gw-test` (under the repo root):
 
 ```
-cd C:\work\p4\p4gw-test
+cd p4gw-test
 gw integtest init
 gw integtest run
 ```
@@ -145,8 +173,8 @@ the server root, and restart:
 ```bash
 # in WSL2
 ^C                   # stop p4d
-rm -rf ~/p4root/*
-~/p4root/p4d -r ~/p4root -p 1666
+find ~/p4root -mindepth 1 -not -name 'p4d' -not -name 'start-p4d.sh' -not -name 'server.id' -delete
+~/p4root/start-p4d.sh
 ```
 
-Then redo Part 2 (create user and client) and Part 5.
+Then redo Part 3 (create user and client) and Part 6.
