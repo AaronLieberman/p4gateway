@@ -26,8 +26,10 @@ but are never invoked by ctest.
   the P4 workspace root. (It may be mapped to a different depot path in the
   client spec — that's fine; the depot path is discovered via `p4 where`.)
 - The user has **already** added a client view line remapping the `src`
-  subtree of `p4gw-test` into its in-repo mirror at `p4gw-test/src/.p4gw`.
-  The tests verify this mapping is present and correct; they do not create it.
+  subtree of `p4gw-test` into the repo's mirror container at
+  `p4gw-test/.p4gw/src` (the repo root is `p4gw-test`; `bin/` and the root
+  files stay unmapped). The tests verify this mapping is present and correct;
+  they do not create it.
 - Both commands are run from inside `p4gw-test`. `integtest init` **deletes
   everything under it** (except the `p4.ini`), so nothing of value may live
   there.
@@ -39,24 +41,24 @@ something to import. Rerunnable: running it again resets both the local
 state and (via reconcile) the depot fixture.
 
 1. Verify the P4 mapping looks right, **including** the remap of the `src`
-   subdirectory into its in-repo mirror `src/.p4gw` (reuses
+   subdirectory into the repo's mirror container `.p4gw/src` (reuses
    `p4::checkSpecMapping` from `src/p4.h`). Fail with the exact line to add if
    it's missing.
 2. Revert any files opened under the test depot path; sync `p4gw-test` to
    head.
 3. Delete all files currently present locally under `p4gw-test` (including a
-   previous run's `src/.git` and `src/p4gw.cfg`; the `p4.ini` survives).
+   previous run's `.git` and `p4gw.cfg`; the `p4.ini` survives).
 4. Create the fixture files: a few directly under `p4gw-test`, a few under
-   `bin/`, and the `src/` set **physically inside `src/.p4gw/`** — with the
+   `bin/`, and the `src/` set **physically inside `.p4gw/src/`** — with the
    remap active, files placed at `p4gw-test/src/` would be unmapped and
    invisible to reconcile; the mirror is where the src depot paths live on
    disk.
 5. `p4 reconcile` scoped to the test depot path and submit, so the fixture
    is in the depot. (If nothing changed, the empty CL is deleted and the
    submit skipped.)
-6. Create `p4gw-test/src/` and run `gw setup --depot-path <discovered>/src/...
-   --mirror-path .p4gw` there, as a child gw process — the mapping covers the
-   `src` directory but **not** the root or `bin/`, so the test exercises a
+6. Run `gw setup --depot-path <discovered>/src/... --mirror-path .p4gw/src` in
+   `p4gw-test` (the repo root), as a child gw process — the mapping covers the
+   `src` subtree but **not** the root or `bin/`, so the test exercises a
    partial-subtree overlay. (`.gitignore` is `gw init`'s job, exercised by
    `integtest run`.)
 
@@ -66,7 +68,7 @@ Each step asserts the expected state (branch state, file contents, opened
 files, CL contents, reconcile-clean) and prints one summary line; failures
 are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
 
-1. `gw init` in `p4gw-test/src` — must succeed: it verifies the client
+1. `gw init` in `p4gw-test` — must succeed: it verifies the client
    mapping via p4 (this is the verifying-init behavior the split was for),
    creates the Git repo, commits `.gitignore`.
 2. Sync; first `gw import` → `p4-main` exists and tracked files match the

@@ -24,8 +24,9 @@ namespace {
 
 // Live-P4 integration tests (see PLAN-integrationtests.md). Everything runs
 // inside a `p4gw-test` directory under the client root, whose depot path is
-// discovered via `p4 where`; the user has pre-mapped its `src` subtree to
-// `src/.p4gw` (the mirror lives inside the repo) in the client view.
+// discovered via `p4 where`; the user has pre-mapped its `src` subtree into
+// the repo's mirror container at `.p4gw/src` in the client view (the repo root
+// is `p4gw-test` itself; bin/ and root files stay unmapped).
 // `integtest init` (re)builds a
 // known fixture in the depot; `integtest run` drives the real workflow
 // through child `gw` processes and asserts state at each step.
@@ -36,8 +37,9 @@ struct ItContext {
     std::string testRoot;      // the p4gw-test directory (cwd)
     std::string depotRoot;     // its depot path, no trailing /...
     std::string srcDepotPath;  // depotRoot + "/src/..."
-    std::string repoDir;       // testRoot/src - the Git overlay repo
-    std::string mirrorDir;     // repoDir/.p4gw - the mirror, inside the repo
+    std::string repoDir;       // testRoot - the Git overlay repo root
+    std::string srcWork;       // repoDir/src - the mapped subtree's working dir
+    std::string mirrorDir;     // repoDir/.p4gw/src - the src mapping's mirror
     Config p4;                 // ambient client; one mapping spanning the depot
     std::string p4DepotPath;   // depotRoot + "/..." - scope for raw p4 calls
     std::string pendingCl;     // CL produced by the prepare step
@@ -48,13 +50,14 @@ struct FixtureFile {
     const char* content;
 };
 
-// Root and bin files live outside the overlay: gw must never touch them.
+// Root and bin files are unmapped: they sync into the repo in place and are
+// gitignored, so gw never tracks or touches them.
 constexpr FixtureFile kRootFixture[] = {
-    {"readme.txt", "p4gw-test fixture: root file, outside the overlay\n"},
+    {"readme.txt", "p4gw-test fixture: root file, unmapped\n"},
     {"notes.txt", "p4gw-test fixture: more root content\n"},
 };
 constexpr FixtureFile kBinFixture[] = {
-    {"bin/tool.txt", "p4gw-test fixture: bin file, outside the overlay\n"},
+    {"bin/tool.txt", "p4gw-test fixture: bin file, unmapped\n"},
     {"bin/helper.txt", "p4gw-test fixture: another bin file\n"},
 };
 // The src set is created physically inside the mirror - with the remap
@@ -166,9 +169,10 @@ std::string setupInstructions() {
         "  3. Make sure 'p4' works from inside it - rely on ambient\n"
         "     P4PORT/P4USER/P4CLIENT, or drop a p4.ini / .p4config there.\n"
         "  4. Add a line at the END of the client view ('p4 client') that\n"
-        "     remaps the test's src subtree into its in-repo mirror, e.g.:\n"
+        "     remaps the test's src subtree into the repo's mirror container,\n"
+        "     e.g.:\n"
         "       //depot/.../p4gw-test/src/...   "
-        "//CLIENT/.../p4gw-test/src/.p4gw/...\n"
+        "//CLIENT/.../p4gw-test/.p4gw/src/...\n"
         "     Later view lines win, so keep it last. (init verifies this and\n"
         "     prints the exact line to use if it's off.)\n"
         "  5. From inside p4gw-test, run:  gw integtest init\n"
@@ -194,8 +198,12 @@ std::expected<void, std::string> discover(ItContext& it) {
     it.depotRoot = *depot;
     it.p4DepotPath = it.depotRoot + "/...";
     it.srcDepotPath = it.depotRoot + "/src/...";
-    it.repoDir = (fs::path(it.testRoot) / "src").string();
-    it.mirrorDir = (fs::path(it.repoDir) / ".p4gw").string();
+    // The whole p4gw-test directory is the Git repo root; the `src` subtree is
+    // the mapped one (remapped into the repo's .p4gw container at .p4gw/src),
+    // while bin/ and the root files stay unmapped (synced in place, gitignored).
+    it.repoDir = it.testRoot;
+    it.srcWork = (fs::path(it.testRoot) / "src").string();
+    it.mirrorDir = (fs::path(it.testRoot) / ".p4gw" / "src").string();
     // The raw-p4 helper config carries one whole-depot mapping so calls like
     // p4::openedFiles scope to the test depot; its mirror path is unused here.
     it.p4.mappings = {{it.p4DepotPath, ".p4gw", ""}};
@@ -302,12 +310,18 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
     }
     auto out = runGw(it, it.repoDir,
                      {"setup", "--depot-path", it.srcDepotPath,
-                      "--mirror-path", ".p4gw"});
+                      "--mirror-path", ".p4gw/src"});
     if (!out) return std::unexpected(out.error());
     if (!fs::is_regular_file(fs::path(it.repoDir) / "p4gw.cfg")) {
         return std::unexpected("gw setup did not write " + it.repoDir +
                                "/p4gw.cfg");
     }
+    // The unmapped dirs (bin/, root files) sync into the repo in place; ignore
+    // them, and p4gw.cfg, so the only Git-tracked content is the src subtree.
+    // gw init keeps this .gitignore and appends the .p4gw mirror container.
+    auto wrote = writeFile(fs::path(it.repoDir) / ".gitignore",
+                           "p4gw.cfg\nbin/\nreadme.txt\nnotes.txt\n");
+    if (!wrote) return wrote;
     return {};
 }
 
@@ -348,18 +362,22 @@ std::expected<void, std::string> itFirstImport(ItContext& it) {
     for (const auto& file : *tracked) {
         if (!mirror::isGwMetadataPath(file)) trackedContent.push_back(file);
     }
+    // The mirror holds the subtree at its own root; the repo holds it under
+    // src/, so compare the mirror listing prefixed with the subtree.
+    std::vector<std::string> expectedTracked;
+    for (const auto& file : *mirrorFiles) expectedTracked.push_back("src/" + file);
     std::sort(trackedContent.begin(), trackedContent.end());
-    std::sort(mirrorFiles->begin(), mirrorFiles->end());
-    if (trackedContent != *mirrorFiles) {
+    std::sort(expectedTracked.begin(), expectedTracked.end());
+    if (trackedContent != expectedTracked) {
         std::string message = "tracked files do not match the mirror after "
                               "import\n  tracked:";
         for (const auto& file : trackedContent) message += " " + file;
-        message += "\n  mirror: ";
-        for (const auto& file : *mirrorFiles) message += " " + file;
+        message += "\n  expected:";
+        for (const auto& file : expectedTracked) message += " " + file;
         return std::unexpected(message);
     }
 
-    auto repoMain = readFile(fs::path(it.repoDir) / "main.cpp");
+    auto repoMain = readFile(fs::path(it.srcWork) / "main.cpp");
     auto mirrorMain = readFile(fs::path(it.mirrorDir) / "main.cpp");
     if (!repoMain) return std::unexpected(repoMain.error());
     if (!mirrorMain) return std::unexpected(mirrorMain.error());
@@ -376,10 +394,10 @@ std::expected<void, std::string> itFeatureBranch(ItContext& it) {
     if (!switched) return std::unexpected(switched.error());
 
     // Commit 1: edit + add.
-    auto edited = appendFile(fs::path(it.repoDir) / "util.cpp",
+    auto edited = appendFile(fs::path(it.srcWork) / "util.cpp",
                              "// integtest edit\n");
     if (!edited) return edited;
-    auto added = writeFile(fs::path(it.repoDir) / "newfile.cpp",
+    auto added = writeFile(fs::path(it.srcWork) / "newfile.cpp",
                            "// integtest new file\nint newFn() { return 2; }\n");
     if (!added) return added;
     auto staged = git::addAll(it.repoDir);
@@ -390,11 +408,13 @@ std::expected<void, std::string> itFeatureBranch(ItContext& it) {
     if (!committed) return std::unexpected(committed.error());
 
     // Commit 2: delete + rename.
-    auto removed = trace(it, "git rm docs/overview.md",
-                         git::run({"rm", "-q", "docs/overview.md"}, it.repoDir));
+    auto removed = trace(it, "git rm src/docs/overview.md",
+                         git::run({"rm", "-q", "src/docs/overview.md"},
+                                  it.repoDir));
     if (!removed) return std::unexpected(removed.error());
-    auto renamed = trace(it, "git mv util.h utils.h",
-                         git::run({"mv", "util.h", "utils.h"}, it.repoDir));
+    auto renamed = trace(it, "git mv src/util.h src/utils.h",
+                         git::run({"mv", "src/util.h", "src/utils.h"},
+                                  it.repoDir));
     if (!renamed) return std::unexpected(renamed.error());
     committed = git::commit("integtest: delete overview.md, rename util.h",
                             it.repoDir);
@@ -488,12 +508,12 @@ std::expected<void, std::string> itSubmitAndAbsorb(ItContext& it) {
             "away (it-feature " + *featureTip + " != p4-main " +
             *baselineTip + ")");
     }
-    if (fs::exists(fs::path(it.repoDir) / "docs" / "overview.md")) {
-        return std::unexpected("docs/overview.md still exists after its "
+    if (fs::exists(fs::path(it.srcWork) / "docs" / "overview.md")) {
+        return std::unexpected("src/docs/overview.md still exists after its "
                                "delete was submitted and imported");
     }
-    if (!fs::exists(fs::path(it.repoDir) / "utils.h")) {
-        return std::unexpected("utils.h (renamed from util.h) missing after "
+    if (!fs::exists(fs::path(it.srcWork) / "utils.h")) {
+        return std::unexpected("src/utils.h (renamed from util.h) missing after "
                                "import");
     }
     return {};
@@ -518,7 +538,7 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
     auto switched = trace(it, "git switch -c it-feature2",
                           git::run({"switch", "-c", "it-feature2"}, it.repoDir));
     if (!switched) return std::unexpected(switched.error());
-    auto changed = appendFile(fs::path(it.repoDir) / "util.cpp",
+    auto changed = appendFile(fs::path(it.srcWork) / "util.cpp",
                               "// second feature edit\n");
     if (!changed) return changed;
     auto staged = git::addAll(it.repoDir);
@@ -530,7 +550,7 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!out) return std::unexpected(out.error());
 
-    auto repoMain = readFile(fs::path(it.repoDir) / "main.cpp");
+    auto repoMain = readFile(fs::path(it.srcWork) / "main.cpp");
     if (!repoMain) return std::unexpected(repoMain.error());
     if (repoMain->find("// teammate change") == std::string::npos) {
         return std::unexpected("the teammate's submitted change is missing "
@@ -574,7 +594,7 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
     // import must commit the depot head, not the un-submitted working copy.
     auto imported = runGw(it, it.repoDir, {"import"});
     if (!imported) return std::unexpected(imported.error());
-    auto baselineUtil = git::run({"show", "p4-main:util.cpp"}, it.repoDir);
+    auto baselineUtil = git::run({"show", "p4-main:src/util.cpp"}, it.repoDir);
     if (!baselineUtil) return std::unexpected(baselineUtil.error());
     if (baselineUtil->find("UNSUBMITTED stray edit") != std::string::npos) {
         return std::unexpected("import absorbed an un-submitted mirror edit "
@@ -660,13 +680,13 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
         return std::unexpected("expected exactly 1 commit on the shelf branch, "
                                "got " + *ahead);
     }
-    auto utilContent = readFile(fs::path(it.repoDir) / "util.cpp");
+    auto utilContent = readFile(fs::path(it.srcWork) / "util.cpp");
     if (!utilContent) return std::unexpected(utilContent.error());
     if (utilContent->find("// shelf edit") == std::string::npos) {
         return std::unexpected("shelf import did not bring in the edited "
                                "util.cpp content");
     }
-    if (!fs::exists(fs::path(it.repoDir) / "shelfnew.cpp")) {
+    if (!fs::exists(fs::path(it.srcWork) / "shelfnew.cpp")) {
         return std::unexpected("shelf import did not add shelfnew.cpp");
     }
 
@@ -694,7 +714,7 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
                                it.p4DepotPath + ":\n" + *opened);
     }
 
-    // gw must never have touched anything outside the overlay.
+    // gw must never have touched the unmapped files (bin/ and root).
     const std::pair<const FixtureFile*, size_t> untouched[] = {
         {kRootFixture, std::size(kRootFixture)},
         {kBinFixture, std::size(kBinFixture)},
@@ -778,7 +798,7 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
     steps.emplace_back("discover the test depot path (p4 where)",
                        [&] { return discover(it); });
     if (mode == "init") {
-        steps.emplace_back("verify the src -> src/.p4gw view mapping",
+        steps.emplace_back("verify the src -> .p4gw/src view mapping",
                            [&] { return itVerifyMapping(it); });
         steps.emplace_back("revert, sync, and wipe the local test directory",
                            [&] { return itResetLocal(it); });
