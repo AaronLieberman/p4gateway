@@ -102,6 +102,20 @@ int cmdInit(const Args& args) {
             }
             std::printf("note  %s is inside an outer Git repo (--allow-in-repo)\n",
                         root.c_str());
+            // root has no .git of its own — create one so it is isolated
+            // from the outer repo; git operations then resolve to root, not
+            // to the enclosing repo.
+            if (!fs::exists(fs::path(root) / ".git")) {
+                auto initialized =
+                    git::run({"init", "-b", config->baselineBranch}, root);
+                if (!initialized) {
+                    std::fprintf(stderr, "gw init: %s\n",
+                                 initialized.error().c_str());
+                    return 1;
+                }
+                std::printf("Initialized empty Git repository in %s\n",
+                            root.c_str());
+            }
         } else {
             std::printf("Using the existing Git repo at %s\n", root.c_str());
         }
@@ -138,7 +152,10 @@ int cmdInit(const Args& args) {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
             file << "# gw's local config - personal, never goes to Git or P4\n"
-                    "p4gw.cfg\n";
+                    "p4gw.cfg\n"
+                    "# P4 connection config - personal, never goes to Git\n"
+                    "p4.ini\n"
+                    ".p4config\n";
             if (!mirrorEntries.empty()) {
                 file << "\n# gw's mirror directory - P4-managed, not for Git\n";
                 for (const auto& entry : mirrorEntries) file << entry << "\n";

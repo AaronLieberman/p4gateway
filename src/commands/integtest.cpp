@@ -294,6 +294,14 @@ std::expected<void, std::string> itSubmitFixture(ItContext& it) {
     if (opened->empty()) {
         auto deleted = p4::deleteChangelist(it.p4, *cl);
         if (!deleted) return std::unexpected(deleted.error());
+        // itWriteFixture wrote mirror (src) files as writable; without a
+        // submit p4 never resets them to read-only, which causes `p4 delete`
+        // to fail in gw prepare later.  Scope to srcDepotPath so we don't
+        // force-sync the unmapped root/bin files (LineEnd:local would
+        // rewrite their line endings from LF to CRLF, breaking itFinalChecks).
+        auto synced = trace(it, "p4 sync -f " + it.srcDepotPath,
+                            p4::syncForce(it.p4, it.srcDepotPath));
+        if (!synced) return std::unexpected(synced.error());
         std::printf("note  fixture already matches the depot - nothing "
                     "submitted\n");
         return {};
@@ -322,7 +330,8 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
     // them, and p4gw.cfg, so the only Git-tracked content is the src subtree.
     // gw init keeps this .gitignore and appends the .p4gw mirror container.
     auto wrote = writeFile(fs::path(it.repoDir) / ".gitignore",
-                           "p4gw.cfg\nbin/\nreadme.txt\nnotes.txt\n");
+                           "p4gw.cfg\np4.ini\n.p4config\n"
+                           "bin/\nreadme.txt\nnotes.txt\n");
     if (!wrote) return wrote;
     return {};
 }
