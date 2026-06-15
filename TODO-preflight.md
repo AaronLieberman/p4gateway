@@ -1,9 +1,21 @@
 # TODO: mirror opened-files preflight for `import` and `prepare`
 
-> Status: not started. This is a scoped work item for a follow-up change,
-> tracked separately from the `gw shelf import` feature being developed on
+> Status: implemented (pure logic + wiring + unit tests; an `integtest run`
+> scenario added). Still needs a live Windows P4 run to verify end to end.
+> Tracked separately from the `gw shelf import` feature being developed on
 > `claude/p4-shelves-integration-dnzq38`. **See "Coordination with shelf
 > import" at the bottom — the two changes must be verified together.**
+>
+> What landed:
+> - `p4::openedFilesTagged` / `parseTaggedOpened` parse the structured
+>   `p4 -ztag opened` form; `p4::printHeadToFile` is the shared
+>   `p4 print -q -o <dest> <depotFile>#head` wrapper (the same one
+>   `gw shelf import` needs — keep a single implementation when the branches
+>   merge); `p4::depotRelativePath` / `p4::isAddAction` are pure helpers.
+> - `mirror::planImport` (pure, unit-tested) rewrites the sync actions so
+>   opened files are read from the depot head and add-like files are omitted.
+> - `gw import` applies that plan; `gw prepare` refuses when files are already
+>   open under `depot_path`.
 
 ## Problem
 

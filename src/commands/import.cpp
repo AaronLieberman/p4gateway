@@ -124,8 +124,43 @@ int cmdImport(const Args& args) {
     if (!tracked) return fail(tracked.error());
 
     const auto actions = mirror::computeSyncActions(*mirrorFiles, *tracked);
-    auto applied = mirror::applySyncActions(actions, mirrorDir, root);
+
+    // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
+    // have an un-submitted working copy. The baseline must stay pristine
+    // submitted depot state, so for those files read the depot head instead of
+    // copying the mirror, and omit add-only files (no depot revision exists).
+    auto opened = p4::openedFilesTagged(*config);
+    if (!opened) return fail(opened.error());
+    std::vector<mirror::OpenedMirrorFile> openedMirror;
+    for (const auto& o : *opened) {
+        std::string rel = p4::depotRelativePath(config->depotPath, o.depotFile);
+        if (rel.empty()) continue;  // outside our subtree; not ours to touch
+        openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
+    }
+    const auto plan = mirror::planImport(actions, openedMirror);
+
+    auto applied = mirror::applySyncActions(plan.actions, mirrorDir, root);
     if (!applied) return fail(applied.error());
+
+    // Restore depot-head content for files open in the mirror.
+    if (!plan.depotReads.empty()) {
+        std::string depotBase = config->depotPath;
+        if (depotBase.ends_with("...")) depotBase.resize(depotBase.size() - 3);
+        for (const auto& rel : plan.depotReads) {
+            const fs::path dest = fs::path(root) / fs::path(rel);
+            std::error_code ec;
+            fs::create_directories(dest.parent_path(), ec);
+            if (ec) {
+                return fail("failed to create directory " +
+                            dest.parent_path().string() + ": " + ec.message());
+            }
+            auto printed =
+                p4::printHeadToFile(*config, depotBase + rel, dest.string());
+            if (!printed) return fail(printed.error());
+            fs::permissions(dest, fs::perms::owner_write,
+                            fs::perm_options::add, ec);
+        }
+    }
 
     auto added = git::addAll(root);
     if (!added) return fail(added.error());
@@ -146,8 +181,9 @@ int cmdImport(const Args& args) {
         auto committed = git::commit(message, root);
         if (!committed) return fail(committed.error());
         std::printf("Committed depot state to '%s' (%zu files, %zu deleted)\n",
-                    baseline.c_str(), actions.copies.size(),
-                    actions.deletes.size());
+                    baseline.c_str(),
+                    plan.actions.copies.size() + plan.depotReads.size(),
+                    plan.actions.deletes.size());
     }
 
     if (originalBranch.empty() || originalBranch == baseline) {

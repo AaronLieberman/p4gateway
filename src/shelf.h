@@ -1,7 +1,6 @@
 #pragma once
 
 #include <expected>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,12 +37,9 @@ bool isBinaryType(const std::string& type);
 // look like "... key value"; a field's value may continue on following
 // untagged lines (the multi-line description). Indexed file fields
 // (depotFile0, action0, ...) are grouped per file.
+//
+// For mapping a shelved depotFile to a repo-relative path, use
+// p4::depotRelativePath (src/p4.h).
 std::expected<ShelfInfo, std::string> parseShelveDescribe(const std::string& out);
-
-// Repo-relative path for a depot file under `depotPath` (the configured
-// "//depot/.../..." scope), or nullopt if the file is outside the subtree.
-// "//depot/game/src/..." + "//depot/game/src/anim/B.cpp" -> "anim/B.cpp".
-std::optional<std::string> depotToRepoRelative(const std::string& depotPath,
-                                               const std::string& depotFile);
 
 }  // namespace p4gw

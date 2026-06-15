@@ -29,6 +29,30 @@ SyncActions computeSyncActions(const std::vector<std::string>& mirrorFiles,
     return actions;
 }
 
+ImportPlan planImport(const SyncActions& base,
+                      const std::vector<OpenedMirrorFile>& opened) {
+    std::unordered_set<std::string> openedAll;
+    std::unordered_set<std::string> depotReads;
+    for (const auto& o : opened) {
+        openedAll.insert(o.path);
+        if (o.hasDepotRev) depotReads.insert(o.path);
+    }
+
+    ImportPlan plan;
+    // Opened files are never copied straight from the mirror.
+    for (const auto& copy : base.copies) {
+        if (!openedAll.contains(copy)) plan.actions.copies.push_back(copy);
+    }
+    // A file open for delete/move-delete still exists in the depot, so it must
+    // not be removed from the baseline; we restore the head revision instead.
+    for (const auto& del : base.deletes) {
+        if (!depotReads.contains(del)) plan.actions.deletes.push_back(del);
+    }
+    plan.depotReads.assign(depotReads.begin(), depotReads.end());
+    std::sort(plan.depotReads.begin(), plan.depotReads.end());
+    return plan;
+}
+
 std::expected<std::vector<std::string>, std::string> listFiles(
     const std::string& dir) {
     std::vector<std::string> files;

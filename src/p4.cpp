@@ -440,6 +440,77 @@ std::expected<std::string, std::string> printDepotFile(
     return run(config, {"print", "-q", "-o", destFile, fileSpec});
 }
 
+std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput) {
+    std::vector<OpenedFile> files;
+    OpenedFile current;
+    bool have = false;
+    auto flush = [&]() {
+        if (have && !current.depotFile.empty()) files.push_back(current);
+        current = OpenedFile{};
+        have = false;
+    };
+    // -ztag records are blank-line separated; a sentinel ends the last one.
+    std::istringstream lines(ztagOutput + "\n\n");
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            flush();
+            continue;
+        }
+        if (line.starts_with("... depotFile ")) {
+            current.depotFile = line.substr(14);
+            have = true;
+        } else if (line.starts_with("... action ")) {
+            current.action = line.substr(11);
+            have = true;
+        }
+    }
+    flush();
+    return files;
+}
+
+std::string depotRelativePath(const std::string& depotPath,
+                              const std::string& depotFile) {
+    const std::string base = stripWildcard(depotPath);  // ends with '/'
+    if (!base.empty() && depotFile.starts_with(base)) {
+        return depotFile.substr(base.size());
+    }
+    return {};
+}
+
+bool isAddAction(const std::string& action) {
+    return action == "add" || action == "move/add" || action == "branch";
+}
+
+std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
+    const Config& config) {
+    std::vector<std::string> args = clientArgs(config);
+    args.insert(args.end(), {"-ztag", "opened", config.depotPath});
+    auto result = p4gw::run("p4", args);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (result->output.find("not opened") != std::string::npos) {
+        return std::vector<OpenedFile>{};
+    }
+    if (result->exitCode != 0) {
+        return std::unexpected(commandLine(args) + " failed:\n" +
+                               result->output);
+    }
+    return parseTaggedOpened(result->output);
+}
+
+std::expected<void, std::string> printHeadToFile(const Config& config,
+                                                 const std::string& depotFile,
+                                                 const std::string& dest) {
+    auto result = printDepotFile(config, depotFile + "#head", dest);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return {};
+}
+
 std::expected<std::string, std::string> whereDepotDir(const Config& config,
                                                       const std::string& localDir) {
     auto result = run(config, {"-ztag", "where", localDir + "/..."});

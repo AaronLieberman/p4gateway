@@ -70,16 +70,3 @@ TEST(shelf_binary_type_detection) {
     CHECK(isBinaryType("ubinary"));
     CHECK(isBinaryType("apple"));
 }
-
-TEST(shelf_depot_to_repo_relative_strips_stem) {
-    auto rel = depotToRepoRelative("//depot/game/src/...",
-                                   "//depot/game/src/anim/Blend.cpp");
-    CHECK(rel.has_value());
-    if (rel) CHECK(*rel == "anim/Blend.cpp");
-}
-
-TEST(shelf_depot_to_repo_relative_rejects_outside_subtree) {
-    auto rel = depotToRepoRelative("//depot/game/src/...",
-                                   "//depot/game/tools/cook.cpp");
-    CHECK(!rel.has_value());
-}

@@ -155,19 +155,20 @@ int shelfImport(const Args& args) {
     int applied = 0;
 
     for (const auto& file : shelf->files) {
-        auto rel = depotToRepoRelative(config->depotPath, file.depotFile);
-        if (!rel) {
+        const std::string rel =
+            p4::depotRelativePath(config->depotPath, file.depotFile);
+        if (rel.empty()) {
             skipped.push_back(file.depotFile);
             continue;
         }
-        const fs::path dest = fs::path(root) / fs::path(*rel);
+        const fs::path dest = fs::path(root) / fs::path(rel);
 
         switch (file.action) {
         case ShelveAction::Delete:
         case ShelveAction::MoveDelete: {
             std::error_code ec;
             fs::remove(dest, ec);
-            std::printf("  delete  %s\n", rel->c_str());
+            std::printf("  delete  %s\n", rel.c_str());
             ++applied;
             break;
         }
@@ -176,7 +177,7 @@ int shelfImport(const Args& args) {
         case ShelveAction::Other: {
             auto wrote = writeShelvedContent(*config, cl, file.depotFile, dest);
             if (!wrote) return fail(wrote.error());
-            std::printf("  add     %s\n", rel->c_str());
+            std::printf("  add     %s\n", rel.c_str());
             ++applied;
             break;
         }
@@ -190,7 +191,7 @@ int shelfImport(const Args& args) {
                 auto wrote =
                     writeShelvedContent(*config, cl, file.depotFile, dest);
                 if (!wrote) return fail(wrote.error());
-                std::printf("  edit    %s%s\n", rel->c_str(),
+                std::printf("  edit    %s%s\n", rel.c_str(),
                             isBinaryType(file.type) ? " (binary, took shelved)"
                                                     : "");
                 ++applied;
@@ -213,10 +214,10 @@ int shelfImport(const Args& args) {
             fs::remove(theirsTmp, ec);
             if (!merged) return fail(merged.error());
             if (*merged) {
-                conflicts.push_back(*rel);
-                std::printf("  edit    %s (CONFLICT)\n", rel->c_str());
+                conflicts.push_back(rel);
+                std::printf("  edit    %s (CONFLICT)\n", rel.c_str());
             } else {
-                std::printf("  edit    %s\n", rel->c_str());
+                std::printf("  edit    %s\n", rel.c_str());
             }
             ++applied;
             break;

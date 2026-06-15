@@ -24,6 +24,28 @@ struct SyncActions {
 SyncActions computeSyncActions(const std::vector<std::string>& mirrorFiles,
                                const std::vector<std::string>& trackedFiles);
 
+// An opened mirror file as `gw import` sees it.
+struct OpenedMirrorFile {
+    std::string path;  // repo-relative, forward slashes
+    bool hasDepotRev;  // true: read the depot head; false (add-like): omit
+};
+
+// Sync actions plus the files `gw import` must fetch from the depot head
+// instead of copying from the mirror.
+struct ImportPlan {
+    SyncActions actions;
+    std::vector<std::string> depotReads;  // repo-relative; from depot head
+};
+
+// Pure: adjusts base sync actions so files already opened in the mirror are
+// not taken from their (possibly un-submitted) working copy:
+//   - hasDepotRev: dropped from copies/deletes and listed in `depotReads`,
+//     so import fetches the head revision from the depot instead.
+//   - !hasDepotRev (add-like): dropped from copies; it has no depot state and
+//     must not appear in the baseline.
+ImportPlan planImport(const SyncActions& base,
+                      const std::vector<OpenedMirrorFile>& opened);
+
 // All regular files under `dir`, relative to it, with forward slashes.
 std::expected<std::vector<std::string>, std::string> listFiles(
     const std::string& dir);

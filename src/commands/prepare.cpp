@@ -153,6 +153,32 @@ int cmdPrepare(const Args& args) {
         description = *messages;
     }
 
+    // Refuse to run if files are already open in the mirror (a previous
+    // prepare's still-pending CL, a stray p4 edit). Opening them again would
+    // silently move them between changelists; the user must resolve the
+    // existing opens first. (A future --update/--abandon flow, PLAN.md M3,
+    // will let the user opt in.)
+    auto opened = p4::openedFilesTagged(*config);
+    if (!opened) {
+        std::fprintf(stderr, "gw prepare: %s\n", opened.error().c_str());
+        return 1;
+    }
+    if (!opened->empty()) {
+        std::fprintf(stderr,
+                     "gw prepare: %zu file(s) are already open in P4 under "
+                     "%s:\n",
+                     opened->size(), config->depotPath.c_str());
+        for (const auto& o : *opened) {
+            std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
+                         o.depotFile.c_str());
+        }
+        std::fprintf(stderr,
+                     "Opening them again would move them between changelists. "
+                     "Submit or revert\nthe existing changelist first (see "
+                     "'gw status'), then rerun 'gw prepare'.\n");
+        return 1;
+    }
+
     auto cl = p4::createChangelist(*config, description);
     if (!cl) {
         std::fprintf(stderr, "gw prepare: %s\n", cl.error().c_str());

@@ -116,9 +116,41 @@ std::expected<std::string, std::string> describeShelved(const Config& config,
 // `p4 print -q -o <destFile> <fileSpec>`: writes the content of a depot file
 // revision to `destFile`, byte-exact (safe for binaries). `fileSpec` carries
 // the revision, e.g. "//depot/foo#5" or the shelved form "//depot/foo@=12345".
+// This is the single primitive both `gw shelf import` and `gw import`'s
+// opened-files preflight (printHeadToFile) use to read depot content.
 std::expected<std::string, std::string> printDepotFile(
     const Config& config, const std::string& fileSpec,
     const std::string& destFile);
+
+// One file from `p4 opened`, parsed from the structured -ztag form.
+struct OpenedFile {
+    std::string depotFile;  // //depot/...
+    std::string action;     // edit, add, delete, move/add, move/delete, ...
+};
+
+// Parses `p4 -ztag opened` output into per-file records (pure; unit-tested).
+std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput);
+
+// Repo-relative path (forward slashes) of `depotFile` within the `depotPath`
+// subtree ("//.../..."), or empty if it is not under it (pure).
+std::string depotRelativePath(const std::string& depotPath,
+                              const std::string& depotFile);
+
+// True for p4 open actions that introduce a file with no head revision at
+// this depot path (add, move/add, branch); `gw import` omits these (pure).
+bool isAddAction(const std::string& action);
+
+// Structured `p4 -ztag opened` scoped to the configured depot path; empty if
+// nothing is open.
+std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
+    const Config& config);
+
+// Writes the head revision of `depotFile` to `dest` (byte-exact, safe for
+// binaries); a thin convenience over printDepotFile for `<depotFile>#head`.
+// `depotFile` must be an explicit path - never an unscoped wildcard.
+std::expected<void, std::string> printHeadToFile(const Config& config,
+                                                 const std::string& depotFile,
+                                                 const std::string& dest);
 
 // ---- workflow wrappers ----
 // Used by `gw integtest` today (and groundwork for a future submit

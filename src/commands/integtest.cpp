@@ -542,6 +542,53 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
     return {};
 }
 
+std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
+    // Simulate a stray / mid-prepare open: open util.cpp in the mirror for
+    // edit and give its working copy un-submitted content. import must ignore
+    // that copy (reading the depot head), and prepare must refuse to run.
+    auto cl = p4::createChangelist(it.p4, "gw integtest: stray open");
+    if (!cl) return std::unexpected(cl.error());
+    const std::string mirrorUtil =
+        (fs::path(it.mirrorDir) / "util.cpp").string();
+    auto opened = trace(it, "p4 edit " + mirrorUtil,
+                        p4::editFiles(it.p4, *cl, {mirrorUtil}));
+    if (!opened) return std::unexpected(opened.error());
+    auto edited = appendFile(mirrorUtil, "// UNSUBMITTED stray edit\n");
+    if (!edited) return edited;
+
+    // prepare would double-open these files, so it must refuse.
+    auto prepare = runGw(it, it.repoDir, {"prepare"});
+    if (prepare) {
+        return std::unexpected("gw prepare should have failed with files open "
+                               "in the mirror, but it succeeded:\n" + *prepare);
+    }
+    if (prepare.error().find("already open") == std::string::npos) {
+        return std::unexpected("gw prepare failed for the wrong reason:\n" +
+                               prepare.error());
+    }
+
+    // import must commit the depot head, not the un-submitted working copy.
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) return std::unexpected(imported.error());
+    auto baselineUtil = git::run({"show", "p4-main:util.cpp"}, it.repoDir);
+    if (!baselineUtil) return std::unexpected(baselineUtil.error());
+    if (baselineUtil->find("UNSUBMITTED stray edit") != std::string::npos) {
+        return std::unexpected("import absorbed an un-submitted mirror edit "
+                               "into p4-main:\n" + *baselineUtil);
+    }
+
+    // Clean up: revert the open, drop the empty CL, restore the mirror.
+    auto reverted = trace(it, "p4 revert " + it.p4.depotPath,
+                          p4::revert(it.p4, it.p4.depotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto deleted = p4::deleteChangelist(it.p4, *cl);
+    if (!deleted) return std::unexpected(deleted.error());
+    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
+                        p4::sync(it.p4, it.p4.depotPath));
+    if (!synced) return std::unexpected(synced.error());
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -668,6 +715,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itSubmitAndAbsorb(it); });
         steps.emplace_back("teammate change absorbed with import --rebase",
                            [&] { return itTeammateChange(it); });
+        steps.emplace_back("opened mirror files: import reads depot, prepare "
+                           "refuses",
+                           [&] { return itOpenedFilesPreflight(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
     }

@@ -7,14 +7,6 @@ namespace p4gw {
 
 namespace {
 
-// "//depot/x/..." -> "//depot/x/" so prefix comparison works.
-std::string stripWildcard(const std::string& path) {
-    if (path.ends_with("...")) {
-        return path.substr(0, path.size() - 3);
-    }
-    return path;
-}
-
 // Splits "depotFile0" into ("depotFile", 0). Returns false when the key has
 // no trailing digits (a global field like "change" or "desc").
 bool splitIndexedKey(const std::string& key, std::string& base, int& index) {
@@ -110,15 +102,6 @@ std::expected<ShelfInfo, std::string> parseShelveDescribe(
         }
     }
     return info;
-}
-
-std::optional<std::string> depotToRepoRelative(const std::string& depotPath,
-                                               const std::string& depotFile) {
-    const std::string stem = stripWildcard(depotPath);
-    if (stem.empty() || !depotFile.starts_with(stem)) {
-        return std::nullopt;
-    }
-    return depotFile.substr(stem.size());
 }
 
 }  // namespace p4gw
