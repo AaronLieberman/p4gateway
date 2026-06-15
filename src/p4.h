@@ -185,6 +185,15 @@ std::expected<std::string, std::string> openedInCl(const Config& config,
 std::expected<std::string, std::string> submit(const Config& config,
                                                const std::string& cl);
 
+// `p4 shelve -c <cl>`: shelve the files open in `cl`. Used by the integration
+// tests to build a shelf for `gw shelf import` to read.
+std::expected<std::string, std::string> shelve(const Config& config,
+                                               const std::string& cl);
+
+// `p4 shelve -d -c <cl>`: discard the shelved files from `cl`.
+std::expected<std::string, std::string> deleteShelve(const Config& config,
+                                                     const std::string& cl);
+
 // `p4 change -d <cl>` (empty pending changelists only).
 std::expected<std::string, std::string> deleteChangelist(const Config& config,
                                                          const std::string& cl);

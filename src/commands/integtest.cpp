@@ -589,6 +589,85 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
     return {};
 }
 
+std::expected<void, std::string> itShelfImport(ItContext& it) {
+    // Build a shelved CL on the server (an edit plus an add), then revert the
+    // workspace so the mirror is clean and only the shelf remains. The shelf
+    // is based on the current depot head, which p4-main already tracks, so
+    // `gw shelf import` should reconstruct it as a clean one-commit branch.
+    auto cl = p4::createChangelist(it.p4, "gw integtest: shelved change");
+    if (!cl) return std::unexpected(cl.error());
+
+    const std::string mirrorUtil =
+        (fs::path(it.mirrorDir) / "util.cpp").string();
+    auto opened = trace(it, "p4 edit " + mirrorUtil,
+                        p4::editFiles(it.p4, *cl, {mirrorUtil}));
+    if (!opened) return std::unexpected(opened.error());
+    auto edited = appendFile(mirrorUtil, "// shelf edit\n");
+    if (!edited) return edited;
+
+    const fs::path mirrorNew = fs::path(it.mirrorDir) / "shelfnew.cpp";
+    auto wroteNew = writeFile(
+        mirrorNew, "// shelved new file\nint shelfFn() { return 7; }\n");
+    if (!wroteNew) return wroteNew;
+    auto added = trace(it, "p4 add " + mirrorNew.string(),
+                       p4::addFiles(it.p4, *cl, {mirrorNew.string()}));
+    if (!added) return std::unexpected(added.error());
+
+    auto shelved = trace(it, "p4 shelve -c " + *cl, p4::shelve(it.p4, *cl));
+    if (!shelved) return std::unexpected(shelved.error());
+
+    // Revert the workspace opens so the mirror returns to depot state; the
+    // shelf lives on the server. Reverting an add unopens but leaves the file
+    // on disk, so remove it by hand, then re-sync.
+    auto reverted = trace(it, "p4 revert " + it.p4.depotPath,
+                          p4::revert(it.p4, it.p4.depotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    std::error_code ec;
+    fs::remove(mirrorNew, ec);
+    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
+                        p4::sync(it.p4, it.p4.depotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // Import the shelf: a new branch off p4-main carrying the shelved delta.
+    auto out = runGw(it, it.repoDir, {"shelf", "import", *cl});
+    if (!out) return std::unexpected(out.error());
+
+    const std::string branch = "shelf-" + *cl;
+    auto current = git::currentBranch(it.repoDir);
+    if (!current) return std::unexpected(current.error());
+    if (*current != branch) {
+        return std::unexpected("expected to be on '" + branch +
+                               "' after shelf import, got '" + *current + "'");
+    }
+    auto ahead = git::run({"rev-list", "--count", "p4-main..HEAD"}, it.repoDir);
+    if (!ahead) return std::unexpected(ahead.error());
+    if (*ahead != "1") {
+        return std::unexpected("expected exactly 1 commit on the shelf branch, "
+                               "got " + *ahead);
+    }
+    auto utilContent = readFile(fs::path(it.repoDir) / "util.cpp");
+    if (!utilContent) return std::unexpected(utilContent.error());
+    if (utilContent->find("// shelf edit") == std::string::npos) {
+        return std::unexpected("shelf import did not bring in the edited "
+                               "util.cpp content");
+    }
+    if (!fs::exists(fs::path(it.repoDir) / "shelfnew.cpp")) {
+        return std::unexpected("shelf import did not add shelfnew.cpp");
+    }
+
+    // Clean up: back to p4-main, drop the shelf branch, delete shelf + CL.
+    auto back = git::switchBranch("p4-main", it.repoDir);
+    if (!back) return std::unexpected(back.error());
+    auto dropped = git::run({"branch", "-D", branch}, it.repoDir);
+    if (!dropped) return std::unexpected(dropped.error());
+    auto unshelved = trace(it, "p4 shelve -d -c " + *cl,
+                           p4::deleteShelve(it.p4, *cl));
+    if (!unshelved) return std::unexpected(unshelved.error());
+    auto deletedCl = p4::deleteChangelist(it.p4, *cl);
+    if (!deletedCl) return std::unexpected(deletedCl.error());
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -718,6 +797,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("opened mirror files: import reads depot, prepare "
                            "refuses",
                            [&] { return itOpenedFilesPreflight(it); });
+        steps.emplace_back("gw shelf import reconstructs a shelved CL as a "
+                           "branch",
+                           [&] { return itShelfImport(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
     }

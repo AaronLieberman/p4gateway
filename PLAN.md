@@ -105,9 +105,11 @@ conflict/abort) on Linux.
       leave git markers for the user to resolve and commit. Read-only on P4 —
       never opens a file or touches the mirror, so it's independent of mirror
       sync/opened state. Parsing (`-ztag describe -S`) and depot→repo mapping
-      are pure and unit tested. **Needs real-workspace check**: the `#rev`
-      reported for shelved edits is assumed to be the base revision; verify
-      against live `p4 describe -S`, plus binary and conflict cases.
+      are pure and unit tested. `gw integtest run` covers the happy path
+      (edit + add shelved against head, clean merge), which exercises the
+      `#rev` base-revision assumption on a live server. **Still needs a
+      real-workspace check** for binary files and the conflict (shelf based on
+      an older depot state) path.
 - [ ] `gw shelf list`: pending and shelved CLs for the client, scoped to
       `depot_path`, to pick one for `shelf import` (fold into `gw status`?)
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
