@@ -38,7 +38,7 @@ int cmdImport(const Args& args) {
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw import: no 'mirror_path' in .p4gw - add it (see "
+                     "gw import: no 'mirror_path' in p4gw.cfg - add it (see "
                      "'gw init') so gw knows where p4 syncs to\n");
         return 1;
     }

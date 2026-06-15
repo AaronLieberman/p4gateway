@@ -300,9 +300,9 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
                      {"setup", "--depot-path", it.srcDepotPath,
                       "--mirror-path", "../.p4gw/mirror/src"});
     if (!out) return std::unexpected(out.error());
-    if (!fs::is_regular_file(fs::path(it.repoDir) / ".p4gw")) {
+    if (!fs::is_regular_file(fs::path(it.repoDir) / "p4gw.cfg")) {
         return std::unexpected("gw setup did not write " + it.repoDir +
-                               "/.p4gw");
+                               "/p4gw.cfg");
     }
     return {};
 }
@@ -650,8 +650,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
     } else {
         steps.emplace_back("require the fixture (gw integtest init first)",
                            [&]() -> std::expected<void, std::string> {
-            if (!fs::is_regular_file(fs::path(it.repoDir) / ".p4gw")) {
-                return std::unexpected(it.repoDir + "/.p4gw not found - run "
+            if (!fs::is_regular_file(fs::path(it.repoDir) / "p4gw.cfg")) {
+                return std::unexpected(it.repoDir + "/p4gw.cfg not found - run "
                                        "'gw integtest init' first");
             }
             return {};

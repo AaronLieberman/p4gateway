@@ -19,10 +19,12 @@ const char* kSpec =
     "\t-//depot/game/main/art/... //aaron-dev/art/...\n"
     "\t\"//depot/game/main/My Docs/...\" \"//aaron-dev/My Docs/...\"\n"
     "\t//depot/tools/bin/... //aaron-dev/tools/bin/...\n"
-    "\t//depot/game/main/src/... //aaron-dev/p4gw-mirror/...\n";
+    "\t//depot/game/main/src/... //aaron-dev/src/.p4gw/...\n";
 
 constexpr const char* kDepotPath = "//depot/game/main/src/...";
-constexpr const char* kMirrorPath = "//aaron-dev/p4gw-mirror/...";
+// The recommended mirror `.p4gw` lives inside the repo, so its client path is
+// itself under the repo prefix - the relaxed repo-mapping check must allow it.
+constexpr const char* kMirrorPath = "//aaron-dev/src/.p4gw/...";
 constexpr const char* kRepoPrefix = "//aaron-dev/src/";
 
 }  // namespace
@@ -45,7 +47,7 @@ TEST(view_parses_lines_quotes_and_exclusions) {
         CHECK(view[1].depot == "//depot/game/main/art/...");
         CHECK(view[2].depot == "//depot/game/main/My Docs/...");
         CHECK(view[2].client == "//aaron-dev/My Docs/...");
-        CHECK(view[4].client == "//aaron-dev/p4gw-mirror/...");
+        CHECK(view[4].client == "//aaron-dev/src/.p4gw/...");
     }
 }
 
@@ -78,7 +80,7 @@ TEST(view_check_fails_when_depot_path_unmapped) {
 TEST(view_check_fails_on_late_exclusion) {
     auto view = p4gw::p4::parseClientView(kSpec);
     view.push_back({"//depot/game/main/src/generated/...",
-                    "//aaron-dev/p4gw-mirror/generated/...", true, false});
+                    "//aaron-dev/src/.p4gw/generated/...", true, false});
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     CHECK(!problems.empty());
@@ -109,8 +111,8 @@ TEST(view_check_ignores_unrelated_mappings) {
 
 TEST(client_view_path_inside_root) {
     CHECK(p4gw::p4::clientViewPath("aaron-dev", "/work/game",
-                                   "/work/game/p4gw-mirror", "/...") ==
-          "//aaron-dev/p4gw-mirror/...");
+                                   "/work/game/.p4gw", "/...") ==
+          "//aaron-dev/.p4gw/...");
     CHECK(p4gw::p4::clientViewPath("aaron-dev", "/work/game",
                                    "/work/game/a/b", "/") ==
           "//aaron-dev/a/b/");
@@ -148,6 +150,35 @@ TEST(check_spec_mapping_end_to_end) {
     const auto problems = p4gw::p4::checkSpecMapping(
         broken, "//depot/game/src/...", "/work/game/src", "/work/mirror/src");
     CHECK(!problems.empty());
+}
+
+TEST(check_spec_mapping_allows_mirror_inside_repo) {
+    // The recommended layout: mirror `.p4gw` is a child of the repo, so the
+    // remap line's client path sits under the repo prefix. It must pass.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/game/... //c/game/...\n"
+        "\t//depot/game/src/... //c/game/src/.p4gw/...\n";
+    const auto good = p4gw::p4::checkSpecMapping(
+        spec, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw");
+    for (const auto& problem : good) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(good.empty());
+
+    // A different line mapping into the repo (but not the mirror) still fails.
+    const std::string leaks =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/game/... //c/game/...\n"
+        "\t//depot/game/src/... //c/game/src/.p4gw/...\n"
+        "\t//depot/tools/... //c/game/src/tools/...\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        leaks, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw");
+    CHECK(problems.size() == 1);
 }
 
 TEST(check_spec_mapping_requires_client_and_root) {

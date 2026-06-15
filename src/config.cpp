@@ -57,7 +57,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
 
     if (config.depotPath.empty()) {
         return std::unexpected(path + ": missing required key 'depot_path' - "
-                               "edit .p4gw and set it ('gw setup' writes the "
+                               "edit p4gw.cfg and set it ('gw setup' writes the "
                                "template)");
     }
     return config;
@@ -66,7 +66,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
 std::string findConfigFile(const std::string& startDir) {
     fs::path dir = fs::absolute(startDir);
     while (true) {
-        const fs::path candidate = dir / ".p4gw";
+        const fs::path candidate = dir / "p4gw.cfg";
         std::error_code ec;
         if (fs::is_regular_file(candidate, ec)) {
             return candidate.string();
@@ -82,7 +82,7 @@ std::expected<Config, std::string> findAndLoadConfig(std::string& rootDir) {
     const std::string file = findConfigFile(fs::current_path().string());
     if (file.empty()) {
         return std::unexpected(
-            "no .p4gw config found in this directory or any parent; "
+            "no p4gw.cfg config found in this directory or any parent; "
             "run 'gw setup' first");
     }
     rootDir = fs::path(file).parent_path().string();

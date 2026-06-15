@@ -38,8 +38,8 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 
 | Command | What it does |
 |---|---|
-| `gw setup` | Writes the `.p4gw` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
-| `gw init` | Verifies the client view against `.p4gw` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
+| `gw setup` | Writes the `p4gw.cfg` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
+| `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
 | `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
 | `gw status` | One-screen view of where Git and P4 stand (not implemented yet). |
@@ -71,11 +71,11 @@ cd C:\work\game\src              # the subtree you want to work on in Git
 gw setup --depot-path //depot/game/main/src/... --client aaron-dev
 ```
 
-`setup` writes `.p4gw` (anything not given as a flag is left as a commented
+`setup` writes `p4gw.cfg` (anything not given as a flag is left as a commented
 placeholder to edit) and prints the one manual step: add a line like
 
 ```
-//depot/game/main/src/...   //aaron-dev/p4gw-mirror/...
+//depot/game/main/src/...   //aaron-dev/src/.p4gw/...
 ```
 
 at the **end** of your client view (`p4 client`). Later view lines win, so
@@ -116,7 +116,7 @@ to check.
 
 ## Configuration
 
-`gw setup` writes a `.p4gw` file at the root of the overlay repo
+`gw setup` writes a `p4gw.cfg` file at the root of the overlay repo
 (`key = value`, `#` comments):
 
 ```
@@ -127,7 +127,7 @@ depot_path = //depot/yourgame/src/...
 # Where the client view maps depot_path to — gw's staging area, synced by
 # p4 and never edited by hand. Relative paths are resolved against the
 # directory containing this file.
-mirror_path = ../p4gw-mirror
+mirror_path = .p4gw
 
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
@@ -136,5 +136,6 @@ client = aaron-dev
 baseline_branch = p4-main
 ```
 
-`.p4gw` is personal (it names your client); the starter `.gitignore` keeps
-it out of Git, and gw never opens it (or `.gitignore`) in a changelist.
+`p4gw.cfg` is personal (it names your client); the starter `.gitignore` keeps
+it — and the mirror directory (`.p4gw/`, p4's staging area) — out of Git, and
+gw never opens it (or `.gitignore`) in a changelist.

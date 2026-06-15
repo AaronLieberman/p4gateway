@@ -9,7 +9,7 @@ namespace fs = std::filesystem;
 namespace p4gw::mirror {
 
 bool isGwMetadataPath(const std::string& repoRelativePath) {
-    return repoRelativePath == ".p4gw" || repoRelativePath == ".gitignore";
+    return repoRelativePath == "p4gw.cfg" || repoRelativePath == ".gitignore";
 }
 
 SyncActions computeSyncActions(const std::vector<std::string>& mirrorFiles,

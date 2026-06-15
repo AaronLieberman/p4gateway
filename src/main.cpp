@@ -15,7 +15,7 @@ void printUsage() {
         "usage: gw <command> [options]\n"
         "\n"
         "commands:\n"
-        "  setup    Write the .p4gw config template (offline; edit it, then run init)\n"
+        "  setup    Write the p4gw.cfg config template (offline; edit it, then run init)\n"
         "  init     Verify the client-view mapping and set up the Git repo\n"
         "  import   Commit the synced mirror state to the baseline branch (--rebase)\n"
         "  prepare  Open the current branch's changes in a pending P4 changelist\n"

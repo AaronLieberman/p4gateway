@@ -43,7 +43,7 @@ TEST(ops_treat_copies_as_adds) {
 TEST(ops_skip_gw_metadata_files) {
     auto ops = p4gw::planP4Operations({
         {'A', ".gitignore", ""},
-        {'M', ".p4gw", ""},
+        {'M', "p4gw.cfg", ""},
         {'M', "real/file.cpp", ""},
     });
     CHECK(ops.has_value());

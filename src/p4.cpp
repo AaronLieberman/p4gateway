@@ -185,6 +185,12 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
                                           const std::string& repoClientPrefix) {
     std::vector<std::string> problems;
 
+    // The mirror typically lives inside the repo (the recommended `.p4gw`),
+    // so its client path is itself under the repo prefix. That mapping is the
+    // whole point, so exempt anything under the mirror from the "maps into the
+    // repo" check below while still catching every other line.
+    const std::string mirrorPrefix = stripWildcard(expectedClientPath);
+
     // Later view lines win per depot file, so only the last line overlapping
     // the depot path determines where it lands.
     const ViewLine* effective = nullptr;
@@ -192,8 +198,10 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
         if (pathsOverlap(line.depot, depotPath)) {
             effective = &line;
         }
+        const std::string clientBase = stripWildcard(line.client);
         if (!repoClientPrefix.empty() && !line.exclude &&
-            stripWildcard(line.client).starts_with(repoClientPrefix)) {
+            clientBase.starts_with(repoClientPrefix) &&
+            !(!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix))) {
             problems.push_back("view line '" + line.depot + " " + line.client +
                                "' maps depot files into the Git repo directory; "
                                "P4 must never write there");

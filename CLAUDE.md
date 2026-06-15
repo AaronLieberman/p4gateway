@@ -3,7 +3,7 @@
 The repo and project are named **p4gateway**; the command-line binary it
 builds is **`gw`** (short, easy to type). The internal C++ namespace and
 static library keep the `p4gw` prefix (`p4gw::`, `p4gw_core`), as does the
-`.p4gw` config file — only the user-facing executable is `gw`.
+`p4gw.cfg` config file — only the user-facing executable is `gw`.
 
 A Windows command-line tool, written in C++23, that lets a developer work in
 Git locally and ship Perforce changelists. The architecture is the **mirror
@@ -14,7 +14,7 @@ baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
 a pending CL that the user submits from P4V — gw itself never submits.
-Getting started is split in two: `gw setup` writes the `.p4gw` template
+Getting started is split in two: `gw setup` writes the `p4gw.cfg` template
 offline; `gw init` verifies the client view against it via p4 (hard failure
 on a wrong mapping) and creates the Git repo.
 **There is no history import and no bidirectional bridge** — P4 only ever
@@ -49,7 +49,7 @@ src/git.{h,cpp}     thin typed wrappers over the git CLI
 src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks
 src/p4ops.{h,cpp}   pure mapping: git diff -> ordered p4 operations (prepare)
 src/mirror.{h,cpp}  mirror <-> working tree sync actions (import)
-src/config.{h,cpp}  .p4gw config file (key = value), found by walking parents
+src/config.{h,cpp}  p4gw.cfg config file (key = value), found by walking parents
 tests/              zero-dependency harness (test_framework.h), one file per unit
 ```
 

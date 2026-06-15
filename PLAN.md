@@ -12,7 +12,7 @@ elsewhere in the workspace (view lines are ordered and later-wins per depot
 file, so one added line is enough):
 
 ```
-//depot/yourgame/src/...   //client/p4gw-mirror/...
+//depot/yourgame/src/...   //client/src/.p4gw/...
 ```
 
 Every sync — `p4 sync`, P4V, the studio's own sync tool, at any time, in any
@@ -39,7 +39,7 @@ worst external failure (the remap line vanishing from the client spec) is a
 - [x] CMake project, C++23, no external dependencies, builds with MSVC and GCC
 - [x] CLI entry point with command dispatch, `--help`, `--version`
 - [x] `process` subprocess runner (popen-based first cut)
-- [x] `.p4gw` config: parser, parent-directory search, unit tests
+- [x] `p4gw.cfg` config: parser, parent-directory search, unit tests
 - [x] Thin `git` wrappers: current branch, rev-parse, dirty check,
       `diff --name-status` parsing (with renames), commit-message collection
 - [x] Zero-dependency test harness + ctest wiring
@@ -47,13 +47,13 @@ worst external failure (the remap line vanishing from the client spec) is a
 
 ## M1 — Mirror architecture: `import` and `prepare` ✅
 
-- [x] `.p4gw` gains `mirror_path` (resolved against the config's directory)
+- [x] `p4gw.cfg` gains `mirror_path` (resolved against the config's directory)
 - [x] Process runner: stdin/stdout file redirection (for `p4 change -i` and
       binary-safe blob writes via `git cat-file blob`)
-- [x] `gw setup`: write the `.p4gw` template (placeholders + comments for
+- [x] `gw setup`: write the `p4gw.cfg` template (placeholders + comments for
       anything not given as a flag; `--force` overwrites) — offline, no p4
       or git calls
-- [x] `gw init`: require `.p4gw` (point at `gw setup` if missing), verify
+- [x] `gw init`: require `p4gw.cfg` (point at `gw setup` if missing), verify
       the client view via p4 — hard failure on a wrong mapping or dead
       connection — then git init if needed (`--force-git-init` starts the
       repo over) + starter `.gitignore`; never edits the client spec
@@ -104,12 +104,12 @@ conflict/abort) on Linux.
 ## M4 — Hardening (as needed, driven by real use)
 
 - [ ] Binary/large file types: verify `p4 add` picks the correct filetype;
-      overrides in `.p4gw` if needed
+      overrides in `p4gw.cfg` if needed
 - [ ] Exclusive-lock filetypes (`+l`): clear error when a teammate holds the
       lock
 - [ ] Rename chains (rename onto a freed path, rename + re-add of source):
       detect and fall back to delete+add with a note
-- [ ] Multiple overlay roots in one client (second `.p4gw` elsewhere)
+- [ ] Multiple overlay roots in one client (second `p4gw.cfg` elsewhere)
 - [ ] `import` performance on big subtrees (skip copies by size/mtime
       instead of copying everything)
 - [ ] CI on GitHub Actions: Linux + Windows build & unit tests

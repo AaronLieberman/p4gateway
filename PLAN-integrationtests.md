@@ -44,7 +44,7 @@ state and (via reconcile) the depot fixture.
 2. Revert any files opened under the test depot path; sync `p4gw-test` to
    head.
 3. Delete all files currently present locally under `p4gw-test` (including a
-   previous run's `src/.git` and `src/.p4gw`; the `p4.ini` survives).
+   previous run's `src/.git` and `src/p4gw.cfg`; the `p4.ini` survives).
 4. Create the fixture files: a few directly under `p4gw-test`, a few under
    `bin/`, and the `src/` set **physically inside `.p4gw/mirror/src/`** —
    with the remap active, files placed at `p4gw-test/src/` would be unmapped

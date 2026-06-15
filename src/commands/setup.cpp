@@ -9,13 +9,13 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
-// The offline half of getting started: writes the .p4gw config template in
+// The offline half of getting started: writes the p4gw.cfg config template in
 // the current directory, with placeholders and comments for everything the
 // user still has to fill in. Makes no p4 or git calls. 'gw init' then
 // verifies the client mapping against this file and sets up the Git repo.
 int cmdSetup(const Args& args) {
     std::string depotPath;
-    std::string mirrorPath = "../p4gw-mirror";
+    std::string mirrorPath = ".p4gw";
     std::string client;
     bool force = false;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -43,19 +43,19 @@ int cmdSetup(const Args& args) {
     }
 
     const fs::path cwd = fs::current_path();
-    const fs::path target = cwd / ".p4gw";
+    const fs::path target = cwd / "p4gw.cfg";
     const std::string existing = findConfigFile(cwd.string());
     if (!existing.empty()) {
         if (fs::path(existing).parent_path() != cwd) {
             std::fprintf(stderr,
-                         "gw setup: a .p4gw already exists at %s - nested "
+                         "gw setup: a p4gw.cfg already exists at %s - nested "
                          "overlays are not supported; run setup at that root "
                          "or remove it first\n", existing.c_str());
             return 1;
         }
         if (!force) {
             std::fprintf(stderr,
-                         "gw setup: .p4gw already exists here - edit it "
+                         "gw setup: p4gw.cfg already exists here - edit it "
                          "directly, or rerun with --force to overwrite it\n");
             return 1;
         }
@@ -99,7 +99,7 @@ int cmdSetup(const Args& args) {
     int step = 1;
     std::printf("\nNext steps:\n");
     if (depotPath.empty()) {
-        std::printf("%d. Edit .p4gw and fill in depot_path.\n", step++);
+        std::printf("%d. Edit p4gw.cfg and fill in depot_path.\n", step++);
     }
     std::printf(
         "%d. Add this line at the END of your client view (p4 client):\n"

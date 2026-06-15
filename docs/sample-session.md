@@ -4,8 +4,9 @@ A walkthrough of a typical couple of days using `gw`, as terminal
 transcripts. The shape of the output matches the implemented commands
 (`status` is still aspirational; see [PLAN.md](../PLAN.md)); the commit
 contents are deliberately trivial. `C:\work\game\src>` is the source subtree
-inside a much larger P4 workspace, and `C:\work\game\p4gw-mirror` is the
-mirror directory the client view routes that subtree into.
+inside a much larger P4 workspace, and `C:\work\game\src\.p4gw` is the
+mirror directory (a gitignored subdirectory of the repo) the client view
+routes that subtree into.
 
 ## One-time setup
 
@@ -14,19 +15,19 @@ then `gw init` verifies your client view actually matches it.
 
 ```
 C:\work\game\src> gw setup --depot-path //depot/game/main/src/... --client aaron-dev
-Wrote C:\work\game\src\.p4gw
+Wrote C:\work\game\src\p4gw.cfg
 
 Next steps:
 1. Add this line at the END of your client view (p4 client):
 
-     //depot/game/main/src/... //aaron-dev/<workspace-relative path of ../p4gw-mirror>/...
+     //depot/game/main/src/... //aaron-dev/<workspace-relative path of .p4gw>/...
 
    so the depot subtree syncs into the mirror instead of this
    directory. Later view lines win, so keep it last.
 2. Run 'gw init' to verify the mapping and set up the Git repo.
 ```
 
-You add `//depot/game/main/src/... //aaron-dev/p4gw-mirror/...` to the view
+You add `//depot/game/main/src/... //aaron-dev/src/.p4gw/...` to the view
 and run init, which checks it against the live spec before touching anything:
 
 ```
@@ -34,7 +35,7 @@ C:\work\game\src> gw init
 ok    client view maps //depot/game/main/src/... into the mirror
 Initialized empty Git repository in C:\work\game\src
 Wrote starter .gitignore
-Mirror directory C:\work\game\p4gw-mirror does not exist yet — it appears on the first sync.
+Mirror directory C:\work\game\src\.p4gw does not exist yet — it appears on the first sync.
 
 All set. Sync (any tool you like), then run 'gw import' to build the 'p4-main' baseline.
 ```
@@ -152,12 +153,12 @@ of spelunking, you run:
 C:\work\game\src> gw doctor
 ok    git found: git version 2.45.1
 ok    p4 found
-ok    .p4gw found at C:\work\game\src (depot_path //depot/game/main/src/...)
-ok    mirror directory exists: C:\work\game\p4gw-mirror
+ok    p4gw.cfg found at C:\work\game\src (depot_path //depot/game/main/src/...)
+ok    mirror directory exists: C:\work\game\src\.p4gw
 ok    p4 connection works
 FAIL  the effective mapping for //depot/game/main/src/... is
       '//depot/game/main/... //aaron-dev/...'; expected
-      '//depot/game/main/src/... //aaron-dev/p4gw-mirror/...'
+      '//depot/game/main/src/... //aaron-dev/src/.p4gw/...'
       (add it as the LAST view line — later lines win)
 ok    LineEnd 'unix' and core.autocrlf=false agree
 ok    no files opened under //depot/game/main/src/...

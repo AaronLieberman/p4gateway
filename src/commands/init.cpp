@@ -12,7 +12,7 @@ namespace fs = std::filesystem;
 namespace p4gw {
 
 // The verifying half of getting started ('gw setup' writes the config):
-//   1. Load .p4gw (error pointing at 'gw setup' if absent or unfilled).
+//   1. Load p4gw.cfg (error pointing at 'gw setup' if absent or unfilled).
 //   2. Ask p4 for the client spec and verify the view maps depot_path into
 //      the mirror and nothing into this repo - fail loudly if not.
 //   3. git init if needed (--force-git-init starts the repo over), write
@@ -42,14 +42,14 @@ int cmdInit(const Args& args) {
         std::fprintf(stderr,
                      "gw init: depot_path must end with '/...' (got '%s') - "
                      "edit %s\n", config->depotPath.c_str(),
-                     (fs::path(root) / ".p4gw").string().c_str());
+                     (fs::path(root) / "p4gw.cfg").string().c_str());
         return 1;
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw init: no 'mirror_path' in .p4gw - edit %s "
+                     "gw init: no 'mirror_path' in p4gw.cfg - edit %s "
                      "('gw setup' writes the template)\n",
-                     (fs::path(root) / ".p4gw").string().c_str());
+                     (fs::path(root) / "p4gw.cfg").string().c_str());
         return 1;
     }
     const std::string mirrorDir = resolveMirrorPath(*config, root);
@@ -116,12 +116,15 @@ int cmdInit(const Args& args) {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
             file << "# gw's local config - personal, never goes to Git or P4\n"
-                    ".p4gw\n";
+                    "p4gw.cfg\n"
+                    "\n"
+                    "# gw's mirror - p4's staging area, never goes to Git\n"
+                    ".p4gw/\n";
         }
         std::printf("Wrote starter .gitignore\n");
     } else {
         std::printf("Keeping the existing .gitignore - make sure it ignores "
-                    ".p4gw\n");
+                    "p4gw.cfg and the mirror directory (.p4gw/)\n");
     }
     // In a brand-new (or --force-git-init) repo, commit the .gitignore so
     // the first 'gw import' starts from a clean tree.

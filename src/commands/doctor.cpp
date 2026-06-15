@@ -44,7 +44,7 @@ int cmdDoctor(const Args& args) {
     std::string root;
     auto config = findAndLoadConfig(root);
     if (!config) {
-        std::printf("note  no .p4gw config found - run 'gw init' to set up "
+        std::printf("note  no p4gw.cfg config found - run 'gw init' to set up "
                     "an overlay; skipping the workspace checks\n");
         if (failures == 0) {
             std::printf("\nAll checks passed.\n");
@@ -53,12 +53,12 @@ int cmdDoctor(const Args& args) {
         }
         return failures == 0 ? 0 : 1;
     }
-    std::printf("ok    .p4gw found at %s (depot_path %s)\n", root.c_str(),
+    std::printf("ok    p4gw.cfg found at %s (depot_path %s)\n", root.c_str(),
                 config->depotPath.c_str());
 
     std::string mirrorDir;
     if (config->mirrorPath.empty()) {
-        std::printf("FAIL  .p4gw has no 'mirror_path' - the mirror workflow "
+        std::printf("FAIL  p4gw.cfg has no 'mirror_path' - the mirror workflow "
                     "needs one (see 'gw init')\n");
         ++failures;
     } else {

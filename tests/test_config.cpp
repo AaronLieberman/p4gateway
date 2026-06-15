@@ -27,24 +27,31 @@ TEST(config_parses_all_keys) {
     auto config = loadFromString(
         "# overlay for the engine source tree\n"
         "depot_path = //depot/yourgame/src/...\n"
-        "mirror_path = ../p4gw-mirror\n"
+        "mirror_path = .p4gw\n"
         "client = aaron-dev\n"
         "baseline_branch = p4-base\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->depotPath == "//depot/yourgame/src/...");
-        CHECK(config->mirrorPath == "../p4gw-mirror");
+        CHECK(config->mirrorPath == ".p4gw");
         CHECK(config->client == "aaron-dev");
         CHECK(config->baselineBranch == "p4-base");
     }
 }
 
 TEST(config_resolves_relative_mirror_path) {
+    // The recommended `.p4gw` mirror lives inside the repo, resolved against
+    // the directory holding the config.
     p4gw::Config config;
-    config.mirrorPath = "../p4gw-mirror";
-    const fs::path resolved =
-        p4gw::resolveMirrorPath(config, (fs::path("work") / "game" / "src").string());
-    CHECK(resolved == fs::path("work") / "game" / "p4gw-mirror");
+    config.mirrorPath = ".p4gw";
+    const fs::path root = fs::path("work") / "game" / "src";
+    const fs::path resolved = p4gw::resolveMirrorPath(config, root.string());
+    CHECK(resolved == root / ".p4gw");
+
+    // A parent-relative mirror still normalizes correctly.
+    config.mirrorPath = "../sibling-mirror";
+    CHECK(fs::path(p4gw::resolveMirrorPath(config, root.string())) ==
+          fs::path("work") / "game" / "sibling-mirror");
 }
 
 TEST(config_keeps_absolute_mirror_path) {

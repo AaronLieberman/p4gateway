@@ -75,7 +75,7 @@ int cmdPrepare(const Args& args) {
     }
     if (config->mirrorPath.empty()) {
         std::fprintf(stderr,
-                     "gw prepare: no 'mirror_path' in .p4gw - add it (see "
+                     "gw prepare: no 'mirror_path' in p4gw.cfg - add it (see "
                      "'gw init')\n");
         return 1;
     }
