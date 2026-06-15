@@ -615,7 +615,14 @@ std::expected<std::string, std::string> reconcileToCl(const Config& config,
 std::expected<std::string, std::string> openedInCl(const Config& config,
                                                    const std::string& cl) {
     auto result = run(config, {"opened", "-c", cl});
-    if (!result && result.error().find("not opened") != std::string::npos) {
+    // p4 reports "not opened" in various forms, sometimes via exit 0 (stdout)
+    // and sometimes via exit non-zero (stderr/error).
+    auto contains = [](const std::string& s, const char* sub) {
+        return s.find(sub) != std::string::npos;
+    };
+    if (result && contains(*result, "not opened anywhere")) return std::string{};
+    if (!result && (contains(result.error(), "not opened") ||
+                    contains(result.error(), "no file(s) opened"))) {
         return std::string{};
     }
     return result;
