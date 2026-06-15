@@ -11,7 +11,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
-    add_compile_options(/W4 /permissive- /utf-8)
+    # /MP compiles the TUs in each target in parallel; without it cl.exe
+    # builds a target's files one at a time on a single core.
+    add_compile_options(/W4 /permissive- /utf-8 /MP)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -35,6 +37,19 @@ add_library(p4gw_core STATIC
     src/commands/integtest.cpp
 )
 target_include_directories(p4gw_core PUBLIC src)
+
+# Precompile the heavy, stable standard headers shared across the library's
+# TUs. <filesystem>/<expected> dominate parse time and appear in most files.
+# Only STL headers belong here - our own headers change too often to cache.
+target_precompile_headers(p4gw_core PRIVATE
+    <filesystem>
+    <string>
+    <vector>
+    <expected>
+    <sstream>
+    <optional>
+    <cstdio>
+)
 
 add_executable(gw src/main.cpp)
 target_link_libraries(gw PRIVATE p4gw_core)
