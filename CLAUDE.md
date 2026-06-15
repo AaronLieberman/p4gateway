@@ -78,6 +78,10 @@ wrapper function, not an inline `run("p4", ...)` call.
   absorb mirror state while it could be mid-sync without flagging it.
 - Destructive operations (anything that reverts, deletes, or overwrites user
   work in Git or P4) must be opt-in via an explicit flag, never the default.
+- Git history: keep it linear — prefer rebasing onto the target branch and
+  fast-forward merges over merge commits. When integrating a branch, rebase
+  it on the latest target and `git merge --ff-only` (or fast-forward the
+  target to it); don't create merge commits.
 
 ## Testing
 
