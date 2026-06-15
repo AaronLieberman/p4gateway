@@ -36,20 +36,16 @@ int cmdImport(const Args& args) {
         std::fprintf(stderr, "gw import: %s\n", config.error().c_str());
         return 1;
     }
-    if (config->mirrorPath.empty()) {
-        std::fprintf(stderr,
-                     "gw import: no 'mirror_path' in p4gw.cfg - add it (see "
-                     "'gw init') so gw knows where p4 syncs to\n");
-        return 1;
-    }
-    const std::string mirrorDir = resolveMirrorPath(*config, root);
-    if (!fs::exists(mirrorDir)) {
-        std::fprintf(stderr,
-                     "gw import: mirror directory %s does not exist.\n"
-                     "Check the client view mapping ('gw doctor') and sync "
-                     "before importing.\n",
-                     mirrorDir.c_str());
-        return 1;
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir = resolveMirrorPath(mapping.mirrorPath, root);
+        if (!fs::exists(mirrorDir)) {
+            std::fprintf(stderr,
+                         "gw import: mirror directory %s does not exist.\n"
+                         "Check the client view mapping ('gw doctor') and sync "
+                         "before importing.\n",
+                         mirrorDir.c_str());
+            return 1;
+        }
     }
 
     auto dirty = git::isDirty(root);
@@ -118,12 +114,8 @@ int cmdImport(const Args& args) {
         return 1;
     };
 
-    auto mirrorFiles = mirror::listFiles(mirrorDir);
-    if (!mirrorFiles) return fail(mirrorFiles.error());
     auto tracked = git::lsFiles(root);
     if (!tracked) return fail(tracked.error());
-
-    const auto actions = mirror::computeSyncActions(*mirrorFiles, *tracked);
 
     // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
     // have an un-submitted working copy. The baseline must stay pristine
@@ -131,35 +123,77 @@ int cmdImport(const Args& args) {
     // copying the mirror, and omit add-only files (no depot revision exists).
     auto opened = p4::openedFilesTagged(*config);
     if (!opened) return fail(opened.error());
-    std::vector<mirror::OpenedMirrorFile> openedMirror;
-    for (const auto& o : *opened) {
-        std::string rel = p4::depotRelativePath(config->depotPath, o.depotFile);
-        if (rel.empty()) continue;  // outside our subtree; not ours to touch
-        openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
-    }
-    const auto plan = mirror::planImport(actions, openedMirror);
 
-    auto applied = mirror::applySyncActions(plan.actions, mirrorDir, root);
-    if (!applied) return fail(applied.error());
+    // Each mapping is its own depot subtree, synced into its own mirror and
+    // living under its own working-tree directory; import them independently
+    // and tally for the summary.
+    size_t copiedFiles = 0;
+    size_t deletedFiles = 0;
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir =
+            resolveMirrorPath(mapping.mirrorPath, root);
+        const std::string subtreePrefix =
+            mapping.repoSubtree.empty() ? std::string{}
+                                        : mapping.repoSubtree + "/";
+        const std::string worktreeDir =
+            mapping.repoSubtree.empty()
+                ? root
+                : (fs::path(root) / mapping.repoSubtree).string();
 
-    // Restore depot-head content for files open in the mirror.
-    if (!plan.depotReads.empty()) {
-        std::string depotBase = config->depotPath;
-        if (depotBase.ends_with("...")) depotBase.resize(depotBase.size() - 3);
-        for (const auto& rel : plan.depotReads) {
-            const fs::path dest = fs::path(root) / fs::path(rel);
-            std::error_code ec;
-            fs::create_directories(dest.parent_path(), ec);
-            if (ec) {
-                return fail("failed to create directory " +
-                            dest.parent_path().string() + ": " + ec.message());
+        auto mirrorFiles = mirror::listFiles(mirrorDir);
+        if (!mirrorFiles) return fail(mirrorFiles.error());
+
+        // Tracked files under this subtree, made mirror-relative so they line
+        // up with the mirror's own (subtree-rooted) listing.
+        std::vector<std::string> trackedHere;
+        for (const auto& path : *tracked) {
+            if (subtreePrefix.empty()) {
+                trackedHere.push_back(path);
+            } else if (path.starts_with(subtreePrefix)) {
+                trackedHere.push_back(path.substr(subtreePrefix.size()));
             }
-            auto printed =
-                p4::printHeadToFile(*config, depotBase + rel, dest.string());
-            if (!printed) return fail(printed.error());
-            fs::permissions(dest, fs::perms::owner_write,
-                            fs::perm_options::add, ec);
         }
+
+        const auto actions =
+            mirror::computeSyncActions(*mirrorFiles, trackedHere);
+
+        std::vector<mirror::OpenedMirrorFile> openedMirror;
+        for (const auto& o : *opened) {
+            std::string rel =
+                p4::depotRelativePath(mapping.depotPath, o.depotFile);
+            if (rel.empty()) continue;  // belongs to a different mapping
+            openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
+        }
+        const auto plan = mirror::planImport(actions, openedMirror);
+
+        auto applied =
+            mirror::applySyncActions(plan.actions, mirrorDir, worktreeDir);
+        if (!applied) return fail(applied.error());
+
+        // Restore depot-head content for files open in the mirror.
+        if (!plan.depotReads.empty()) {
+            std::string depotBase = mapping.depotPath;
+            if (depotBase.ends_with("...")) {
+                depotBase.resize(depotBase.size() - 3);
+            }
+            for (const auto& rel : plan.depotReads) {
+                const fs::path dest = fs::path(worktreeDir) / fs::path(rel);
+                std::error_code ec;
+                fs::create_directories(dest.parent_path(), ec);
+                if (ec) {
+                    return fail("failed to create directory " +
+                                dest.parent_path().string() + ": " +
+                                ec.message());
+                }
+                auto printed =
+                    p4::printHeadToFile(*config, depotBase + rel, dest.string());
+                if (!printed) return fail(printed.error());
+                fs::permissions(dest, fs::perms::owner_write,
+                                fs::perm_options::add, ec);
+            }
+        }
+        copiedFiles += plan.actions.copies.size() + plan.depotReads.size();
+        deletedFiles += plan.actions.deletes.size();
     }
 
     auto added = git::addAll(root);
@@ -181,9 +215,7 @@ int cmdImport(const Args& args) {
         auto committed = git::commit(message, root);
         if (!committed) return fail(committed.error());
         std::printf("Committed depot state to '%s' (%zu files, %zu deleted)\n",
-                    baseline.c_str(),
-                    plan.actions.copies.size() + plan.depotReads.size(),
-                    plan.actions.deletes.size());
+                    baseline.c_str(), copiedFiles, deletedFiles);
     }
 
     if (originalBranch.empty() || originalBranch == baseline) {

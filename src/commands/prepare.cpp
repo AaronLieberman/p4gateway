@@ -16,27 +16,64 @@ namespace p4gw {
 
 namespace {
 
-// Repo-relative path -> local path inside the mirror, for p4 commands.
-std::string mirrorFilePath(const std::string& mirrorDir, const std::string& rel) {
-    return (fs::path(mirrorDir) / fs::path(rel)).make_preferred().string();
+// A mapping with its mirror directory resolved to an absolute path.
+struct ResolvedMapping {
+    const Mapping* mapping;
+    std::string mirrorDir;
+};
+
+// The mapping that owns a repo-relative path: the one whose repoSubtree is the
+// longest matching prefix (an empty subtree, i.e. the whole repo, is the
+// catch-all). Returns nullptr for paths under no mapping (pure Git files like
+// bin/ or content/).
+const ResolvedMapping* routeFor(const std::vector<ResolvedMapping>& resolved,
+                                const std::string& repoRel) {
+    const ResolvedMapping* best = nullptr;
+    size_t bestLen = 0;
+    for (const auto& r : resolved) {
+        const std::string& sub = r.mapping->repoSubtree;
+        const bool matches =
+            sub.empty() || repoRel.starts_with(sub + "/");
+        if (!matches) continue;
+        // Prefer the most specific subtree; an empty subtree wins only when
+        // nothing more specific matches.
+        const size_t len = sub.empty() ? 0 : sub.size() + 1;
+        if (best == nullptr || len > bestLen) {
+            best = &r;
+            bestLen = len;
+        }
+    }
+    return best;
 }
 
-// Stages the content of `HEAD:path` into the mirror (creating directories,
-// clearing a read-only bit left by p4).
+// Local path of a repo-relative file inside its mapping's mirror, for p4
+// commands: the path with the mapping's subtree prefix stripped, rooted at the
+// mirror directory.
+std::string mirrorFilePath(const ResolvedMapping& route,
+                           const std::string& repoRel) {
+    const std::string& sub = route.mapping->repoSubtree;
+    const std::string within =
+        sub.empty() ? repoRel : repoRel.substr(sub.size() + 1);
+    return (fs::path(route.mirrorDir) / fs::path(within)).make_preferred()
+        .string();
+}
+
+// Stages the content of `HEAD:repoRel` into the mirror file at `dest`
+// (creating directories, clearing a read-only bit left by p4).
 std::expected<std::string, std::string> stageBlob(const std::string& root,
-                                                  const std::string& mirrorDir,
-                                                  const std::string& path) {
-    const fs::path dest = fs::path(mirrorDir) / fs::path(path);
+                                                  const std::string& repoRel,
+                                                  const std::string& dest) {
     std::error_code ec;
-    fs::create_directories(dest.parent_path(), ec);
+    fs::create_directories(fs::path(dest).parent_path(), ec);
     if (ec) {
         return std::unexpected("failed to create directory " +
-                               dest.parent_path().string() + ": " + ec.message());
+                               fs::path(dest).parent_path().string() + ": " +
+                               ec.message());
     }
     if (fs::exists(dest, ec)) {
         fs::permissions(dest, fs::perms::owner_write, fs::perm_options::add, ec);
     }
-    return git::catBlobToFile("HEAD", path, dest.string(), root);
+    return git::catBlobToFile("HEAD", repoRel, dest, root);
 }
 
 }  // namespace
@@ -73,19 +110,17 @@ int cmdPrepare(const Args& args) {
         std::fprintf(stderr, "gw prepare: %s\n", config.error().c_str());
         return 1;
     }
-    if (config->mirrorPath.empty()) {
-        std::fprintf(stderr,
-                     "gw prepare: no 'mirror_path' in p4gw.cfg - add it (see "
-                     "'gw init')\n");
-        return 1;
-    }
-    const std::string mirrorDir = resolveMirrorPath(*config, root);
-    if (!fs::exists(mirrorDir)) {
-        std::fprintf(stderr,
-                     "gw prepare: mirror directory %s does not exist - check "
-                     "the client view mapping ('gw doctor')\n",
-                     mirrorDir.c_str());
-        return 1;
+    std::vector<ResolvedMapping> resolved;
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir = resolveMirrorPath(mapping.mirrorPath, root);
+        if (!fs::exists(mirrorDir)) {
+            std::fprintf(stderr,
+                         "gw prepare: mirror directory %s does not exist - "
+                         "check the client view mapping ('gw doctor')\n",
+                         mirrorDir.c_str());
+            return 1;
+        }
+        resolved.push_back({&mapping, mirrorDir});
     }
 
     const std::string& baseline = config->baselineBranch;
@@ -143,6 +178,70 @@ int cmdPrepare(const Args& args) {
         return 0;
     }
 
+    // Route each op to the mapping that owns its path. Changes outside every
+    // mapping (pure-Git directories like bin/ or content/) are not shipped to
+    // P4; collect them for an informational note. A rename across mapping
+    // boundaries can't be a single `p4 move`, so it degrades to delete + add.
+    struct Staged {
+        std::string repoRel;     // HEAD:repoRel is the source content
+        std::string mirrorPath;  // local mirror file to stage/open
+    };
+    struct MoveOp {
+        std::string fromMirror;
+        std::string toMirror;
+        std::string repoTo;      // HEAD:repoTo content for the destination
+    };
+    std::vector<Staged> edits;
+    std::vector<Staged> adds;
+    std::vector<std::string> deletes;  // local mirror paths (p4 clears them)
+    std::vector<MoveOp> moves;
+    std::vector<std::string> unmapped;
+
+    for (const auto& op : *ops) {
+        switch (op.kind) {
+        case P4Op::Kind::Edit: {
+            const auto* route = routeFor(resolved, op.path);
+            if (route) edits.push_back({op.path, mirrorFilePath(*route, op.path)});
+            else unmapped.push_back(op.path);
+            break;
+        }
+        case P4Op::Kind::Add: {
+            const auto* route = routeFor(resolved, op.path);
+            if (route) adds.push_back({op.path, mirrorFilePath(*route, op.path)});
+            else unmapped.push_back(op.path);
+            break;
+        }
+        case P4Op::Kind::Delete: {
+            const auto* route = routeFor(resolved, op.path);
+            if (route) deletes.push_back(mirrorFilePath(*route, op.path));
+            else unmapped.push_back(op.path);
+            break;
+        }
+        case P4Op::Kind::Move: {
+            const auto* from = routeFor(resolved, op.path);
+            const auto* to = routeFor(resolved, op.newPath);
+            if (from && to && from->mapping == to->mapping) {
+                moves.push_back({mirrorFilePath(*from, op.path),
+                                 mirrorFilePath(*to, op.newPath), op.newPath});
+            } else {
+                // Cross-boundary (or partly-unmapped) rename: handle each end
+                // on its own side of the p4 boundary.
+                if (from) deletes.push_back(mirrorFilePath(*from, op.path));
+                else unmapped.push_back(op.path);
+                if (to) adds.push_back({op.newPath, mirrorFilePath(*to, op.newPath)});
+                else unmapped.push_back(op.newPath);
+            }
+            break;
+        }
+        }
+    }
+
+    if (edits.empty() && adds.empty() && deletes.empty() && moves.empty()) {
+        std::printf("Nothing to prepare: the changed files are all outside the "
+                    "configured p4 mappings (pure Git).\n");
+        return 0;
+    }
+
     std::string description = messageOverride;
     if (description.empty()) {
         auto messages = git::commitMessages(baseline, "HEAD", root);
@@ -165,9 +264,9 @@ int cmdPrepare(const Args& args) {
     }
     if (!opened->empty()) {
         std::fprintf(stderr,
-                     "gw prepare: %zu file(s) are already open in P4 under "
-                     "%s:\n",
-                     opened->size(), config->depotPath.c_str());
+                     "gw prepare: %zu file(s) are already open in P4 under the "
+                     "configured mappings:\n",
+                     opened->size());
         for (const auto& o : *opened) {
             std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
                          o.depotFile.c_str());
@@ -195,79 +294,72 @@ int cmdPrepare(const Args& args) {
         return 1;
     };
 
-    // The ops are already in execution order (deletes, edits, moves, adds);
-    // batch the uniform kinds, run moves individually. Staging happens after
-    // a file is opened (edit/move) and before `p4 add`; p4 itself removes
-    // deleted files from the mirror.
-    std::vector<std::string> editPaths;
-    std::vector<std::string> addPaths;
-    std::vector<std::string> deletePaths;
-    for (const auto& op : *ops) {
-        switch (op.kind) {
-        case P4Op::Kind::Edit:   editPaths.push_back(op.path); break;
-        case P4Op::Kind::Add:    addPaths.push_back(op.path); break;
-        case P4Op::Kind::Delete: deletePaths.push_back(op.path); break;
-        case P4Op::Kind::Move:   break;  // handled below
-        }
-    }
-
-    auto toMirrorPaths = [&](const std::vector<std::string>& paths) {
+    // The ops run in execution order (deletes, edits, moves, adds). Staging
+    // happens after a file is opened (edit/move) and before `p4 add`; p4 itself
+    // removes deleted files from the mirror.
+    auto mirrorPathsOf = [](const std::vector<Staged>& staged) {
         std::vector<std::string> local;
-        local.reserve(paths.size());
-        for (const auto& path : paths) {
-            local.push_back(mirrorFilePath(mirrorDir, path));
-        }
+        local.reserve(staged.size());
+        for (const auto& s : staged) local.push_back(s.mirrorPath);
         return local;
     };
 
-    if (!deletePaths.empty()) {
-        auto result = p4::deleteFiles(*config, *cl, toMirrorPaths(deletePaths));
+    if (!deletes.empty()) {
+        auto result = p4::deleteFiles(*config, *cl, deletes);
         if (!result) return fail(result.error());
     }
-    if (!editPaths.empty()) {
-        auto result = p4::editFiles(*config, *cl, toMirrorPaths(editPaths));
+    if (!edits.empty()) {
+        auto result = p4::editFiles(*config, *cl, mirrorPathsOf(edits));
         if (!result) return fail(result.error());
-        for (const auto& path : editPaths) {
-            auto staged = stageBlob(root, mirrorDir, path);
+        for (const auto& s : edits) {
+            auto staged = stageBlob(root, s.repoRel, s.mirrorPath);
             if (!staged) return fail(staged.error());
         }
     }
-    for (const auto& op : *ops) {
-        if (op.kind != P4Op::Kind::Move) continue;
-        auto edited = p4::editFiles(*config, *cl,
-                                    {mirrorFilePath(mirrorDir, op.path)});
+    for (const auto& move : moves) {
+        auto edited = p4::editFiles(*config, *cl, {move.fromMirror});
         if (!edited) return fail(edited.error());
-        auto moved = p4::moveFile(*config, *cl,
-                                  mirrorFilePath(mirrorDir, op.path),
-                                  mirrorFilePath(mirrorDir, op.newPath));
+        auto moved =
+            p4::moveFile(*config, *cl, move.fromMirror, move.toMirror);
         if (!moved) return fail(moved.error());
-        auto staged = stageBlob(root, mirrorDir, op.newPath);
+        auto staged = stageBlob(root, move.repoTo, move.toMirror);
         if (!staged) return fail(staged.error());
     }
-    if (!addPaths.empty()) {
-        for (const auto& path : addPaths) {
-            auto staged = stageBlob(root, mirrorDir, path);
+    if (!adds.empty()) {
+        for (const auto& s : adds) {
+            auto staged = stageBlob(root, s.repoRel, s.mirrorPath);
             if (!staged) return fail(staged.error());
         }
-        auto result = p4::addFiles(*config, *cl, toMirrorPaths(addPaths));
+        auto result = p4::addFiles(*config, *cl, mirrorPathsOf(adds));
         if (!result) return fail(result.error());
     }
 
     for (const auto& op : *ops) {
+        const bool srcMapped = routeFor(resolved, op.path) != nullptr;
         switch (op.kind) {
         case P4Op::Kind::Edit:
-            std::printf("  edit    %s\n", op.path.c_str());
+            if (srcMapped) std::printf("  edit    %s\n", op.path.c_str());
             break;
         case P4Op::Kind::Add:
-            std::printf("  add     %s\n", op.path.c_str());
+            if (srcMapped) std::printf("  add     %s\n", op.path.c_str());
             break;
         case P4Op::Kind::Delete:
-            std::printf("  delete  %s\n", op.path.c_str());
+            if (srcMapped) std::printf("  delete  %s\n", op.path.c_str());
             break;
         case P4Op::Kind::Move:
-            std::printf("  move    %s -> %s\n", op.path.c_str(),
-                        op.newPath.c_str());
+            if (srcMapped || routeFor(resolved, op.newPath)) {
+                std::printf("  move    %s -> %s\n", op.path.c_str(),
+                            op.newPath.c_str());
+            }
             break;
+        }
+    }
+    if (!unmapped.empty()) {
+        std::printf("\n%zu changed file(s) are outside any p4 mapping and were "
+                    "NOT added to the changelist (they stay in Git only):\n",
+                    unmapped.size());
+        for (const auto& path : unmapped) {
+            std::printf("  skip    %s\n", path.c_str());
         }
     }
 

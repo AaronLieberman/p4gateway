@@ -222,7 +222,7 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
             "the effective mapping for " + depotPath + " is '" +
             effective->depot + " " + effective->client + "'; expected '" +
             depotPath + " " + expectedClientPath +
-            "' (add it as the LAST view line - later lines win)");
+            "' (place it after any view line it overlaps - later lines win)");
     }
     return problems;
 }
@@ -260,16 +260,6 @@ std::vector<std::string> checkSpecMapping(const std::string& spec,
         clientViewPath(clientName, clientRoot, repoDir, "/");
     return checkViewMapping(parseClientView(spec), depotPath,
                             expectedClientPath, repoPrefix);
-}
-
-std::expected<std::vector<std::string>, std::string> verifyViewMapping(
-    const Config& config, const std::string& repoDir,
-    const std::string& mirrorDir) {
-    auto spec = clientSpec(config);
-    if (!spec) {
-        return std::unexpected(spec.error());
-    }
-    return checkSpecMapping(*spec, config.depotPath, repoDir, mirrorDir);
 }
 
 std::expected<std::string, std::string> info(const Config& config) {
@@ -375,7 +365,10 @@ std::expected<std::string, std::string> moveFile(const Config& config,
 
 std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     std::vector<std::string> args = clientArgs(config);
-    args.insert(args.end(), {"reconcile", "-n", config.depotPath});
+    args.insert(args.end(), {"reconcile", "-n"});
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath);
+    }
     auto result = p4gw::run("p4", args);
     if (!result) {
         return std::unexpected(result.error());
@@ -393,8 +386,11 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config) {
 }
 
 std::expected<std::string, std::string> latestSubmittedCl(const Config& config) {
-    auto result = run(config, {"changes", "-m1", "-s", "submitted",
-                               config.depotPath + "#have"});
+    std::vector<std::string> args{"changes", "-m1", "-s", "submitted"};
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath + "#have");
+    }
+    auto result = run(config, args);
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -412,7 +408,10 @@ std::expected<std::string, std::string> latestSubmittedCl(const Config& config) 
 
 std::expected<std::string, std::string> openedFiles(const Config& config) {
     std::vector<std::string> args = clientArgs(config);
-    args.insert(args.end(), {"opened", config.depotPath});
+    args.push_back("opened");
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath);
+    }
     auto result = p4gw::run("p4", args);
     if (!result) {
         return std::unexpected(result.error());
@@ -447,7 +446,9 @@ std::expected<std::string, std::string> changes(const Config& config,
         args.push_back("-u");
         args.push_back(user);
     }
-    args.push_back(config.depotPath);
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath);
+    }
     return run(config, args);
 }
 
@@ -510,7 +511,10 @@ bool isAddAction(const std::string& action) {
 std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     const Config& config) {
     std::vector<std::string> args = clientArgs(config);
-    args.insert(args.end(), {"-ztag", "opened", config.depotPath});
+    args.insert(args.end(), {"-ztag", "opened"});
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath);
+    }
     auto result = p4gw::run("p4", args);
     if (!result) {
         return std::unexpected(result.error());

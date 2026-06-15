@@ -25,7 +25,8 @@ namespace {
 // Live-P4 integration tests (see PLAN-integrationtests.md). Everything runs
 // inside a `p4gw-test` directory under the client root, whose depot path is
 // discovered via `p4 where`; the user has pre-mapped its `src` subtree to
-// `.p4gw/mirror/src` in the client view. `integtest init` (re)builds a
+// `src/.p4gw` (the mirror lives inside the repo) in the client view.
+// `integtest init` (re)builds a
 // known fixture in the depot; `integtest run` drives the real workflow
 // through child `gw` processes and asserts state at each step.
 
@@ -36,8 +37,9 @@ struct ItContext {
     std::string depotRoot;     // its depot path, no trailing /...
     std::string srcDepotPath;  // depotRoot + "/src/..."
     std::string repoDir;       // testRoot/src - the Git overlay repo
-    std::string mirrorDir;     // testRoot/.p4gw/mirror/src
-    Config p4;                 // ambient client; depotPath = depotRoot + "/..."
+    std::string mirrorDir;     // repoDir/.p4gw - the mirror, inside the repo
+    Config p4;                 // ambient client; one mapping spanning the depot
+    std::string p4DepotPath;   // depotRoot + "/..." - scope for raw p4 calls
     std::string pendingCl;     // CL produced by the prepare step
 };
 
@@ -164,9 +166,9 @@ std::string setupInstructions() {
         "  3. Make sure 'p4' works from inside it - rely on ambient\n"
         "     P4PORT/P4USER/P4CLIENT, or drop a p4.ini / .p4config there.\n"
         "  4. Add a line at the END of the client view ('p4 client') that\n"
-        "     remaps the test's src subtree into the mirror, for example:\n"
+        "     remaps the test's src subtree into its in-repo mirror, e.g.:\n"
         "       //depot/.../p4gw-test/src/...   "
-        "//CLIENT/.../p4gw-test/.p4gw/mirror/src/...\n"
+        "//CLIENT/.../p4gw-test/src/.p4gw/...\n"
         "     Later view lines win, so keep it last. (init verifies this and\n"
         "     prints the exact line to use if it's off.)\n"
         "  5. From inside p4gw-test, run:  gw integtest init\n"
@@ -190,11 +192,13 @@ std::expected<void, std::string> discover(ItContext& it) {
                                "\n" + setupInstructions());
     }
     it.depotRoot = *depot;
-    it.p4.depotPath = it.depotRoot + "/...";
+    it.p4DepotPath = it.depotRoot + "/...";
     it.srcDepotPath = it.depotRoot + "/src/...";
     it.repoDir = (fs::path(it.testRoot) / "src").string();
-    it.mirrorDir =
-        (fs::path(it.testRoot) / ".p4gw" / "mirror" / "src").string();
+    it.mirrorDir = (fs::path(it.repoDir) / ".p4gw").string();
+    // The raw-p4 helper config carries one whole-depot mapping so calls like
+    // p4::openedFiles scope to the test depot; its mirror path is unused here.
+    it.p4.mappings = {{it.p4DepotPath, ".p4gw", ""}};
     return {};
 }
 
@@ -225,11 +229,11 @@ std::expected<void, std::string> itVerifyMapping(ItContext& it) {
 }
 
 std::expected<void, std::string> itResetLocal(ItContext& it) {
-    auto reverted = trace(it, "p4 revert " + it.p4.depotPath,
-                          p4::revert(it.p4, it.p4.depotPath));
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
     std::error_code ec;
@@ -272,8 +276,8 @@ std::expected<void, std::string> itWriteFixture(ItContext& it) {
 std::expected<void, std::string> itSubmitFixture(ItContext& it) {
     auto cl = p4::createChangelist(it.p4, "gw integtest: fixture");
     if (!cl) return std::unexpected(cl.error());
-    auto reconciled = trace(it, "p4 reconcile -c " + *cl + " " + it.p4.depotPath,
-                            p4::reconcileToCl(it.p4, *cl, it.p4.depotPath));
+    auto reconciled = trace(it, "p4 reconcile -c " + *cl + " " + it.p4DepotPath,
+                            p4::reconcileToCl(it.p4, *cl, it.p4DepotPath));
     if (!reconciled) return std::unexpected(reconciled.error());
     auto opened = p4::openedInCl(it.p4, *cl);
     if (!opened) return std::unexpected(opened.error());
@@ -298,7 +302,7 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
     }
     auto out = runGw(it, it.repoDir,
                      {"setup", "--depot-path", it.srcDepotPath,
-                      "--mirror-path", "../.p4gw/mirror/src"});
+                      "--mirror-path", ".p4gw"});
     if (!out) return std::unexpected(out.error());
     if (!fs::is_regular_file(fs::path(it.repoDir) / "p4gw.cfg")) {
         return std::unexpected("gw setup did not write " + it.repoDir +
@@ -329,8 +333,8 @@ std::expected<void, std::string> itGwInit(ItContext& it) {
 }
 
 std::expected<void, std::string> itFirstImport(ItContext& it) {
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
     auto out = runGw(it, it.repoDir, {"import"});
     if (!out) return std::unexpected(out.error());
@@ -467,8 +471,8 @@ std::expected<void, std::string> itSubmitAndAbsorb(ItContext& it) {
     auto submitted = trace(it, "p4 submit -c " + it.pendingCl,
                            p4::submit(it.p4, it.pendingCl));
     if (!submitted) return std::unexpected(submitted.error());
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
     auto out = runGw(it, it.repoDir, {"import", "--rebase"});
@@ -507,8 +511,8 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
     if (!edited) return edited;
     auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
     if (!submitted) return std::unexpected(submitted.error());
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
     auto switched = trace(it, "git switch -c it-feature2",
@@ -578,13 +582,13 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
     }
 
     // Clean up: revert the open, drop the empty CL, restore the mirror.
-    auto reverted = trace(it, "p4 revert " + it.p4.depotPath,
-                          p4::revert(it.p4, it.p4.depotPath));
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
     auto deleted = p4::deleteChangelist(it.p4, *cl);
     if (!deleted) return std::unexpected(deleted.error());
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
     return {};
 }
@@ -619,8 +623,8 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
     // Revert the workspace opens so the mirror returns to depot state; the
     // shelf lives on the server. Reverting an add unopens but leaves the file
     // on disk, so remove it by hand, then re-sync.
-    auto reverted = trace(it, "p4 revert " + it.p4.depotPath,
-                          p4::revert(it.p4, it.p4.depotPath));
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
     std::error_code ec;
     fs::remove(mirrorNew, ec);
@@ -635,8 +639,8 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
                                ":\n" + *listed);
     }
 
-    auto synced = trace(it, "p4 sync " + it.p4.depotPath,
-                        p4::sync(it.p4, it.p4.depotPath));
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
     // Import the shelf: a new branch off p4-main carrying the shelved delta.
@@ -687,7 +691,7 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
     if (!opened) return std::unexpected(opened.error());
     if (!opened->empty()) {
         return std::unexpected("files are still opened under " +
-                               it.p4.depotPath + ":\n" + *opened);
+                               it.p4DepotPath + ":\n" + *opened);
     }
 
     // gw must never have touched anything outside the overlay.
@@ -774,7 +778,7 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
     steps.emplace_back("discover the test depot path (p4 where)",
                        [&] { return discover(it); });
     if (mode == "init") {
-        steps.emplace_back("verify the src -> .p4gw/mirror/src view mapping",
+        steps.emplace_back("verify the src -> src/.p4gw view mapping",
                            [&] { return itVerifyMapping(it); });
         steps.emplace_back("revert, sync, and wipe the local test directory",
                            [&] { return itResetLocal(it); });

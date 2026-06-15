@@ -119,11 +119,26 @@ int shelfImport(const Args& args) {
     }
     if (shelf->files.empty()) {
         std::fprintf(stderr,
-                     "gw shelf import: changelist %s has no shelved files "
-                     "under %s\n",
-                     cl.c_str(), config->depotPath.c_str());
+                     "gw shelf import: changelist %s has no shelved files\n",
+                     cl.c_str());
         return 1;
     }
+
+    // Map a shelved depot file to its working-tree path through whichever
+    // mapping owns it; returns false for files under no mapping.
+    auto locate = [&](const std::string& depotFile,
+                      std::string& repoRel) -> bool {
+        for (const auto& mapping : config->mappings) {
+            const std::string rel =
+                p4::depotRelativePath(mapping.depotPath, depotFile);
+            if (rel.empty()) continue;
+            repoRel = mapping.repoSubtree.empty()
+                          ? rel
+                          : mapping.repoSubtree + "/" + rel;
+            return true;
+        }
+        return false;
+    };
 
     const std::string branch =
         branchOverride.empty() ? "shelf-" + cl : branchOverride;
@@ -157,9 +172,8 @@ int shelfImport(const Args& args) {
     int applied = 0;
 
     for (const auto& file : shelf->files) {
-        const std::string rel =
-            p4::depotRelativePath(config->depotPath, file.depotFile);
-        if (rel.empty()) {
+        std::string rel;
+        if (!locate(file.depotFile, rel)) {
             skipped.push_back(file.depotFile);
             continue;
         }
@@ -228,8 +242,8 @@ int shelfImport(const Args& args) {
     }
 
     for (const auto& path : skipped) {
-        std::printf("  skip    %s (outside %s)\n", path.c_str(),
-                    config->depotPath.c_str());
+        std::printf("  skip    %s (outside the configured mappings)\n",
+                    path.c_str());
     }
 
     const std::string message =
@@ -327,13 +341,13 @@ int shelfList(const Args& args) {
     }
 
     if (byCl.empty()) {
-        std::printf("No pending or shelved changelists under %s.\n",
-                    config->depotPath.c_str());
+        std::printf("No pending or shelved changelists under the configured "
+                    "mappings.\n");
         return 0;
     }
 
-    std::printf("Pending and shelved changelists under %s:\n\n",
-                config->depotPath.c_str());
+    std::printf("Pending and shelved changelists under the configured "
+                "mappings:\n\n");
     for (auto it = byCl.rbegin(); it != byCl.rend(); ++it) {
         const ChangeListing& c = it->second;
         std::printf("  %-8s %-9s %s\n", c.change.c_str(),

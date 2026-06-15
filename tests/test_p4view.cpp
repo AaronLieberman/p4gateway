@@ -209,6 +209,24 @@ TEST(view_check_passes_when_correct_remap_wins_over_earlier_wrong_line) {
     CHECK(problems.empty());
 }
 
+TEST(view_check_passes_when_remap_is_not_last_but_unshadowed) {
+    // The src remap is followed by an unrelated config remap. Nothing after it
+    // overlaps the src depot path, so it need not be the last line overall -
+    // only the last line that overlaps it.
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {"//depot/game/main/...", "//aaron-dev/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/src/.p4gw/...", false, false},
+        {"//depot/game/main/config/...", "//aaron-dev/config/.p4gw/...", false,
+         false},
+    };
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+}
+
 TEST(check_spec_mapping_requires_client_and_root) {
     const auto problems = p4gw::p4::checkSpecMapping(
         "View:\n\t//a/... //c/a/...\n", "//a/...", "/r", "/m");

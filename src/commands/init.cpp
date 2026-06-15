@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <vector>
 
 #include "commands.h"
 #include "config.h"
@@ -39,45 +41,38 @@ int cmdInit(const Args& args) {
         std::fprintf(stderr, "gw init: %s\n", config.error().c_str());
         return 1;
     }
-    if (!config->depotPath.ends_with("/...")) {
-        std::fprintf(stderr,
-                     "gw init: depot_path must end with '/...' (got '%s') - "
-                     "edit %s\n", config->depotPath.c_str(),
-                     (fs::path(root) / "p4gw.cfg").string().c_str());
-        return 1;
-    }
-    if (config->mirrorPath.empty()) {
-        std::fprintf(stderr,
-                     "gw init: no 'mirror_path' in p4gw.cfg - edit %s "
-                     "('gw setup' writes the template)\n",
-                     (fs::path(root) / "p4gw.cfg").string().c_str());
-        return 1;
-    }
-    const std::string mirrorDir = resolveMirrorPath(*config, root);
-
     // The whole point of init (vs. setup) is verification, so a dead p4
     // connection is a hard failure, not a skipped check.
-    auto problems = p4::verifyViewMapping(*config, root, mirrorDir);
-    if (!problems) {
+    auto spec = p4::clientSpec(*config);
+    if (!spec) {
         std::fprintf(stderr,
                      "gw init: cannot read the client spec: %s\n"
                      "init verifies the client view, so it needs a working "
                      "p4 connection\n(P4PORT/P4USER/P4CLIENT or a "
-                     ".p4config).\n", problems.error().c_str());
+                     ".p4config).\n", spec.error().c_str());
         return 1;
     }
-    if (!problems->empty()) {
-        for (const auto& problem : *problems) {
+    std::vector<std::string> problems;
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir =
+            resolveMirrorPath(mapping.mirrorPath, root);
+        const auto mappingProblems =
+            p4::checkSpecMapping(*spec, mapping.depotPath, root, mirrorDir);
+        problems.insert(problems.end(), mappingProblems.begin(),
+                        mappingProblems.end());
+    }
+    if (!problems.empty()) {
+        for (const auto& problem : problems) {
             std::fprintf(stderr, "gw init: %s\n", problem.c_str());
         }
         std::fprintf(stderr,
                      "Fix the client view ('p4 client'), then rerun "
-                     "'gw init'. The mapping line belongs\nat the END of the "
-                     "view - later lines win.\n");
+                     "'gw init'. Each mapping line belongs\nafter any view "
+                     "line it overlaps - later lines win.\n");
         return 1;
     }
-    std::printf("ok    client view maps %s into the mirror\n",
-                config->depotPath.c_str());
+    std::printf("ok    client view maps all %zu mapping(s) into the mirror\n",
+                config->mappings.size());
 
     const fs::path gitDir = fs::path(root) / ".git";
     if (forceGitInit && fs::exists(gitDir)) {
@@ -111,13 +106,20 @@ int cmdInit(const Args& args) {
         std::printf("Initialized empty Git repository in %s\n", root.c_str());
     }
 
-    // If the mirror lives inside the repo root, add it to .gitignore.
-    std::string mirrorEntry;
-    {
+    // Gitignore each mirror container that lives inside the repo (the carved-
+    // out `.p4gw` subtree p4 syncs into). Mappings share one container, so
+    // dedupe to a single entry in the common case.
+    std::vector<std::string> mirrorEntries;
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir =
+            resolveMirrorPath(mapping.mirrorPath, root);
         std::error_code ec;
         const fs::path rel = fs::relative(mirrorDir, root, ec);
-        if (!ec && !rel.empty() && rel.begin()->string() != "..") {
-            mirrorEntry = rel.string();
+        if (ec || rel.empty() || rel.begin()->string() == "..") continue;
+        const std::string entry = rel.begin()->string() + "/";
+        if (std::find(mirrorEntries.begin(), mirrorEntries.end(), entry) ==
+            mirrorEntries.end()) {
+            mirrorEntries.push_back(entry);
         }
     }
 
@@ -128,25 +130,25 @@ int cmdInit(const Args& args) {
             std::ofstream file(gitignore);
             file << "# gw's local config - personal, never goes to Git or P4\n"
                     "p4gw.cfg\n";
-            if (!mirrorEntry.empty()) {
-                file << "\n# gw's mirror directory - P4-managed, not for Git\n"
-                     << mirrorEntry << "\n";
+            if (!mirrorEntries.empty()) {
+                file << "\n# gw's mirror directory - P4-managed, not for Git\n";
+                for (const auto& entry : mirrorEntries) file << entry << "\n";
             }
         }
         std::printf("Wrote starter .gitignore\n");
     } else {
         std::printf("Keeping the existing .gitignore - make sure it ignores "
                     "p4gw.cfg");
-        if (!mirrorEntry.empty()) {
-            std::ifstream in(gitignore);
-            std::string content((std::istreambuf_iterator<char>(in)),
-                                 std::istreambuf_iterator<char>());
-            in.close();
-            if (content.find(mirrorEntry) == std::string::npos) {
-                std::ofstream out(gitignore, std::ios::app);
+        std::ifstream in(gitignore);
+        std::string content((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+        in.close();
+        std::ofstream out(gitignore, std::ios::app);
+        for (const auto& entry : mirrorEntries) {
+            if (content.find(entry) == std::string::npos) {
                 out << "\n# gw's mirror directory - P4-managed, not for Git\n"
-                    << mirrorEntry << "\n";
-                std::printf(" and %s", mirrorEntry.c_str());
+                    << entry << "\n";
+                std::printf(" and %s", entry.c_str());
             }
         }
         std::printf("\n");
@@ -164,11 +166,15 @@ int cmdInit(const Args& args) {
         }
     }
 
-    if (fs::exists(mirrorDir)) {
-        std::printf("Mirror directory exists: %s\n", mirrorDir.c_str());
-    } else {
-        std::printf("Mirror directory %s does not exist yet - it appears on "
-                    "the first sync.\n", mirrorDir.c_str());
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir =
+            resolveMirrorPath(mapping.mirrorPath, root);
+        if (fs::exists(mirrorDir)) {
+            std::printf("Mirror directory exists: %s\n", mirrorDir.c_str());
+        } else {
+            std::printf("Mirror directory %s does not exist yet - it appears "
+                        "on the first sync.\n", mirrorDir.c_str());
+        }
     }
     std::printf("\nAll set. Sync (any tool you like), then run 'gw import' "
                 "to build the '%s' baseline.\n",

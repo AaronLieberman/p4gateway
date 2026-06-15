@@ -2,21 +2,38 @@
 
 #include <expected>
 #include <string>
+#include <vector>
 
 namespace p4gw {
+
+// One depot subtree this Git repo overlays, and where its files live on both
+// sides of the mirror boundary. A repo can declare several of these (one per
+// `mapping` line) so a single Git tree can ship more than one depot subtree -
+// e.g. `src/` and `config/` while `bin/` and `content/` stay pure Git.
+struct Mapping {
+    // Depot path of the subtree, e.g. "//depot/yourgame/src/...". Ends with
+    // "/...". Used to scope every p4 operation so we never touch (or crawl)
+    // the rest of the workspace.
+    std::string depotPath;
+
+    // Directory the client view remaps `depotPath` into - p4's staging area,
+    // which p4 syncs and gw reads/writes. Always lives under the repo's single
+    // `.p4gw` container; relative values resolve against the directory holding
+    // the p4gw.cfg file. Example: ".p4gw/src".
+    std::string mirrorPath;
+
+    // Working-tree directory the mirror feeds, derived from `mirrorPath` by
+    // dropping its leading `.p4gw` container component: ".p4gw/src" -> "src",
+    // ".p4gw" -> "" (the whole repo). Forward slashes; no trailing slash.
+    std::string repoSubtree;
+};
 
 // Project configuration, loaded from a `p4gw.cfg` file at the root of the Git
 // overlay repo. Simple `key = value` lines; `#` starts a comment.
 struct Config {
-    // Depot path of the subtree this Git repo overlays, e.g.
-    // "//depot/yourgame/src/...". Used to scope every p4 operation so we
-    // never touch (or crawl) the rest of the workspace.
-    std::string depotPath;
-
-    // Directory the client view maps `depot_path` into - gw's staging area,
-    // which p4 syncs and gw reads/writes. Relative values are resolved
-    // against the directory containing the p4gw.cfg file.
-    std::string mirrorPath;
+    // The depot subtrees this repo overlays, in declaration order. At least
+    // one is required (a config with none fails to load).
+    std::vector<Mapping> mappings;
 
     // P4 client (workspace) name. Empty means use the ambient P4CLIENT.
     std::string client;
@@ -39,8 +56,14 @@ std::string findConfigFile(const std::string& startDir);
 // containing the file.
 std::expected<Config, std::string> findAndLoadConfig(std::string& rootDir);
 
-// Absolute path of the mirror directory: `mirror_path` resolved against
-// `rootDir` (the directory containing the p4gw.cfg file) when relative.
-std::string resolveMirrorPath(const Config& config, const std::string& rootDir);
+// Absolute path of a mirror directory: `mirrorPath` resolved against `rootDir`
+// (the directory containing the p4gw.cfg file) when relative.
+std::string resolveMirrorPath(const std::string& mirrorPath,
+                              const std::string& rootDir);
+
+// Working-tree subtree a mirror feeds: the mirror path with its leading
+// container component (`.p4gw`) removed. ".p4gw/src" -> "src", ".p4gw" -> "".
+// Forward slashes, no trailing slash. Pure; unit-tested.
+std::string mirrorRepoSubtree(const std::string& mirrorPath);
 
 }  // namespace p4gw

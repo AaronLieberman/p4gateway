@@ -53,16 +53,16 @@ int cmdDoctor(const Args& args) {
         }
         return failures == 0 ? 0 : 1;
     }
-    std::printf("ok    p4gw.cfg found at %s (depot_path %s)\n", root.c_str(),
-                config->depotPath.c_str());
+    std::printf("ok    p4gw.cfg found at %s (%zu mapping(s))\n", root.c_str(),
+                config->mappings.size());
+    for (const auto& mapping : config->mappings) {
+        std::printf("      %s -> %s\n", mapping.depotPath.c_str(),
+                    mapping.mirrorPath.c_str());
+    }
 
-    std::string mirrorDir;
-    if (config->mirrorPath.empty()) {
-        std::printf("FAIL  p4gw.cfg has no 'mirror_path' - the mirror workflow "
-                    "needs one (see 'gw init')\n");
-        ++failures;
-    } else {
-        mirrorDir = resolveMirrorPath(*config, root);
+    for (const auto& mapping : config->mappings) {
+        const std::string mirrorDir =
+            resolveMirrorPath(mapping.mirrorPath, root);
         if (fs::exists(mirrorDir)) {
             std::printf("ok    mirror directory exists: %s\n",
                         mirrorDir.c_str());
@@ -96,12 +96,14 @@ int cmdDoctor(const Args& args) {
         if (spec) {
             const std::string lineEnd = p4::specField(*spec, "LineEnd");
 
-            if (!mirrorDir.empty()) {
+            for (const auto& mapping : config->mappings) {
+                const std::string mirrorDir =
+                    resolveMirrorPath(mapping.mirrorPath, root);
                 const auto problems = p4::checkSpecMapping(
-                    *spec, config->depotPath, root, mirrorDir);
+                    *spec, mapping.depotPath, root, mirrorDir);
                 if (problems.empty()) {
                     std::printf("ok    client view maps %s to the mirror\n",
-                                config->depotPath.c_str());
+                                mapping.depotPath.c_str());
                 }
                 for (const auto& problem : problems) {
                     std::printf("FAIL  %s\n", problem.c_str());
@@ -137,12 +139,11 @@ int cmdDoctor(const Args& args) {
 
         auto opened = p4::openedFiles(*config);
         if (opened && opened->empty()) {
-            std::printf("ok    no files opened under %s\n",
-                        config->depotPath.c_str());
+            std::printf("ok    no files opened under the configured mappings\n");
         } else if (opened) {
-            std::printf("WARN  files are opened under %s - a pending gw "
-                        "changelist, or someone ran p4 edit:\n%s",
-                        config->depotPath.c_str(), opened->c_str());
+            std::printf("WARN  files are opened under the configured mappings - "
+                        "a pending gw changelist, or someone ran p4 edit:\n%s",
+                        opened->c_str());
             ++warnings;
         } else {
             std::printf("WARN  could not query opened files: %s\n",

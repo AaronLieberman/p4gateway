@@ -72,17 +72,27 @@ int cmdSetup(const Args& args) {
                 "local paths);\n"
                 "# keep it out of Git and P4. Read by every gw command.\n"
                 "\n"
-                "# Which slice of the depot this Git repo overlays. Every p4\n"
-                "# command is scoped to this path - required. Example:\n"
-                "#   depot_path = //depot/yourgame/src/...\n"
-                "depot_path = " << depotPath << "\n"
-                "\n"
-                "# Where the client view maps depot_path to - gw's staging\n"
-                "# area, synced by p4 and never edited by hand. Relative\n"
-                "# paths are resolved against the directory containing this\n"
-                "# file.\n"
-                "mirror_path = " << mirrorPath << "\n"
-                "\n"
+                "# Each 'mapping' line ties a depot subtree to the mirror "
+                "directory the\n"
+                "# client view remaps it into. The mirror always lives under "
+                "the repo's\n"
+                "# single '.p4gw' container; its path below the container is "
+                "the working-\n"
+                "# tree directory the subtree occupies ('.p4gw/src' -> 'src/', "
+                "'.p4gw' ->\n"
+                "# the whole repo). Add one line per subtree; directories with "
+                "no mapping\n"
+                "# stay pure Git. Format:\n"
+                "#   mapping = <depot_path ending in /...>  <mirror_path>\n"
+                "# Example (two subtrees):\n"
+                "#   mapping = //depot/yourgame/src/...     .p4gw/src\n"
+                "#   mapping = //depot/yourgame/config/...  .p4gw/config\n";
+        if (depotPath.empty()) {
+            file << "#mapping = //depot/yourgame/src/... " << mirrorPath << "\n";
+        } else {
+            file << "mapping = " << depotPath << " " << mirrorPath << "\n";
+        }
+        file << "\n"
                 "# P4 client name; leave commented out to use the ambient\n"
                 "# P4CLIENT (e.g. from a .p4config / p4.ini).\n";
         if (client.empty()) {
@@ -99,18 +109,21 @@ int cmdSetup(const Args& args) {
     int step = 1;
     std::printf("\nNext steps:\n");
     if (depotPath.empty()) {
-        std::printf("%d. Edit p4gw.cfg and fill in depot_path.\n", step++);
+        std::printf("%d. Edit p4gw.cfg and add a 'mapping' line per depot "
+                    "subtree.\n", step++);
     }
     std::printf(
-        "%d. Add this line at the END of your client view (p4 client):\n"
+        "%d. Add a remap line to your client view (p4 client) for each "
+        "mapping:\n"
         "\n"
         "     %s //%s/<workspace-relative path of %s>/...\n"
         "\n"
         "   so the depot subtree syncs into the mirror instead of this\n"
-        "   directory. Later view lines win, so keep it last.\n",
+        "   directory. Later view lines win, so each remap must come after\n"
+        "   any broader line it overlaps.\n",
         step++, depotShown.c_str(), clientShown.c_str(), mirrorPath.c_str());
-    std::printf("%d. Run 'gw init' to verify the mapping and set up the Git "
-                "repo.\n", step);
+    std::printf("%d. Run 'gw init' to verify the mapping(s) and set up the "
+                "Git repo.\n", step);
     return 0;
 }
 

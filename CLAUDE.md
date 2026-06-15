@@ -7,9 +7,12 @@ static library keep the `p4gw` prefix (`p4gw::`, `p4gw_core`), as does the
 
 A Windows command-line tool, written in C++23, that lets a developer work in
 Git locally and ship Perforce changelists. The architecture is the **mirror
-workflow**: one client view line remaps the depot subtree to a mirror
-directory, so every p4 sync lands in the mirror and the canonical directory
-is purely a Git repo. `gw import` commits mirror state to the `p4-main`
+workflow**: one client view line per `mapping` remaps a depot subtree into the
+repo's `.p4gw` mirror container, so every p4 sync lands in the mirror and the
+canonical directory is purely a Git repo. The config is a list of
+`mapping = <depot_path> <mirror_path>` lines — one repo can ship several
+subtrees (e.g. `src/` and `config/`) while other directories stay pure Git;
+the mirror path below `.p4gw` is the working-tree subtree it feeds. `gw import` commits mirror state to the `p4-main`
 baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds

@@ -58,12 +58,6 @@ std::vector<std::string> checkSpecMapping(const std::string& spec,
                                           const std::string& repoDir,
                                           const std::string& mirrorDir);
 
-// Fetches the client spec and runs checkSpecMapping on it. The outer error
-// is a failed p4 invocation (no connection, bad client, ...).
-std::expected<std::vector<std::string>, std::string> verifyViewMapping(
-    const Config& config, const std::string& repoDir,
-    const std::string& mirrorDir);
-
 // ---- wrappers over the p4 CLI ----
 
 std::expected<std::string, std::string> info(const Config& config);

@@ -3,10 +3,11 @@
 **Work in Git. Ship Perforce changelists.**
 
 `gw` is a small Windows command-line tool for developers stuck on a huge
-Perforce depot who would rather spend their day in Git. One added line in
-your client view remaps the depot subtree you care about (say, `src/`) to a
-*mirror* directory off to the side; the directory your builds actually use
-becomes a normal Git repo that Perforce never touches. `gw` moves state
+Perforce depot who would rather spend their day in Git. One added line per
+subtree in your client view remaps the depot subtrees you care about (say,
+`src/` and `config/`) into a *mirror* directory off to the side; the directory
+your builds actually use becomes a normal Git repo that Perforce never
+touches. `gw` moves state
 across that boundary: depot → Git when you sync, Git → a pending changelist
 when you ship.
 
@@ -92,16 +93,18 @@ gw setup --depot-path //depot/game/main/src/... --client aaron-dev
 ```
 
 `setup` writes `p4gw.cfg` (anything not given as a flag is left as a commented
-placeholder to edit) and prints the one manual step: add a line like
+placeholder to edit) and prints the one manual step: for each mapping, add a
+line like
 
 ```
 //depot/game/main/src/...   //aaron-dev/src/.p4gw/...
 ```
 
-at the **end** of your client view (`p4 client`). Later view lines win, so
-this routes the subtree into the mirror while the rest of your view stays
-untouched; other custom mappings are fine as long as they don't involve the
-subtree. Then:
+to your client view (`p4 client`). Later view lines win, so each remap must
+come **after** any broader line it overlaps — but it does **not** have to be
+the last line in the view, so several remaps (e.g. `src` and `config`) and
+other custom mappings coexist fine as long as none of them overlaps your
+subtrees. Then:
 
 ```
 gw init
@@ -140,14 +143,15 @@ to check.
 (`key = value`, `#` comments):
 
 ```
-# Which slice of the depot this Git repo overlays. Every p4 command is
-# scoped to this path — required.
-depot_path = //depot/yourgame/src/...
-
-# Where the client view maps depot_path to — gw's staging area, synced by
-# p4 and never edited by hand. Relative paths are resolved against the
-# directory containing this file.
-mirror_path = .p4gw
+# Each 'mapping' ties a depot subtree (scoping every p4 command) to the
+# mirror directory the client view remaps it into. The mirror always lives
+# under the repo's single '.p4gw' container; its path below the container is
+# the working-tree directory the subtree occupies ('.p4gw/src' -> 'src/',
+# '.p4gw' -> the whole repo). Add one 'mapping' line per subtree; directories
+# with no mapping (e.g. bin/, content/) stay pure Git. At least one required.
+#   mapping = <depot_path ending in /...>  <mirror_path>
+mapping = //depot/yourgame/src/...     .p4gw/src
+mapping = //depot/yourgame/config/...  .p4gw/config
 
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
