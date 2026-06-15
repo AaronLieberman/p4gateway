@@ -24,11 +24,13 @@ add_library(p4gw_core STATIC
     src/p4ops.cpp
     src/mirror.cpp
     src/statusview.cpp
+    src/shelf.cpp
     src/commands/setup.cpp
     src/commands/init.cpp
     src/commands/import.cpp
     src/commands/prepare.cpp
     src/commands/status.cpp
+    src/commands/shelf.cpp
     src/commands/doctor.cpp
     src/commands/integtest.cpp
 )

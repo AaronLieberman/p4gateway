@@ -43,6 +43,7 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 | `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
 | `gw status` | One-screen view of where Git and P4 stand: current branch, commits ahead of / behind the baseline, working-tree cleanliness, the last imported changelist, and any pending changelist — plus the single most useful next step. Read-only; degrades gracefully when P4 isn't reachable. |
+| `gw shelf import <cl>` | Brings a P4 shelf into Git as a new branch off `p4-main`: replays the shelf's changes on top of the latest imported depot state with a git 3-way merge (conflicts surface as normal git markers to resolve). Reads everything with `p4 print` — it never touches the mirror or opens a P4 file. `--branch <name>` overrides the default `shelf-<cl>`. |
 | `gw doctor` | Checks the environment, and above all the client view: the depot path must map into the mirror and nothing may map into the Git repo. Run it whenever something smells off. |
 
 Day to day:
@@ -56,6 +57,23 @@ gw prepare                       # ship it: builds the pending CL
 <review and submit in P4V>
 gw import                        # absorb your own submit into p4-main
 ```
+
+Starting from a shelf instead:
+
+```
+gw import                        # make sure p4-main is up to date
+gw shelf import 4821             # branch 'shelf-4821' = the shelf, rebased onto p4-main
+<resolve any conflicts, then commit>
+gw prepare                       # ship it back as a fresh pending CL
+```
+
+A shelf is just pending work on top of a submitted base — the same shape as a
+Git feature branch. `gw shelf import` recreates it as a branch off `p4-main`
+and replays the shelf's changes with a git 3-way merge, so if the depot moved
+on since the shelf was made you resolve it once, in Git, the way you resolve
+any rebase. It reads the shelf with `p4 print` and never opens a P4 file or
+writes to the mirror, so it's safe to run no matter what's synced or checked
+out.
 
 The golden rules of the mirror workflow: **P4 never touches your working
 tree, and you never touch the mirror.** Sync whenever and however you like —

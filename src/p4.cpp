@@ -427,6 +427,19 @@ std::expected<std::string, std::string> openedFiles(const Config& config) {
     return result->output;
 }
 
+std::expected<std::string, std::string> describeShelved(const Config& config,
+                                                        const std::string& cl) {
+    return run(config, {"-ztag", "describe", "-S", cl});
+}
+
+std::expected<std::string, std::string> printDepotFile(
+    const Config& config, const std::string& fileSpec,
+    const std::string& destFile) {
+    // -q drops the "//depot/foo#rev - ..." header line; -o writes the file
+    // content directly, so binaries round-trip without shell redirection.
+    return run(config, {"print", "-q", "-o", destFile, fileSpec});
+}
+
 std::expected<std::string, std::string> whereDepotDir(const Config& config,
                                                       const std::string& localDir) {
     auto result = run(config, {"-ztag", "where", localDir + "/..."});

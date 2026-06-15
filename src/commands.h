@@ -15,6 +15,7 @@ int cmdInit(const Args& args);
 int cmdImport(const Args& args);
 int cmdPrepare(const Args& args);
 int cmdStatus(const Args& args);
+int cmdShelf(const Args& args);
 int cmdDoctor(const Args& args);
 
 // Live-P4 integration tests; `gwExe` is the binary to spawn for the

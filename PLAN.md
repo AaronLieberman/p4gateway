@@ -98,6 +98,18 @@ conflict/abort) on Linux.
       P4 is unreachable. Pure decision/format logic in `statusview` is unit
       tested. **Needs real-workspace check**: pending-CL count parsing against
       live `p4 opened` output.
+- [x] `gw shelf import <CL>`: recreate a shelved changelist as a branch off
+      `p4-main`, replaying the shelf's delta with a git 3-way merge (base =
+      `p4 print //depot/f#rev`, theirs = `p4 print //depot/f@=CL`, ours =
+      baseline tip). Binary types take the shelved content wholesale; conflicts
+      leave git markers for the user to resolve and commit. Read-only on P4 —
+      never opens a file or touches the mirror, so it's independent of mirror
+      sync/opened state. Parsing (`-ztag describe -S`) and depot→repo mapping
+      are pure and unit tested. **Needs real-workspace check**: the `#rev`
+      reported for shelved edits is assumed to be the base revision; verify
+      against live `p4 describe -S`, plus binary and conflict cases.
+- [ ] `gw shelf list`: pending and shelved CLs for the client, scoped to
+      `depot_path`, to pick one for `shelf import` (fold into `gw status`?)
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
       rebase instead of creating a new one
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to

@@ -108,6 +108,18 @@ std::expected<std::string, std::string> latestSubmittedCl(const Config& config);
 // `p4 opened` scoped to the configured depot path; empty if nothing is open.
 std::expected<std::string, std::string> openedFiles(const Config& config);
 
+// `p4 -ztag describe -S <cl>`: the shelved-file listing for a changelist.
+// Returns raw -ztag output for shelf.h's parseShelveDescribe.
+std::expected<std::string, std::string> describeShelved(const Config& config,
+                                                        const std::string& cl);
+
+// `p4 print -q -o <destFile> <fileSpec>`: writes the content of a depot file
+// revision to `destFile`, byte-exact (safe for binaries). `fileSpec` carries
+// the revision, e.g. "//depot/foo#5" or the shelved form "//depot/foo@=12345".
+std::expected<std::string, std::string> printDepotFile(
+    const Config& config, const std::string& fileSpec,
+    const std::string& destFile);
+
 // ---- workflow wrappers ----
 // Used by `gw integtest` today (and groundwork for a future submit
 // workflow). Callers must pass an explicitly scoped pathSpec - never an

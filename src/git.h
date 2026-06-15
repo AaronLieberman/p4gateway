@@ -47,6 +47,20 @@ std::expected<std::string, std::string> switchBranch(const std::string& branch,
 std::expected<std::string, std::string> switchOrphanBranch(
     const std::string& branch, const std::string& cwd = {});
 
+// `git switch -c <branch> <startRef>`: create and check out `branch` rooted
+// at `startRef`. Fails if the branch already exists.
+std::expected<std::string, std::string> createBranch(const std::string& branch,
+                                                     const std::string& startRef,
+                                                     const std::string& cwd = {});
+
+// `git merge-file <ours> <base> <theirs>`: a 3-way line merge writing the
+// result back into `ours` in place (with conflict markers on overlap).
+// Returns true when the merge had conflicts, false when it merged cleanly.
+std::expected<bool, std::string> mergeFile(const std::string& ours,
+                                           const std::string& base,
+                                           const std::string& theirs,
+                                           const std::string& cwd = {});
+
 // True when `ancestor` is an ancestor of (or equal to) `descendant`.
 std::expected<bool, std::string> isAncestor(const std::string& ancestor,
                                             const std::string& descendant,

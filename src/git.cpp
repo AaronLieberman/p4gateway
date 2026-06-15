@@ -70,6 +70,28 @@ std::expected<std::string, std::string> switchOrphanBranch(
     return run({"switch", "--orphan", branch}, cwd);
 }
 
+std::expected<std::string, std::string> createBranch(const std::string& branch,
+                                                     const std::string& startRef,
+                                                     const std::string& cwd) {
+    return run({"switch", "-c", branch, startRef}, cwd);
+}
+
+std::expected<bool, std::string> mergeFile(const std::string& ours,
+                                           const std::string& base,
+                                           const std::string& theirs,
+                                           const std::string& cwd) {
+    auto result = p4gw::run("git", {"merge-file", ours, base, theirs}, cwd);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    // git merge-file: 0 = clean, N>0 = that many conflicts, <0 (255) = error.
+    if (result->exitCode < 0 || result->exitCode == 255) {
+        return std::unexpected("git merge-file " + ours + " " + base + " " +
+                               theirs + " failed:\n" + result->output);
+    }
+    return result->exitCode != 0;
+}
+
 std::expected<bool, std::string> isAncestor(const std::string& ancestor,
                                             const std::string& descendant,
                                             const std::string& cwd) {

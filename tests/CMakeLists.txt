@@ -5,6 +5,7 @@ add_executable(p4gw_tests
     test_prepare.cpp
     test_mirror.cpp
     test_status.cpp
+    test_shelf.cpp
 )
 target_link_libraries(p4gw_tests PRIVATE p4gw_core)
 
