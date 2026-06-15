@@ -2,6 +2,7 @@
 #include <expected>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "commands.h"
@@ -180,8 +181,7 @@ int cmdPrepare(const Args& args) {
 
     // Route each op to the mapping that owns its path. Changes outside every
     // mapping (pure-Git directories like bin/ or content/) are not shipped to
-    // P4; collect them for an informational note. A rename across mapping
-    // boundaries can't be a single `p4 move`, so it degrades to delete + add.
+    // P4; collect them for an informational note.
     struct Staged {
         std::string repoRel;     // HEAD:repoRel is the source content
         std::string mirrorPath;  // local mirror file to stage/open
@@ -196,6 +196,7 @@ int cmdPrepare(const Args& args) {
     std::vector<std::string> deletes;  // local mirror paths (p4 clears them)
     std::vector<MoveOp> moves;
     std::vector<std::string> unmapped;
+    std::vector<std::pair<std::string, std::string>> crossBoundary;
 
     for (const auto& op : *ops) {
         switch (op.kind) {
@@ -223,17 +224,38 @@ int cmdPrepare(const Args& args) {
             if (from && to && from->mapping == to->mapping) {
                 moves.push_back({mirrorFilePath(*from, op.path),
                                  mirrorFilePath(*to, op.newPath), op.newPath});
+            } else if (!from && !to) {
+                // A pure-Git rename, outside every mapping: nothing for P4.
+                unmapped.push_back(op.path);
+                unmapped.push_back(op.newPath);
             } else {
-                // Cross-boundary (or partly-unmapped) rename: handle each end
-                // on its own side of the p4 boundary.
-                if (from) deletes.push_back(mirrorFilePath(*from, op.path));
-                else unmapped.push_back(op.path);
-                if (to) adds.push_back({op.newPath, mirrorFilePath(*to, op.newPath)});
-                else unmapped.push_back(op.newPath);
+                // One end is in a different mapping (or outside P4 entirely):
+                // a single `p4 move` can't express it, and faking it with
+                // delete+add would lose the file's depot history. Refuse and
+                // let the user run the move in P4 directly.
+                crossBoundary.emplace_back(op.path, op.newPath);
             }
             break;
         }
         }
+    }
+
+    if (!crossBoundary.empty()) {
+        std::fprintf(stderr,
+                     "gw prepare: %zu rename(s) cross a p4 mapping boundary - "
+                     "gw cannot stage these:\n",
+                     crossBoundary.size());
+        for (const auto& [from, to] : crossBoundary) {
+            std::fprintf(stderr, "  %s -> %s\n", from.c_str(), to.c_str());
+        }
+        std::fprintf(stderr,
+                     "A file that moves between two depot subtrees (or in or "
+                     "out of P4 control)\nneeds a real 'p4 move' run in P4 "
+                     "directly - gw only stages changes within a\nsingle "
+                     "mapping. Do the move in P4, submit it, then 'gw import' "
+                     "to pick up the\nnew depot layout before preparing the "
+                     "rest of your branch.\n");
+        return 1;
     }
 
     if (edits.empty() && adds.empty() && deletes.empty() && moves.empty()) {
