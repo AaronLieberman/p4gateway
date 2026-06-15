@@ -328,7 +328,7 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
 // ---- integtest run steps ----
 
 std::expected<void, std::string> itGwInit(ItContext& it) {
-    auto out = runGw(it, it.repoDir, {"init"});
+    auto out = runGw(it, it.repoDir, {"init", "--allow-in-repo"});
     if (!out) return std::unexpected(out.error());
     auto branch = git::currentBranch(it.repoDir);
     if (!branch) return std::unexpected(branch.error());

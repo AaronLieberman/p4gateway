@@ -24,13 +24,17 @@ namespace p4gw {
 // Idempotent: re-running re-verifies the mapping and reuses what exists.
 int cmdInit(const Args& args) {
     bool forceGitInit = false;
+    bool allowInRepo = false;
     for (const auto& arg : args) {
         if (arg == "--force-git-init") {
             forceGitInit = true;
+        } else if (arg == "--allow-in-repo") {
+            allowInRepo = true;
         } else {
             std::fprintf(stderr, "gw init: unknown option '%s'\n",
                          arg.c_str());
-            std::fprintf(stderr, "usage: gw init [--force-git-init]\n");
+            std::fprintf(stderr,
+                         "usage: gw init [--force-git-init] [--allow-in-repo]\n");
             return 1;
         }
     }
@@ -89,13 +93,18 @@ int cmdInit(const Args& args) {
     auto toplevel = git::run({"rev-parse", "--show-toplevel"}, root);
     if (toplevel) {
         if (!fs::equivalent(fs::path(*toplevel), fs::path(root))) {
-            std::fprintf(stderr,
-                         "gw init: %s is inside the Git repo at %s - the "
-                         "overlay root must be its own repo\n",
-                         root.c_str(), toplevel->c_str());
-            return 1;
+            if (!allowInRepo) {
+                std::fprintf(stderr,
+                             "gw init: %s is inside the Git repo at %s - the "
+                             "overlay root must be its own repo\n",
+                             root.c_str(), toplevel->c_str());
+                return 1;
+            }
+            std::printf("note  %s is inside an outer Git repo (--allow-in-repo)\n",
+                        root.c_str());
+        } else {
+            std::printf("Using the existing Git repo at %s\n", root.c_str());
         }
-        std::printf("Using the existing Git repo at %s\n", root.c_str());
     } else {
         auto initialized =
             git::run({"init", "-b", config->baselineBranch}, root);
