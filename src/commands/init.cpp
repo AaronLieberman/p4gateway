@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 #include "commands.h"
 #include "config.h"
@@ -110,21 +111,45 @@ int cmdInit(const Args& args) {
         std::printf("Initialized empty Git repository in %s\n", root.c_str());
     }
 
+    // If the mirror lives inside the repo root, add it to .gitignore.
+    std::string mirrorEntry;
+    {
+        std::error_code ec;
+        const fs::path rel = fs::relative(mirrorDir, root, ec);
+        if (!ec && !rel.empty() && rel.begin()->string() != "..") {
+            mirrorEntry = rel.string();
+        }
+    }
+
     const fs::path gitignore = fs::path(root) / ".gitignore";
     if (!fs::exists(gitignore)) {
         {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
             file << "# gw's local config - personal, never goes to Git or P4\n"
-                    "p4gw.cfg\n"
-                    "\n"
-                    "# gw's mirror - p4's staging area, never goes to Git\n"
-                    ".p4gw/\n";
+                    "p4gw.cfg\n";
+            if (!mirrorEntry.empty()) {
+                file << "\n# gw's mirror directory - P4-managed, not for Git\n"
+                     << mirrorEntry << "\n";
+            }
         }
         std::printf("Wrote starter .gitignore\n");
     } else {
         std::printf("Keeping the existing .gitignore - make sure it ignores "
-                    "p4gw.cfg and the mirror directory (.p4gw/)\n");
+                    "p4gw.cfg");
+        if (!mirrorEntry.empty()) {
+            std::ifstream in(gitignore);
+            std::string content((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+            in.close();
+            if (content.find(mirrorEntry) == std::string::npos) {
+                std::ofstream out(gitignore, std::ios::app);
+                out << "\n# gw's mirror directory - P4-managed, not for Git\n"
+                    << mirrorEntry << "\n";
+                std::printf(" and %s", mirrorEntry.c_str());
+            }
+        }
+        std::printf("\n");
     }
     // In a brand-new (or --force-git-init) repo, commit the .gitignore so
     // the first 'gw import' starts from a clean tree.

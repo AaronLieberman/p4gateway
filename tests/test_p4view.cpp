@@ -181,6 +181,34 @@ TEST(check_spec_mapping_allows_mirror_inside_repo) {
     CHECK(problems.size() == 1);
 }
 
+TEST(view_check_fails_when_correct_remap_is_shadowed) {
+    // Two lines both cover depot_path; the later one maps to the wrong place,
+    // shadowing the correct remap. The "later lines win" rule makes this fail.
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {"//depot/game/main/...", "//aaron-dev/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/src/.p4gw/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/wrong-mirror/...", false, false},
+    };
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    CHECK(!problems.empty());
+}
+
+TEST(view_check_passes_when_correct_remap_wins_over_earlier_wrong_line) {
+    // Two lines both cover depot_path; the correct remap is last and wins.
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {"//depot/game/main/...", "//aaron-dev/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/wrong-mirror/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/src/.p4gw/...", false, false},
+    };
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+}
+
 TEST(check_spec_mapping_requires_client_and_root) {
     const auto problems = p4gw::p4::checkSpecMapping(
         "View:\n\t//a/... //c/a/...\n", "//a/...", "/r", "/m");

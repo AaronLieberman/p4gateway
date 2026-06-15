@@ -1,6 +1,6 @@
 #include "git.h"
 
-#include <cstdio>
+#include <sstream>
 
 #include "process.h"
 
@@ -94,8 +94,10 @@ std::expected<AheadBehind, std::string> aheadBehind(const std::string& base,
         return std::unexpected(output.error());
     }
     // "<behind>\t<ahead>": left side is base-only, right side is ref-only.
+    // operator>> skips the tab/whitespace and parses both counts.
     AheadBehind counts;
-    if (std::sscanf(output->c_str(), "%d %d", &counts.behind, &counts.ahead) != 2) {
+    std::istringstream stream(*output);
+    if (!(stream >> counts.behind >> counts.ahead)) {
         return std::unexpected("unexpected git rev-list output: " + *output);
     }
     return counts;
