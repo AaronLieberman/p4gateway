@@ -172,6 +172,11 @@ std::expected<std::string, std::string> whereDepotDir(const Config& config,
 std::expected<std::string, std::string> sync(const Config& config,
                                              const std::string& pathSpec);
 
+// `p4 sync -f <pathSpec>`; force-syncs over writable files; already-up-to-date
+// is success.
+std::expected<std::string, std::string> syncForce(const Config& config,
+                                                  const std::string& pathSpec);
+
 // `p4 revert <pathSpec>`; nothing opened is success.
 std::expected<std::string, std::string> revert(const Config& config,
                                                const std::string& pathSpec);

@@ -240,8 +240,10 @@ std::expected<void, std::string> itResetLocal(ItContext& it) {
     auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
                           p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
-    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
-                        p4::sync(it.p4, it.p4DepotPath));
+    // Force-sync so writable fixture files written by a previous init run
+    // don't block the sync (p4 won't clobber writable files without -f).
+    auto synced = trace(it, "p4 sync -f " + it.p4DepotPath,
+                        p4::syncForce(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
     std::error_code ec;

@@ -582,6 +582,16 @@ std::expected<std::string, std::string> sync(const Config& config,
     return result;
 }
 
+std::expected<std::string, std::string> syncForce(const Config& config,
+                                                  const std::string& pathSpec) {
+    auto result = run(config, {"sync", "-f", pathSpec});
+    if (!result &&
+        result.error().find("up-to-date") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
 std::expected<std::string, std::string> revert(const Config& config,
                                                const std::string& pathSpec) {
     auto result = run(config, {"revert", pathSpec});
