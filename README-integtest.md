@@ -1,13 +1,20 @@
 # Running the integration tests
 
-`gw integtest` drives the full workflow — `init`, `import`, `prepare`,
+`gw integtest run` drives the full workflow — `init`, `import`, `prepare`,
 `doctor`, submits, rebases — against a real Perforce server. It can't run in
 CI (it needs a live server and a configured workspace), so it lives here as a
 manual step. The setup below runs a throwaway p4d server in WSL2 and runs the
 tests natively on Windows against it.
 
+> **⚠️ Destructive — throwaway servers only.** Every run **obliterates** the
+> test depot files and **wipes** everything under the current directory (except
+> `p4.ini`/`.p4config`). Only ever point it at a dedicated, disposable p4d you
+> control — never a shared or studio server. `gw` enforces this: it refuses to
+> run unless the server's `Server ID` is `p4gw-integtest-throwaway` **and** its
+> security level is `0` (a fresh, unsecured server). There is no override.
+
 The P4 client root is the **`p4gw-test` directory under this repo root**
-(`p4gateway/p4gw-test`) — it's already gitignored, and `integtest init`
+(`p4gateway/p4gw-test`) — it's already gitignored, and `integtest run`
 deletes everything under it, so the whole P4 workspace stays self-contained
 there and never collides with the Git repo.
 
@@ -20,8 +27,13 @@ mkdir -p ~/p4root
 cd ~/p4root
 curl -O https://cdist2.perforce.com/perforce/r25.1/bin.linux26x86_64/p4d
 chmod +x p4d
-echo "integtest" > server.id
+echo "p4gw-integtest-throwaway" > server.id
 ```
+
+The `server.id` value is **not** cosmetic: `gw integtest` reads it back as
+`Server ID` and refuses to run unless it is exactly `p4gw-integtest-throwaway`.
+This is the safety interlock that stops the destructive run from ever touching
+a real server, so use this value verbatim.
 
 Create a startup script:
 
@@ -136,8 +148,8 @@ In the editor that opens:
    ```
 
 Save and close. This remaps the `src` subtree into the mirror, which is the
-mapping `gw init` verifies. If you get the depot path wrong, `gw integtest
-init` prints the exact line to use when its mapping check fails — fix it with
+mapping `gw init` verifies. If you get the depot path wrong, `gw integtest run`
+prints the exact line to use when its mapping check fails — fix it with
 `p4 client` and re-run.
 
 ## Part 5 — Build gw
@@ -160,24 +172,39 @@ From inside `p4gw-test`:
 
 ```
 cd p4gw-test
-..\build\Release\gw.exe integtest init
 ..\build\Release\gw.exe integtest run
 ```
 
-`integtest init` builds the depot-side fixture and writes the config — it
-**deletes everything under the current directory** except `p4.ini`, so never
-keep anything of value there. Re-run it any time you want a clean slate.
+That single command does everything: it confirms the server is a throwaway,
+resets the fixture (locally **and** in the depot), drives the full workflow,
+and — on success — cleans up after itself by obliterating the depot files and
+wiping the local tree. Because it resets at the start, it is safe to run
+repeatedly; there is no separate `init` step anymore.
 
-`integtest run` drives the full workflow. On failure it prints the step that
-failed and the error; add `--verbose` to echo every command and its output:
+`integtest run` **deletes everything under the current directory** except
+`p4.ini`/`.p4config`, so never keep anything of value there. If it finds a file
+it doesn't recognize it refuses and names it; pass `--force` to wipe anyway.
+
+On failure it prints the step that failed and the error, and leaves the state
+in place for inspection; add `--verbose` to echo every command and its output:
 
 ```
 ..\build\Release\gw.exe integtest run --verbose
 ```
 
+Flags:
+
+- `--leave` — keep the built repo/depot state instead of cleaning up at the
+  end (handy for poking around after a successful run).
+- `--clean` — skip the tests and *only* clean up: revert opens, drop leftover
+  changelists, obliterate the depot files, and wipe the local tree. Use this to
+  recover after a failed or interrupted run.
+- `--force` — proceed past the stray-file guard described above.
+
 ## Resetting
 
-- **Local state and depot fixture:** re-run `gw integtest init`.
+- **Local state and depot fixture:** just re-run `gw integtest run` (it resets
+  itself), or `gw integtest run --clean` to clean up without running the tests.
 - **The entire server** (all history, users, clients): stop p4d, wipe the
   server data, and restart, keeping the binary, script, and `server.id`:
 

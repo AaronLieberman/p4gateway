@@ -232,3 +232,34 @@ TEST(check_spec_mapping_requires_client_and_root) {
         "View:\n\t//a/... //c/a/...\n", "//a/...", "/r", "/m");
     CHECK(problems.size() == 1);
 }
+
+TEST(server_id_from_info) {
+    // p4 info prints the field as "ServerID:" in recent releases ...
+    const char* infoNoSpace =
+        "User name: integtest\n"
+        "Server address: 127.0.0.1:1666\n"
+        "ServerID: p4gw-integtest-throwaway\n"
+        "Server license: none\n";
+    CHECK(p4gw::p4::serverIdFromInfo(infoNoSpace) ==
+          "p4gw-integtest-throwaway");
+
+    // ... and as "Server ID:" in others; both must parse.
+    const char* infoSpaced =
+        "User name: integtest\n"
+        "Server ID: master.1\n";
+    CHECK(p4gw::p4::serverIdFromInfo(infoSpaced) == "master.1");
+
+    // No server.id set -> empty.
+    CHECK(p4gw::p4::serverIdFromInfo("User name: integtest\n").empty());
+}
+
+TEST(security_level_from_show) {
+    CHECK(p4gw::p4::securityLevelFromShow("security=0\n") == 0);
+    CHECK(p4gw::p4::securityLevelFromShow("security=3\n") == 3);
+    // p4 often annotates the source of the value.
+    CHECK(p4gw::p4::securityLevelFromShow("security=1 (configure)\n") == 1);
+    // Unset configurable: no security= line means level 0.
+    CHECK(p4gw::p4::securityLevelFromShow(
+              "No configurables have been set.\n") == 0);
+    CHECK(p4gw::p4::securityLevelFromShow("") == 0);
+}

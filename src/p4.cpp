@@ -648,4 +648,64 @@ std::expected<std::string, std::string> deleteChangelist(const Config& config,
     return run(config, {"change", "-d", cl});
 }
 
+std::expected<std::string, std::string> obliterate(const Config& config,
+                                                   const std::string& depotFile) {
+    auto result = run(config, {"obliterate", "-y", depotFile});
+    if (!result &&
+        result.error().find("no file(s) to obliterate") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::expected<std::string, std::string> pendingChangelistsForUser(
+    const Config& config, const std::string& user) {
+    return run(config, {"-ztag", "changes", "-s", "pending", "-u", user});
+}
+
+std::string serverIdFromInfo(const std::string& info) {
+    std::string id = specField(info, "ServerID");
+    if (id.empty()) id = specField(info, "Server ID");
+    return id;
+}
+
+int securityLevelFromShow(const std::string& configureShowOutput) {
+    // Lines look like "security=1" or "security=1 (configure)"; an unset
+    // configurable yields no such line, which means level 0.
+    const std::string key = "security=";
+    const auto pos = configureShowOutput.find(key);
+    if (pos == std::string::npos) return 0;
+    int value = 0;
+    bool any = false;
+    for (size_t i = pos + key.size();
+         i < configureShowOutput.size() &&
+         std::isdigit(static_cast<unsigned char>(configureShowOutput[i]));
+         ++i) {
+        value = value * 10 + (configureShowOutput[i] - '0');
+        any = true;
+    }
+    return any ? value : 0;
+}
+
+std::expected<std::string, std::string> serverId(const Config& config) {
+    auto info = run(config, {"info"});
+    if (!info) {
+        return std::unexpected(info.error());
+    }
+    return serverIdFromInfo(*info);
+}
+
+std::expected<int, std::string> securityLevel(const Config& config) {
+    // Read the raw result so an unset configurable (which p4 may report via a
+    // non-zero exit and/or "No configurables have been set") still parses as 0
+    // rather than surfacing as an error.
+    std::vector<std::string> args = clientArgs(config);
+    args.insert(args.end(), {"configure", "show", "security"});
+    auto result = p4gw::run("p4", args);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return securityLevelFromShow(result->output);
+}
+
 }  // namespace p4gw::p4

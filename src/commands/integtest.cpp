@@ -15,6 +15,7 @@
 #include "mirror.h"
 #include "p4.h"
 #include "process.h"
+#include "shelf.h"
 
 namespace fs = std::filesystem;
 
@@ -27,13 +28,19 @@ namespace {
 // discovered via `p4 where`; the user has pre-mapped its `src` subtree into
 // the repo's mirror container at `.p4gw/src` in the client view (the repo root
 // is `p4gw-test` itself; bin/ and root files stay unmapped).
-// `integtest init` (re)builds a
-// known fixture in the depot; `integtest run` drives the real workflow
-// through child `gw` processes and asserts state at each step.
+// `gw integtest run` (re)builds a known fixture in the depot, drives the real
+// workflow through child `gw` processes asserting state at each step, then
+// cleans up. It is self-resetting, so it can be run repeatedly; `--clean`
+// runs only the cleanup and `--leave` skips it. The whole command is gated on
+// a throwaway-server check because it obliterates depot files and wipes the
+// local tree.
 
 struct ItContext {
     std::string gw;            // gw executable to spawn for commands under test
     bool verbose = false;
+    bool force = false;        // wipe past the stray-file guard
+    bool leave = false;        // skip the post-run depot/local cleanup
+    bool clean = false;        // run only the cleanup (recovery), then exit
     std::string testRoot;      // the p4gw-test directory (cwd)
     std::string depotRoot;     // its depot path, no trailing /...
     std::string srcDepotPath;  // depotRoot + "/src/..."
@@ -67,6 +74,29 @@ constexpr FixtureFile kSrcFixture[] = {
     {"util.cpp", "// fixture util.cpp\nint util() { return 1; }\n"},
     {"util.h", "// fixture util.h\nint util();\n"},
     {"docs/overview.md", "# fixture overview\n"},
+};
+
+// The ServerID a throwaway p4d must carry before this destructive command will
+// touch it; the README setup writes this exact value to server.id.
+constexpr const char* kThrowawayServerId = "p4gw-integtest-throwaway";
+
+// Every depot file (relative to depotRoot) that init or the run can submit;
+// cleanup obliterates exactly these - explicit paths, never a wildcard.
+constexpr const char* kObliterateFiles[] = {
+    "readme.txt", "notes.txt",
+    "bin/tool.txt", "bin/helper.txt",
+    "src/main.cpp", "src/util.cpp", "src/util.h",
+    "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
+};
+
+// Top-level names integtest itself creates under testRoot (== repoDir). The
+// local-wipe guard treats anything else as a stray it must not blindly delete.
+// p4.ini/.p4config are the personal connection config and are kept, not wiped.
+constexpr const char* kKnownLocalEntries[] = {
+    "p4.ini", ".p4config",
+    "p4gw.cfg", ".gitignore", ".git",
+    ".p4gw", "src", "bin",
+    "readme.txt", "notes.txt",
 };
 
 void vlog(const ItContext& it, const std::string& text) {
@@ -157,6 +187,57 @@ void makeWritableRecursive(const fs::path& path) {
     }
 }
 
+bool isKnownLocalEntry(const std::string& name) {
+    for (const char* known : kKnownLocalEntries) {
+        if (name == known) return true;
+    }
+    return false;
+}
+
+// Deletes everything under testRoot except the personal connection config
+// (p4.ini/.p4config). Guarded: if any entry isn't one integtest creates and
+// --force wasn't given, it refuses without deleting anything, so an accidental
+// run in the wrong directory can't destroy real files. Shared by the reset at
+// the start of a run and the cleanup at the end.
+std::expected<void, std::string> wipeLocal(ItContext& it) {
+    std::error_code ec;
+    std::vector<std::string> strays;
+    for (const auto& entry : fs::directory_iterator(it.testRoot, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (!isKnownLocalEntry(name)) strays.push_back(name);
+    }
+    if (ec) {
+        return std::unexpected("cannot list " + it.testRoot + ": " +
+                               ec.message());
+    }
+    if (!strays.empty() && !it.force) {
+        std::string list;
+        for (const auto& name : strays) list += "\n  " + name;
+        return std::unexpected(
+            "refusing to wipe " + it.testRoot + ": it contains files integtest "
+            "did not create:" + list +
+            "\nRemove them, or pass --force to delete everything here anyway.");
+    }
+    for (const auto& entry : fs::directory_iterator(it.testRoot, ec)) {
+        const std::string name = entry.path().filename().string();
+        // The p4 connection config must survive the wipe.
+        if (name == "p4.ini" || name == ".p4config") continue;
+        vlog(it, "deleting " + entry.path().string());
+        makeWritableRecursive(entry.path());
+        std::error_code removeEc;
+        fs::remove_all(entry.path(), removeEc);
+        if (removeEc) {
+            return std::unexpected("cannot delete " + entry.path().string() +
+                                   ": " + removeEc.message());
+        }
+    }
+    if (ec) {
+        return std::unexpected("cannot list " + it.testRoot + ": " +
+                               ec.message());
+    }
+    return {};
+}
+
 // ---- shared discovery ----
 
 // The one-time prerequisites the tests cannot set up themselves; appended to
@@ -173,10 +254,10 @@ std::string setupInstructions() {
         "     e.g.:\n"
         "       //depot/.../p4gw-test/src/...   "
         "//CLIENT/.../p4gw-test/.p4gw/src/...\n"
-        "     Later view lines win, so keep it last. (init verifies this and\n"
+        "     Later view lines win, so keep it last. (run verifies this and\n"
         "     prints the exact line to use if it's off.)\n"
-        "  5. From inside p4gw-test, run:  gw integtest init\n"
-        "Full details: PLAN-integrationtests.md.\n";
+        "  5. From inside p4gw-test, run:  gw integtest run\n"
+        "Full details: README-integtest.md.\n";
 }
 
 std::expected<void, std::string> discover(ItContext& it) {
@@ -184,7 +265,7 @@ std::expected<void, std::string> discover(ItContext& it) {
     if (fs::path(it.testRoot).filename() != "p4gw-test") {
         return std::unexpected(
             "integtest must be run from inside a directory named "
-            "'p4gw-test' (integtest init DELETES everything under the "
+            "'p4gw-test' (gw integtest DELETES everything under the "
             "current directory); this is " + it.testRoot +
             "\n" + setupInstructions());
     }
@@ -210,7 +291,38 @@ std::expected<void, std::string> discover(ItContext& it) {
     return {};
 }
 
-// ---- integtest init steps ----
+// The single gate that makes the obliterate/wipe safe: this command only runs
+// against a dedicated throwaway p4d, identified by a sentinel ServerID and a
+// security level of 0 (a fresh, unsecured server). Run at preflight before
+// anything destructive, and re-run just before the obliterate in itCleanup.
+std::expected<void, std::string> itVerifyThrowaway(ItContext& it) {
+    auto id = trace(it, "p4 info (ServerID)", p4::serverId(it.p4));
+    if (!id) return std::unexpected(id.error());
+    if (*id != kThrowawayServerId) {
+        return std::unexpected(
+            "refusing to run: this command OBLITERATES depot files and wipes "
+            "the local tree, so it only runs against a dedicated throwaway "
+            "p4d.\nThe server's ServerID is '" +
+            (id->empty() ? std::string("(unset)") : *id) +
+            "', but it must be '" + kThrowawayServerId +
+            "'.\nSet it on your test server and restart p4d, e.g.:\n"
+            "  echo " + kThrowawayServerId + " > ~/p4root/server.id\n"
+            "See README-integtest.md.");
+    }
+    auto level = p4::securityLevel(it.p4);
+    if (!level) return std::unexpected(level.error());
+    if (*level != 0) {
+        return std::unexpected(
+            "refusing to run: server security level is " +
+            std::to_string(*level) +
+            ", expected 0 (a fresh, unsecured throwaway p4d). This command is "
+            "destructive and must not touch a real server.\n"
+            "See README-integtest.md.");
+    }
+    return {};
+}
+
+// ---- integtest fixture-build steps ----
 
 std::expected<void, std::string> itVerifyMapping(ItContext& it) {
     auto spec = p4::clientSpec(it.p4);
@@ -240,31 +352,13 @@ std::expected<void, std::string> itResetLocal(ItContext& it) {
     auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
                           p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
-    // Force-sync so writable fixture files written by a previous init run
-    // don't block the sync (p4 won't clobber writable files without -f).
+    // Force-sync so writable fixture files written by a previous run don't
+    // block the sync (p4 won't clobber writable files without -f).
     auto synced = trace(it, "p4 sync -f " + it.p4DepotPath,
                         p4::syncForce(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(it.testRoot, ec)) {
-        const std::string name = entry.path().filename().string();
-        // The p4 connection config must survive the wipe.
-        if (name == "p4.ini" || name == ".p4config") continue;
-        vlog(it, "deleting " + entry.path().string());
-        makeWritableRecursive(entry.path());
-        std::error_code removeEc;
-        fs::remove_all(entry.path(), removeEc);
-        if (removeEc) {
-            return std::unexpected("cannot delete " + entry.path().string() +
-                                   ": " + removeEc.message());
-        }
-    }
-    if (ec) {
-        return std::unexpected("cannot list " + it.testRoot + ": " +
-                               ec.message());
-    }
-    return {};
+    return wipeLocal(it);
 }
 
 std::expected<void, std::string> itWriteFixture(ItContext& it) {
@@ -744,6 +838,51 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
     return {};
 }
 
+// Leaves both sides clean: reverts opens, sweeps any leftover changelists,
+// obliterates the explicitly-named depot files, and wipes the local tree. Runs
+// as the last step of a successful run (unless --leave) and as the whole job
+// under --clean. Shares wipeLocal (and its guard) with itResetLocal.
+std::expected<void, std::string> itCleanup(ItContext& it) {
+    // 1. Drop any opened files in the test depot (no-op after a clean run;
+    //    recovers an aborted one).
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+
+    // 2. Best-effort: delete this user's leftover pending/shelved changelists.
+    //    An aborted run can leave a shelf or empty CL behind; a clean run
+    //    leaves none. Errors here are cleanup niceties, not failures.
+    auto user = p4::currentUser(it.p4);
+    if (user) {
+        auto listing = p4::pendingChangelistsForUser(it.p4, *user);
+        if (listing) {
+            for (const auto& cl : parseChanges(*listing)) {
+                // Best-effort: a shelf may not exist, and a CL may refuse to
+                // delete; either way keep sweeping the rest.
+                (void)trace(it, "p4 shelve -d -c " + cl.change,
+                            p4::deleteShelve(it.p4, cl.change));
+                (void)trace(it, "p4 change -d " + cl.change,
+                            p4::deleteChangelist(it.p4, cl.change));
+            }
+        }
+    }
+
+    // 3. Re-verify the throwaway sentinel immediately before the irreversible
+    //    obliterate, then remove each explicitly-named depot file (no
+    //    wildcards). A file that isn't in the depot is treated as success.
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    for (const char* rel : kObliterateFiles) {
+        const std::string depotFile = it.depotRoot + "/" + rel;
+        auto obliterated = trace(it, "p4 obliterate -y " + depotFile,
+                                 p4::obliterate(it.p4, depotFile));
+        if (!obliterated) return std::unexpected(obliterated.error());
+    }
+
+    // 4. Wipe the local tree, leaving only the connection config.
+    return wipeLocal(it);
+}
+
 using Step = std::pair<const char*,
                        std::function<std::expected<void, std::string>()>>;
 
@@ -776,31 +915,48 @@ std::string resolveGwExe(const std::string& argv0) {
 int cmdIntegtest(const std::string& gwExe, const Args& args) {
     auto usage = [] {
         std::fprintf(stderr,
-                     "usage: gw integtest <init|run> [--verbose] [--gw <path>]\n"
-                     "  init  reset the p4gw-test fixture (DELETES everything "
-                     "under the current\n        directory except p4.ini) and "
-                     "submit it to the depot\n"
-                     "  run   drive the full workflow against the fixture "
-                     "(run init first)\n"
-                     "Needs p4 and a live server; see "
-                     "PLAN-integrationtests.md.\n");
+                     "usage: gw integtest [run] [--leave|--clean] [--force] "
+                     "[--verbose] [--gw <path>]\n"
+                     "  Drives the full workflow against a throwaway p4d,\n"
+                     "  resetting the fixture (local + depot) first and cleaning\n"
+                     "  up afterward. DESTRUCTIVE: obliterates depot files and\n"
+                     "  wipes everything under the current directory except\n"
+                     "  p4.ini/.p4config. Refuses unless the server is a\n"
+                     "  throwaway (ServerID '%s', security 0).\n"
+                     "    --leave   keep the built state instead of cleaning up\n"
+                     "    --clean   only clean up (recover after a failed run)\n"
+                     "    --force   wipe even past unrecognized files\n"
+                     "Needs p4 and a live server; see README-integtest.md.\n",
+                     kThrowawayServerId);
         return 1;
     };
-    if (args.empty() || (args[0] != "init" && args[0] != "run")) {
-        return usage();
-    }
-    const std::string mode = args[0];
 
     ItContext it;
     it.gw = resolveGwExe(gwExe);
-    for (size_t i = 1; i < args.size(); ++i) {
-        if (args[i] == "--verbose") {
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string& arg = args[i];
+        if (arg == "run") {
+            continue;  // optional verb, kept for muscle memory
+        } else if (arg == "init") {
+            std::fprintf(stderr,
+                         "gw integtest: 'init' has been folded into 'run'. Just "
+                         "run 'gw integtest run' - it resets the fixture itself "
+                         "and cleans up afterward (use --clean to clean up after "
+                         "a failed run).\n");
+            return 1;
+        } else if (arg == "--verbose") {
             it.verbose = true;
-        } else if (args[i] == "--gw" && i + 1 < args.size()) {
+        } else if (arg == "--force") {
+            it.force = true;
+        } else if (arg == "--leave") {
+            it.leave = true;
+        } else if (arg == "--clean") {
+            it.clean = true;
+        } else if (arg == "--gw" && i + 1 < args.size()) {
             it.gw = args[++i];
         } else {
             std::fprintf(stderr, "gw integtest: unknown option '%s'\n",
-                         args[i].c_str());
+                         arg.c_str());
             return usage();
         }
     }
@@ -808,7 +964,13 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
     std::vector<Step> steps;
     steps.emplace_back("discover the test depot path (p4 where)",
                        [&] { return discover(it); });
-    if (mode == "init") {
+    steps.emplace_back("confirm this is a throwaway server",
+                       [&] { return itVerifyThrowaway(it); });
+    if (it.clean) {
+        // Recovery only: clean up and exit (--clean wins over --leave).
+        steps.emplace_back("clean up the depot and local repo",
+                           [&] { return itCleanup(it); });
+    } else {
         steps.emplace_back("verify the src -> .p4gw/src view mapping",
                            [&] { return itVerifyMapping(it); });
         steps.emplace_back("revert, sync, and wipe the local test directory",
@@ -819,15 +981,6 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itSubmitFixture(it); });
         steps.emplace_back("gw setup in src/",
                            [&] { return itGwSetup(it); });
-    } else {
-        steps.emplace_back("require the fixture (gw integtest init first)",
-                           [&]() -> std::expected<void, std::string> {
-            if (!fs::is_regular_file(fs::path(it.repoDir) / "p4gw.cfg")) {
-                return std::unexpected(it.repoDir + "/p4gw.cfg not found - run "
-                                       "'gw integtest init' first");
-            }
-            return {};
-        });
         steps.emplace_back("gw init verifies the mapping and creates the repo",
                            [&] { return itGwInit(it); });
         steps.emplace_back("sync + first gw import builds p4-main",
@@ -848,19 +1001,24 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itShelfImport(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
+        if (!it.leave) {
+            steps.emplace_back("clean up the depot and local repo",
+                               [&] { return itCleanup(it); });
+        }
     }
 
     const int rc = runSteps(steps);
     if (rc == 0) {
-        std::printf("\nintegtest %s: all %zu steps passed.\n", mode.c_str(),
-                    steps.size());
-        if (mode == "init") {
-            std::printf("Now run: gw integtest run\n");
+        std::printf("\nintegtest: all %zu steps passed.\n", steps.size());
+        if (it.leave && !it.clean) {
+            std::printf("Built state left in place (--leave); run "
+                        "'gw integtest run --clean' to remove it.\n");
         }
     } else {
-        std::printf("\nintegtest %s failed. Rerun with --verbose for every "
-                    "command and its output;\n'gw integtest init' resets the "
-                    "fixture.\n", mode.c_str());
+        std::printf("\nintegtest failed. Rerun with --verbose for every command "
+                    "and its output.\nWhen done inspecting, "
+                    "'gw integtest run --clean' resets the depot and local "
+                    "repo.\n");
     }
     return rc;
 }

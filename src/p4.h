@@ -209,4 +209,35 @@ std::expected<std::string, std::string> deleteShelve(const Config& config,
 std::expected<std::string, std::string> deleteChangelist(const Config& config,
                                                          const std::string& cl);
 
+// `p4 obliterate -y <depotFile>`: permanently removes a file AND its history
+// from the depot. Integration-test cleanup only - gw commands never call this.
+// `depotFile` must be an explicit path, never an unscoped wildcard; a file that
+// isn't in the depot ("no file(s) to obliterate") is treated as success.
+std::expected<std::string, std::string> obliterate(const Config& config,
+                                                   const std::string& depotFile);
+
+// `p4 -ztag changes -s pending -u <user>` with NO path filter: every pending
+// changelist owned by `user`, including empty and shelved-only ones that a
+// path-scoped query would miss. Metadata-only and bounded by user; used solely
+// by integtest cleanup to sweep changelists left by an aborted run. Returns raw
+// -ztag output for shelf.h's parseChanges.
+std::expected<std::string, std::string> pendingChangelistsForUser(
+    const Config& config, const std::string& user);
+
+// ---- throwaway-server safety checks (used by integtest) ----
+
+// ServerID from `p4 info` output; tries the "ServerID" and "Server ID" labels.
+// Empty when the server has no server.id set (pure; unit-tested).
+std::string serverIdFromInfo(const std::string& info);
+
+// Security level parsed from `p4 configure show security` output (the
+// "security=N" form); 0 when no such line is present (pure; unit-tested).
+int securityLevelFromShow(const std::string& configureShowOutput);
+
+// `p4 info` -> the server's ServerID (empty if unset).
+std::expected<std::string, std::string> serverId(const Config& config);
+
+// `p4 configure show security` -> the server's security level (0 if unset).
+std::expected<int, std::string> securityLevel(const Config& config);
+
 }  // namespace p4gw::p4
