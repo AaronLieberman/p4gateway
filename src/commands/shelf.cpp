@@ -79,20 +79,15 @@ int shelfImport(const Args& args) {
         return 1;
     }
 
-    // The branch is created off the baseline, so the baseline must exist and
-    // the working tree must be clean (we are about to switch branches).
+    // The branch is created off the pristine depot baseline (the hidden ref),
+    // so it must exist and the working tree must be clean (we are about to
+    // switch branches).
     const std::string& baseline = config->baselineBranch;
-    auto baselineExists = git::branchExists(baseline, root);
-    if (!baselineExists) {
-        std::fprintf(stderr, "gw shelf import: %s\n",
-                     baselineExists.error().c_str());
-        return 1;
-    }
-    if (!*baselineExists) {
+    const std::string depotRef = depotTrackingRef(*config);
+    if (!git::revParse(depotRef, root)) {
         std::fprintf(stderr,
-                     "gw shelf import: baseline branch '%s' does not exist - "
-                     "run 'gw import' first\n",
-                     baseline.c_str());
+                     "gw shelf import: no depot baseline yet - run 'gw import' "
+                     "first\n");
         return 1;
     }
     auto dirty = git::isDirty(root);
@@ -151,7 +146,7 @@ int shelfImport(const Args& args) {
         return 1;
     }
 
-    auto created = git::createBranch(branch, baseline, root);
+    auto created = git::createBranch(branch, depotRef, root);
     if (!created) {
         std::fprintf(stderr, "gw shelf import: %s\n", created.error().c_str());
         return 1;

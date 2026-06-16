@@ -41,7 +41,7 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 |---|---|
 | `gw setup` | Writes the `p4gw.cfg` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
 | `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
-| `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the `p4-main` baseline branch. `--rebase` then rebases your feature branch onto it. Like `git fetch` / `git pull --rebase`. |
+| `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the hidden `refs/p4gw/p4-main` ref that tracks pristine depot state (the `origin/main` analog). Your branch is fast-forwarded when it has no local commits; `--rebase` replays local commits on top, and without it divergent commits are left untouched — never stomped. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check. |
 | `gw status` | One-screen view of where Git and P4 stand: current branch, commits ahead of / behind the baseline, working-tree cleanliness, the last imported changelist, and any pending changelist — plus the single most useful next step. Read-only; degrades gracefully when P4 isn't reachable. |
 | `gw shelf list` | Lists your pending and shelved changelists under the subtree (newest first, shelved ones flagged), so you can pick a CL number to import. |
@@ -157,7 +157,9 @@ mapping = //depot/yourgame/config/...  .p4gw/config
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
 
-# Git branch that tracks pristine depot state. Default: p4-main
+# Name for the baseline that tracks pristine depot state. Default: p4-main.
+# gw keeps the canonical depot state on the hidden ref refs/p4gw/<name> and
+# fast-forwards a like-named local branch to it for convenience.
 baseline_branch = p4-main
 ```
 

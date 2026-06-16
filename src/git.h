@@ -41,6 +41,32 @@ std::expected<bool, std::string> branchExists(const std::string& branch,
 std::expected<std::string, std::string> switchBranch(const std::string& branch,
                                                      const std::string& cwd = {});
 
+// `git switch --detach <ref>`: check out `ref`'s commit without being on any
+// branch. Used to build a commit (e.g. a depot snapshot) off to the side
+// without rewriting the branch the user is on.
+std::expected<std::string, std::string> switchDetached(const std::string& ref,
+                                                       const std::string& cwd = {});
+
+// `git update-ref <ref> <target>`: point `ref` at `target` without checking it
+// out. Used to advance the hidden depot-tracking ref and to fast-forward a
+// non-current branch.
+std::expected<void, std::string> updateRef(const std::string& ref,
+                                           const std::string& target,
+                                           const std::string& cwd = {});
+
+// `git merge --ff-only <ref>` on the current branch: advance to `ref` only if
+// it is a fast-forward (the current branch is an ancestor of `ref`). Fails
+// rather than creating a merge commit when histories have diverged.
+std::expected<std::string, std::string> mergeFastForward(const std::string& ref,
+                                                         const std::string& cwd = {});
+
+// SHA of the most recent commit reachable from `ref` whose message matches the
+// extended-regex `pattern`, or an empty string if none match. Used to find the
+// last `Import depot state` commit when migrating a legacy repo.
+std::expected<std::string, std::string> latestCommitMatching(
+    const std::string& pattern, const std::string& ref,
+    const std::string& cwd = {});
+
 // `git switch --orphan` - a new branch with no history; tracked files of the
 // previous branch are removed from the working tree (restored by switching
 // back), untracked files are left alone.

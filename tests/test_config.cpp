@@ -90,6 +90,13 @@ TEST(config_defaults_baseline_branch) {
     }
 }
 
+TEST(depot_tracking_ref_derives_from_baseline) {
+    p4gw::Config config;  // default baseline branch
+    CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/p4-main");
+    config.baselineBranch = "p4-base";
+    CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/p4-base");
+}
+
 TEST(config_requires_at_least_one_mapping) {
     auto config = loadFromString("client = aaron-dev\n");
     CHECK(!config.has_value());

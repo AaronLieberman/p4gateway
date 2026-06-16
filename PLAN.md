@@ -20,9 +20,11 @@ state — lands in the mirror. The directory at the canonical `src/` path is
 *purely* a Git repo that P4 never touches, while builds still see files in
 the right place. gw moves state across the boundary explicitly:
 
-- `gw import` commits the mirror's current state to the baseline branch
-  (`p4-main`), like `git fetch`; `--rebase` rebases the current branch onto
-  it, like `git pull --rebase`.
+- `gw import` commits the mirror's current state to the hidden depot-tracking
+  ref `refs/p4gw/p4-main` (the `origin/main` analog), like `git fetch`. Your
+  branch fast-forwards when it has no local commits; `--rebase` replays local
+  commits onto the new depot state, like `git pull --rebase`. A like-named
+  local branch is kept fast-forwarded to the ref for convenience.
 - `gw prepare` opens the current branch's changes in a pending changelist by
   staging blobs into the mirror and running explicit `p4 edit/add/delete/
   move` — Git already knows exactly what changed, so no reconcile guessing.
@@ -57,9 +59,12 @@ worst external failure (the remap line vanishing from the client spec) is a
       the client view via p4 — hard failure on a wrong mapping or dead
       connection — then git init if needed (`--force-git-init` starts the
       repo over) + starter `.gitignore`; never edits the client spec
-- [x] `gw import`: clean-tree check, switch to baseline (orphan-created on
-      first import), copy mirror → working tree / delete vanished tracked
-      files, commit (best-effort CL label), switch back, `--rebase`
+- [x] `gw import`: clean-tree check, build the depot snapshot off a detached
+      checkout of the hidden ref `refs/p4gw/p4-main` (orphan baseline on the
+      very first import; legacy repos seed the ref from the baseline branch's
+      last import commit), copy mirror → working tree / delete vanished
+      tracked files, commit (best-effort CL label), advance the ref, then
+      fast-forward / `--rebase` the current branch and the convenience branch
 - [x] `gw prepare`: ancestor preflight, CL from commit messages
       (`--message` override), explicit `p4 delete/edit/move/add` against the
       mirror in dependency order, `p4 reconcile -n` verification

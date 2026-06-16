@@ -52,6 +52,7 @@ int cmdStatus(const Args& args) {
 
     StatusInfo info;
     info.baselineBranch = config->baselineBranch;
+    const std::string depotRef = depotTrackingRef(*config);
 
     info.hasCommits = git::revParse("HEAD", root).has_value();
     if (!info.hasCommits) {
@@ -67,18 +68,22 @@ int cmdStatus(const Args& args) {
         return 1;
     }
 
-    if (auto exists = git::branchExists(info.baselineBranch, root)) {
-        info.baselineExists = *exists;
-    }
-    info.onBaseline =
-        !info.detached && info.branch == info.baselineBranch;
+    // The baseline is the hidden depot-tracking ref, not the like-named branch:
+    // ahead/behind are measured against pristine depot state, so local commits
+    // on the p4-main branch itself still show up as "ahead".
+    info.baselineExists = git::revParse(depotRef, root).has_value();
 
-    if (info.baselineExists && !info.onBaseline) {
-        if (auto ab = git::aheadBehind(info.baselineBranch, "HEAD", root)) {
+    if (info.baselineExists) {
+        if (auto ab = git::aheadBehind(depotRef, "HEAD", root)) {
             info.ahead = ab->ahead;
             info.behind = ab->behind;
         }
     }
+    // "On the baseline" now means sitting exactly on pristine depot state with
+    // nothing of your own on top - the prompt to start a branch still fits.
+    info.onBaseline = info.baselineExists && !info.detached &&
+                      info.ahead == 0 && info.behind == 0 &&
+                      info.branch == info.baselineBranch;
 
     if (auto lines = git::statusLines(root)) {
         info.dirty = !lines->empty();
@@ -86,7 +91,7 @@ int cmdStatus(const Args& args) {
     }
 
     if (info.baselineExists) {
-        if (auto subject = git::commitSubject(info.baselineBranch, root)) {
+        if (auto subject = git::commitSubject(depotRef, root)) {
             info.lastImportedCl = parseImportedCl(*subject);
         }
     }

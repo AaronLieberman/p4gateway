@@ -303,4 +303,8 @@ std::string resolveMirrorPath(const std::string& mirrorPath,
     return mirror.lexically_normal().string();
 }
 
+std::string depotTrackingRef(const Config& config) {
+    return "refs/p4gw/" + config.baselineBranch;
+}
+
 }  // namespace p4gw

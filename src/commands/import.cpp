@@ -11,13 +11,22 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
-// Commits the current state of the mirror directory - whatever p4 last
-// synced into it, by any tool - as a new commit on the baseline branch.
-// Analogous to `git fetch` (or `git pull` with --rebase):
-//   1. Require a clean working tree; remember the current branch.
-//   2. Check out the baseline branch (created on first import).
-//   3. Make the working tree match the mirror, commit.
-//   4. Switch back; with --rebase, rebase the branch onto the new baseline.
+// Absorbs the mirror's current state - whatever p4 last synced into it, by any
+// tool - into Git, modelled on `git fetch` / `git pull --rebase`:
+//
+//   * The hidden ref refs/p4gw/<baseline> tracks pristine depot state (the
+//     `origin/main` analog). `gw import` always advances it with a fresh
+//     snapshot commit, built off to the side so the branch you are on is never
+//     rewritten by the import itself.
+//   * Your current branch is then brought up to the new depot state: a clean
+//     fast-forward when it carries no local commits, or - with --rebase - your
+//     commits are replayed on top. Without --rebase, divergent local commits
+//     are left exactly where they are (never stomped) and you are told to
+//     rebase.
+//   * The like-named local branch (e.g. p4-main) is a convenience pointer kept
+//     fast-forwarded to the hidden ref whenever it has no local commits, so the
+//     feature-branch workflow (`git rebase p4-main`, prepare against it) keeps
+//     working.
 int cmdImport(const Args& args) {
     bool rebase = false;
     for (const auto& arg : args) {
@@ -61,9 +70,9 @@ int cmdImport(const Args& args) {
     }
 
     const std::string& baseline = config->baselineBranch;
+    const std::string depotRef = depotTrackingRef(*config);
 
-    // A repo fresh from `gw init` has no commits yet; in that case we stay
-    // where we are and the import becomes the baseline's first commit.
+    // Where the user is working; empty on an unborn branch (no commits yet).
     const bool hasCommits = git::revParse("HEAD", root).has_value();
     std::string originalBranch;
     if (hasCommits) {
@@ -79,40 +88,76 @@ int cmdImport(const Args& args) {
                          "first\n");
             return 1;
         }
+    }
+
+    // Resolve the depot-tracking ref. If it does not exist yet but a legacy
+    // baseline branch does, this is a repo from before the hidden-ref model:
+    // seed the ref from the branch's most recent import commit (or its tip if
+    // there isn't one) so existing repos keep working without surprises.
+    std::string oldDepot;
+    if (auto tip = git::revParse(depotRef, root)) {
+        oldDepot = *tip;
     } else {
-        // Unborn branch: make sure the first commit lands on the baseline.
-        auto unborn = git::run({"symbolic-ref", "--short", "HEAD"}, root);
-        if (unborn && *unborn != baseline) {
-            auto switched = git::switchOrphanBranch(baseline, root);
-            if (!switched) {
-                std::fprintf(stderr, "gw import: %s\n",
-                             switched.error().c_str());
-                return 1;
+        auto baselineExists = git::branchExists(baseline, root);
+        if (baselineExists && *baselineExists) {
+            std::string seed;
+            auto importCommit = git::latestCommitMatching(
+                "^Import depot state", "refs/heads/" + baseline, root);
+            if (importCommit && !importCommit->empty()) {
+                seed = *importCommit;
+            } else if (auto branchTip =
+                           git::revParse("refs/heads/" + baseline, root)) {
+                seed = *branchTip;
+            }
+            if (!seed.empty()) {
+                auto seeded = git::updateRef(depotRef, seed, root);
+                if (!seeded) {
+                    std::fprintf(stderr, "gw import: %s\n",
+                                 seeded.error().c_str());
+                    return 1;
+                }
+                oldDepot = seed;
             }
         }
     }
 
-    if (hasCommits && originalBranch != baseline) {
-        auto exists = git::branchExists(baseline, root);
-        if (!exists) {
-            std::fprintf(stderr, "gw import: %s\n", exists.error().c_str());
-            return 1;
-        }
-        auto switched = *exists ? git::switchBranch(baseline, root)
-                                : git::switchOrphanBranch(baseline, root);
-        if (!switched) {
-            std::fprintf(stderr, "gw import: %s\n", switched.error().c_str());
-            return 1;
-        }
-    }
-
-    // From here on we are on the baseline branch; any failure should report
-    // that fact so the user knows where they were left.
+    // From here failures may have moved HEAD off the user's branch; report it.
     auto fail = [&](const std::string& message) {
         std::fprintf(stderr, "gw import: %s\n", message.c_str());
-        std::fprintf(stderr, "note: you are on branch '%s'\n", baseline.c_str());
+        auto where = git::currentBranch(root);
+        if (where && *where == "HEAD" && !originalBranch.empty()) {
+            std::fprintf(stderr,
+                         "note: HEAD is detached mid-import; return with: "
+                         "git switch -f %s\n",
+                         originalBranch.c_str());
+        } else if (where) {
+            std::fprintf(stderr, "note: you are on '%s'\n", where->c_str());
+        }
         return 1;
     };
+
+    // Position the working tree on a pristine depot base, then overlay the
+    // mirror. With an existing depot ref we detach onto it so the user's branch
+    // is untouched; for the very first import we create the baseline branch and
+    // commit there (there is no prior depot state to base a snapshot on).
+    const bool firstImport = oldDepot.empty();
+    if (firstImport) {
+        if (hasCommits) {
+            // Existing history, no baseline yet: start it as an orphan.
+            auto switched = git::switchOrphanBranch(baseline, root);
+            if (!switched) return fail(switched.error());
+        } else {
+            // Unborn branch: make sure the first commit lands on the baseline.
+            auto unborn = git::run({"symbolic-ref", "--short", "HEAD"}, root);
+            if (unborn && *unborn != baseline) {
+                auto switched = git::switchOrphanBranch(baseline, root);
+                if (!switched) return fail(switched.error());
+            }
+        }
+    } else {
+        auto switched = git::switchDetached(oldDepot, root);
+        if (!switched) return fail(switched.error());
+    }
 
     auto tracked = git::lsFiles(root);
     if (!tracked) return fail(tracked.error());
@@ -201,10 +246,10 @@ int cmdImport(const Args& args) {
     auto clean = git::indexMatchesHead(root);
     if (!clean) return fail(clean.error());
 
-    if (*clean && hasCommits) {
-        std::printf("Already up to date - the mirror matches '%s'.\n",
-                    baseline.c_str());
-    } else {
+    // Commit the snapshot (when there is anything new) and advance the depot
+    // ref to it. newDepot stays at oldDepot when the mirror already matched.
+    std::string newDepot = oldDepot;
+    if (!*clean) {
         // Best-effort label: the company tool syncs different paths to
         // different CLs, so this is informational, not a guarantee.
         std::string message = "Import depot state";
@@ -214,21 +259,57 @@ int cmdImport(const Args& args) {
         }
         auto committed = git::commit(message, root);
         if (!committed) return fail(committed.error());
-        std::printf("Committed depot state to '%s' (%zu files, %zu deleted)\n",
-                    baseline.c_str(), copiedFiles, deletedFiles);
+        auto tip = git::revParse("HEAD", root);
+        if (!tip) return fail(tip.error());
+        newDepot = *tip;
+        auto advanced = git::updateRef(depotRef, newDepot, root);
+        if (!advanced) return fail(advanced.error());
     }
 
-    if (originalBranch.empty() || originalBranch == baseline) {
-        std::printf("You are on '%s'. Start work with: git switch -c <branch>\n",
-                    baseline.c_str());
+    const bool importedNew = newDepot != oldDepot;
+
+    // Return to the user's branch: we may be on a detached snapshot, or on the
+    // freshly created baseline after a first import with pre-existing history.
+    // An unborn first import has no branch to go back to and stays on baseline.
+    if (!originalBranch.empty()) {
+        auto cur = git::currentBranch(root);
+        if (cur && *cur != originalBranch) {
+            auto switchedBack = git::switchBranch(originalBranch, root);
+            if (!switchedBack) return fail(switchedBack.error());
+        }
+    }
+
+    // A first import against an empty mirror never created any commit, so there
+    // is no depot state to sync a branch to.
+    if (newDepot.empty()) {
+        std::printf("Nothing to import - the mirror has no files yet.\n");
         return 0;
     }
 
-    auto switchedBack = git::switchBranch(originalBranch, root);
-    if (!switchedBack) return fail(switchedBack.error());
+    if (importedNew) {
+        std::printf("Imported depot state to '%s' (%zu files, %zu deleted)\n",
+                    depotRef.c_str(), copiedFiles, deletedFiles);
+    } else {
+        std::printf("Already up to date - the mirror matches the depot "
+                    "baseline.\n");
+    }
 
-    if (rebase) {
-        auto rebased = git::rebase(baseline, root);
+    // Bring the user's branch up to the new depot state. `ffable` is true when
+    // the branch has no local commits the depot lacks (a clean fast-forward);
+    // `behind` is true when the depot has commits the branch lacks.
+    const std::string current =
+        originalBranch.empty() ? baseline : originalBranch;
+    auto ffable = git::isAncestor(current, newDepot, root);
+    if (!ffable) return fail(ffable.error());
+    auto contains = git::isAncestor(newDepot, current, root);
+    if (!contains) return fail(contains.error());
+    const bool behind = !*contains;
+
+    if (*ffable) {
+        auto ff = git::mergeFastForward(newDepot, root);  // no-op when in sync
+        if (!ff) return fail(ff.error());
+    } else if (behind && rebase) {
+        auto rebased = git::rebase(newDepot, root);
         if (!rebased) {
             std::fflush(stdout);  // keep messages ordered with stderr
             std::fprintf(stderr, "gw import: rebase stopped:\n%s\n",
@@ -238,12 +319,35 @@ int cmdImport(const Args& args) {
                          "(or 'git rebase --abort' to undo).\n");
             return 1;
         }
-        std::printf("Rebased '%s' onto '%s'.\n", originalBranch.c_str(),
+        std::printf("Rebased '%s' onto the new depot state.\n", current.c_str());
+    }
+
+    // Keep the convenience baseline branch tracking the depot ref when it has
+    // no local commits of its own (a clean fast-forward). If it has diverged,
+    // it is the user's working branch - leave it alone.
+    if (current != baseline) {
+        auto baselineExists = git::branchExists(baseline, root);
+        if (baselineExists && *baselineExists) {
+            auto branchFf =
+                git::isAncestor("refs/heads/" + baseline, newDepot, root);
+            if (branchFf && *branchFf) {
+                auto moved =
+                    git::updateRef("refs/heads/" + baseline, newDepot, root);
+                if (!moved) return fail(moved.error());
+            }
+        }
+    }
+
+    if (originalBranch.empty() || (originalBranch == baseline && *ffable)) {
+        std::printf("You are on '%s'. Start work with: git switch -c <branch>\n",
                     baseline.c_str());
-    } else {
-        std::printf("Back on '%s'. Rebase onto the new baseline with: "
-                    "git rebase %s (or rerun with --rebase)\n",
-                    originalBranch.c_str(), baseline.c_str());
+        return 0;
+    }
+    if (behind && !*ffable && !rebase) {
+        std::printf("'%s' has local commits and was left as-is. Rebase onto "
+                    "the new depot state with: gw import --rebase (or "
+                    "git rebase %s)\n",
+                    current.c_str(), baseline.c_str());
     }
     return 0;
 }

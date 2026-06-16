@@ -79,4 +79,12 @@ std::string mirrorRepoSubtree(const std::string& mirrorPath);
 // the gw-managed paths. Pure; unit-tested.
 std::string buildGitignore(const std::vector<Mapping>& mappings);
 
+// The hidden Git ref that tracks pristine depot state - the `origin/main`
+// analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".
+// It lives outside refs/heads/ so it never shows up in `git branch`; `gw
+// import` advances it, and prepare/status/shelf read it as the canonical
+// baseline. The like-named local branch is just a convenience pointer kept
+// fast-forwarded to it. Pure; unit-tested.
+std::string depotTrackingRef(const Config& config);
+
 }  // namespace p4gw

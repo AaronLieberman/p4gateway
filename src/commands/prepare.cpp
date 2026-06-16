@@ -124,46 +124,29 @@ int cmdPrepare(const Args& args) {
         resolved.push_back({&mapping, mirrorDir});
     }
 
-    const std::string& baseline = config->baselineBranch;
-    auto branch = git::currentBranch(root);
-    if (!branch) {
-        std::fprintf(stderr, "gw prepare: %s\n", branch.error().c_str());
-        return 1;
-    }
-    if (*branch == baseline) {
+    // Everything ships relative to the pristine depot baseline - the hidden
+    // refs/p4gw/<baseline> ref, not the like-named branch (which may now carry
+    // your own local commits).
+    const std::string depotRef = depotTrackingRef(*config);
+    if (!git::revParse(depotRef, root)) {
         std::fprintf(stderr,
-                     "gw prepare: you are on '%s' (the baseline branch) - "
-                     "switch to the feature branch you want to ship\n",
-                     baseline.c_str());
+                     "gw prepare: no depot baseline yet - run 'gw import' "
+                     "first\n");
         return 1;
     }
-    auto baselineExists = git::branchExists(baseline, root);
-    if (!baselineExists) {
-        std::fprintf(stderr, "gw prepare: %s\n", baselineExists.error().c_str());
-        return 1;
-    }
-    if (!*baselineExists) {
-        std::fprintf(stderr,
-                     "gw prepare: baseline branch '%s' does not exist - run "
-                     "'gw import' first\n",
-                     baseline.c_str());
-        return 1;
-    }
-    auto ancestor = git::isAncestor(baseline, "HEAD", root);
+    auto ancestor = git::isAncestor(depotRef, "HEAD", root);
     if (!ancestor) {
         std::fprintf(stderr, "gw prepare: %s\n", ancestor.error().c_str());
         return 1;
     }
     if (!*ancestor) {
         std::fprintf(stderr,
-                     "gw prepare: '%s' is not an ancestor of HEAD - run "
-                     "'gw import --rebase' to rebase onto the latest depot "
-                     "state first\n",
-                     baseline.c_str());
+                     "gw prepare: HEAD is not based on the latest depot state - "
+                     "run 'gw import --rebase' to rebase onto it first\n");
         return 1;
     }
 
-    auto changes = git::diffNameStatus(baseline, "HEAD", root);
+    auto changes = git::diffNameStatus(depotRef, "HEAD", root);
     if (!changes) {
         std::fprintf(stderr, "gw prepare: %s\n", changes.error().c_str());
         return 1;
@@ -174,8 +157,8 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
     if (ops->empty()) {
-        std::printf("Nothing to prepare: no file changes between '%s' and "
-                    "HEAD.\n", baseline.c_str());
+        std::printf("Nothing to prepare: no file changes between the depot "
+                    "baseline and HEAD.\n");
         return 0;
     }
 
@@ -266,7 +249,7 @@ int cmdPrepare(const Args& args) {
 
     std::string description = messageOverride;
     if (description.empty()) {
-        auto messages = git::commitMessages(baseline, "HEAD", root);
+        auto messages = git::commitMessages(depotRef, "HEAD", root);
         if (!messages) {
             std::fprintf(stderr, "gw prepare: %s\n", messages.error().c_str());
             return 1;
@@ -405,8 +388,8 @@ int cmdPrepare(const Args& args) {
 
     std::printf("\nChangelist %s is ready - review and submit it from P4V "
                 "(or: p4 submit -c %s).\nAfter it is submitted, run "
-                "'gw import' to absorb the new depot state into '%s'.\n",
-                cl->c_str(), cl->c_str(), baseline.c_str());
+                "'gw import' to absorb the new depot state.\n",
+                cl->c_str(), cl->c_str());
     return 0;
 }
 

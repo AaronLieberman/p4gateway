@@ -65,6 +65,33 @@ std::expected<std::string, std::string> switchBranch(const std::string& branch,
     return run({"switch", branch}, cwd);
 }
 
+std::expected<std::string, std::string> switchDetached(const std::string& ref,
+                                                       const std::string& cwd) {
+    return run({"switch", "--detach", ref}, cwd);
+}
+
+std::expected<void, std::string> updateRef(const std::string& ref,
+                                           const std::string& target,
+                                           const std::string& cwd) {
+    auto result = run({"update-ref", ref, target}, cwd);
+    if (!result) return std::unexpected(result.error());
+    return {};
+}
+
+std::expected<std::string, std::string> mergeFastForward(const std::string& ref,
+                                                         const std::string& cwd) {
+    return run({"merge", "--ff-only", ref}, cwd);
+}
+
+std::expected<std::string, std::string> latestCommitMatching(
+    const std::string& pattern, const std::string& ref, const std::string& cwd) {
+    // --grep with --extended-regexp; --max-count=1 keeps only the newest match
+    // (rev-list lists newest first). Empty output means no commit matched.
+    return run({"rev-list", "--max-count=1", "--extended-regexp",
+                "--grep=" + pattern, ref},
+               cwd);
+}
+
 std::expected<std::string, std::string> switchOrphanBranch(
     const std::string& branch, const std::string& cwd) {
     return run({"switch", "--orphan", branch}, cwd);
