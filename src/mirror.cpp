@@ -70,6 +70,13 @@ std::expected<std::vector<std::string>, std::string> listFiles(
     return files;
 }
 
+bool copyNeeded(std::uintmax_t srcSize, fs::file_time_type srcMtime,
+                bool dstExists, std::uintmax_t dstSize,
+                fs::file_time_type dstMtime) {
+    if (!dstExists) return true;
+    return srcSize != dstSize || srcMtime != dstMtime;
+}
+
 std::expected<void, std::string> applySyncActions(const SyncActions& actions,
                                                   const std::string& mirrorDir,
                                                   const std::string& worktreeDir) {
@@ -85,6 +92,27 @@ std::expected<void, std::string> applySyncActions(const SyncActions& actions,
     for (const auto& rel : actions.copies) {
         const fs::path source = fs::path(mirrorDir) / rel;
         const fs::path target = fs::path(worktreeDir) / rel;
+
+        // Skip files whose working-tree copy already matches the mirror in size
+        // and mtime; import stamps the mirror mtime onto the copy below so an
+        // untouched file stays detectable as unchanged on the next run. Any
+        // stat error just falls through to a normal copy.
+        const auto srcSize = fs::file_size(source, ec);
+        const auto srcMtime = fs::last_write_time(source, ec);
+        if (!ec) {
+            std::error_code dstEc;
+            const bool dstExists = fs::exists(target, dstEc);
+            const auto dstSize =
+                dstExists ? fs::file_size(target, dstEc) : std::uintmax_t{0};
+            const auto dstMtime = dstExists ? fs::last_write_time(target, dstEc)
+                                            : fs::file_time_type{};
+            if (!dstEc && !copyNeeded(srcSize, srcMtime, dstExists, dstSize,
+                                      dstMtime)) {
+                continue;
+            }
+        }
+        ec.clear();
+
         fs::create_directories(target.parent_path(), ec);
         if (ec) {
             return std::unexpected("failed to create directory " +
@@ -107,6 +135,21 @@ std::expected<void, std::string> applySyncActions(const SyncActions& actions,
         // tree copy must be editable.
         fs::permissions(target, fs::perms::owner_write, fs::perm_options::add,
                         ec);
+        // Stamp the mirror's mtime onto the copy so the next import can skip it
+        // when the mirror file is unchanged (see copyNeeded). Done last:
+        // permission changes don't touch mtime, but the copy itself sets a
+        // fresh one. Re-read the source rather than trusting the value gathered
+        // for the skip check, which may not have been read if that stat failed.
+        const auto stampMtime = fs::last_write_time(source, ec);
+        if (ec) {
+            return std::unexpected("failed to read mtime of " + source.string() +
+                                   ": " + ec.message());
+        }
+        fs::last_write_time(target, stampMtime, ec);
+        if (ec) {
+            return std::unexpected("failed to set mtime on " + target.string() +
+                                   ": " + ec.message());
+        }
     }
     return {};
 }

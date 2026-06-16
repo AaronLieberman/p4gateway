@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,19 @@ ImportPlan planImport(const SyncActions& base,
 // All regular files under `dir`, relative to it, with forward slashes.
 std::expected<std::vector<std::string>, std::string> listFiles(
     const std::string& dir);
+
+// Pure: whether a mirror file must be copied into the working tree, given the
+// size and modification time of the mirror source and (if it exists) of the
+// working-tree target. A file is skipped only when the target already matches
+// in both size and mtime - the same heuristic rsync uses by default. Because
+// `applySyncActions` stamps the mirror's mtime onto the file it copies, an
+// unchanged mirror file reads as already-present on the next import and is not
+// recopied. On a big subtree where most files are untouched this turns a full
+// copy into a cheap stat of each file.
+bool copyNeeded(std::uintmax_t srcSize,
+                std::filesystem::file_time_type srcMtime, bool dstExists,
+                std::uintmax_t dstSize,
+                std::filesystem::file_time_type dstMtime);
 
 // Copies/deletes per `actions` between the mirror and the working tree.
 // Copied files are made writable (mirror files are typically read-only).

@@ -132,8 +132,24 @@ conflict/abort) on Linux.
 - [ ] Rename chains (rename onto a freed path, rename + re-add of source):
       detect and fall back to delete+add with a note
 - [ ] Multiple overlay roots in one client (second `p4gw.cfg` elsewhere)
-- [ ] `import` performance on big subtrees (skip copies by size/mtime
-      instead of copying everything)
+- [x] `import` performance on big subtrees: `applySyncActions` skips a copy
+      when the working-tree file already matches the mirror in size and mtime
+      (rsync's default heuristic), and stamps the mirror's mtime onto each
+      copy so unchanged files keep reading as current on the next run. Turns
+      a full copy into a stat per file; `git add -A`'s own tree scan is the
+      remaining lower bound.
+- [ ] `import` from depot instead of mirror (design): read content via
+      `p4 print` and fetch only the unique set of files changed in CLs since
+      the baseline, rather than reading the mirror filesystem. Would harden
+      against mirror tampering and skip the full-tree stat, but inverts the
+      "P4 only ever sees filesystem state" principle and brings real traps:
+      no single baseline CL exists (mixed-CL syncs) so a per-file have
+      manifest must be persisted; `p4 print` content can differ from synced
+      bytes (LineEnd translation, `+k` keyword expansion) which `prepare`'s
+      diff would flag as spurious churn; and `prepare` still touches the
+      mirror, so tampering isn't fully escaped. If the goal is the tampering
+      risk specifically, a mirror-vs-`p4 have` verification check is a lower
+      -risk alternative. Needs a real workspace to verify byte fidelity.
 - [ ] CI on GitHub Actions: Linux + Windows build & unit tests
 
 ## Risks / open questions
