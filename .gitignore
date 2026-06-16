@@ -68,4 +68,3 @@ vcpkg_installed/
 Testing/
 .cache/
 p4gw-test/
-testplayground/
