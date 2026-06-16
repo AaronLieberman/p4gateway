@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <filesystem>
+#include <unordered_set>
 
 #include "commands.h"
 #include "config.h"
@@ -227,6 +228,25 @@ int cmdImport(const Args& args) {
         auto mirrorFiles = mirror::listFiles(mirrorDir);
         if (!mirrorFiles) return fail(mirrorFiles.error());
 
+        // p4 only ever removes files it deleted a revision of, so anything it
+        // never tracked (build output, leftovers from a botched sync, hand
+        // edits) lingers in the mirror. Keep only the files p4 reports as
+        // synced; strays are ignored so they never land in the baseline. A
+        // failed `p4 have` is an error (don't mistake it for "everything is a
+        // stray"); an empty result is legitimately nothing synced.
+        auto haveDepot = p4::haveFiles(*config, mapping.depotPath);
+        if (!haveDepot) return fail(haveDepot.error());
+        std::unordered_set<std::string> haveRel;
+        for (const auto& depotFile : *haveDepot) {
+            std::string rel =
+                p4::depotRelativePath(mapping.depotPath, depotFile);
+            if (!rel.empty()) haveRel.insert(std::move(rel));
+        }
+        std::vector<std::string> mirrorTracked;
+        for (auto& path : *mirrorFiles) {
+            if (haveRel.contains(path)) mirrorTracked.push_back(std::move(path));
+        }
+
         // Tracked files under this subtree, made mirror-relative so they line
         // up with the mirror's own (subtree-rooted) listing.
         std::vector<std::string> trackedHere;
@@ -239,7 +259,7 @@ int cmdImport(const Args& args) {
         }
 
         const auto actions =
-            mirror::computeSyncActions(*mirrorFiles, trackedHere);
+            mirror::computeSyncActions(mirrorTracked, trackedHere);
 
         std::vector<mirror::OpenedMirrorFile> openedMirror;
         for (const auto& o : *opened) {

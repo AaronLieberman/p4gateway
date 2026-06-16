@@ -67,6 +67,24 @@ TEST(parse_tagged_opened_empty_is_empty) {
     CHECK(p4gw::p4::parseTaggedOpened("").empty());
 }
 
+TEST(parse_tagged_depot_files_reads_have_listing) {
+    const std::string out =
+        "... depotFile //depot/game/src/a.cpp\n"
+        "... clientFile /ws/a.cpp\n"
+        "... haveRev 5\n"
+        "\n"
+        "... depotFile //depot/game/src/sub/b.h\n"
+        "... haveRev 2\n"
+        "\n";
+    const auto files = p4gw::p4::parseTaggedDepotFiles(out);
+    CHECK(files == (std::vector<std::string>{"//depot/game/src/a.cpp",
+                                             "//depot/game/src/sub/b.h"}));
+}
+
+TEST(parse_tagged_depot_files_empty_is_empty) {
+    CHECK(p4gw::p4::parseTaggedDepotFiles("").empty());
+}
+
 TEST(depot_relative_path_strips_subtree) {
     CHECK(p4gw::p4::depotRelativePath("//depot/game/src/...",
                                       "//depot/game/src/sub/a.cpp") ==

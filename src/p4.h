@@ -151,6 +151,18 @@ bool isAddAction(const std::string& action);
 std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     const Config& config);
 
+// Extracts every "... depotFile <path>" value from `p4 -ztag` output, in order
+// (pure; unit-tested). Used to read the file list from `p4 -ztag have`.
+std::vector<std::string> parseTaggedDepotFiles(const std::string& ztagOutput);
+
+// Depot files p4 has synced under `depotPath` (`p4 -ztag have <depotPath>`).
+// These are the files the mirror is *supposed* to contain; `gw import` uses
+// the set to ignore strays p4 doesn't track. A subtree with nothing synced is
+// a normal empty result, not an error. `depotPath` must be the configured,
+// scoped path - never an unscoped wildcard.
+std::expected<std::vector<std::string>, std::string> haveFiles(
+    const Config& config, const std::string& depotPath);
+
 // Writes the head revision of `depotFile` to `dest` (byte-exact, safe for
 // binaries); a thin convenience over printDepotFile for `<depotFile>#head`.
 // `depotFile` must be an explicit path - never an unscoped wildcard.

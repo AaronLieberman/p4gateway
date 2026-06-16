@@ -172,9 +172,12 @@ conflict/abort) on Linux.
   committed by git on import, then written back from blobs on prepare. The
   doctor warning plus the reconcile-preview canary are the mitigations;
   revisit if a real workspace shows churn.
-- **Mirror tampering** (builds writing into it, hand edits): import would
-  absorb the damage into `p4-main` and prepare's reconcile preview would
-  flag the residue. Treat the mirror as gw's — never point editors or
+- **Mirror tampering** (builds writing into it, hand edits): `import`
+  filters the mirror listing through `p4 have`, so stray files p4 never
+  tracked (build output, leftovers from a botched sync) are ignored instead
+  of absorbed into `p4-main`. In-place edits to *tracked* files are still
+  imported (they're in `have`); prepare's reconcile preview is the canary
+  for that residue. Treat the mirror as gw's — never point editors or
   builds at it.
 - **Disk cost**: the subtree exists twice (mirror + repo) plus Git objects.
   Acceptable for a source tree; not intended for art/binary subtrees.

@@ -495,6 +495,19 @@ std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput) {
     return files;
 }
 
+std::vector<std::string> parseTaggedDepotFiles(const std::string& ztagOutput) {
+    std::vector<std::string> files;
+    std::istringstream lines(ztagOutput);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.starts_with("... depotFile ")) {
+            files.push_back(line.substr(14));
+        }
+    }
+    return files;
+}
+
 std::string depotRelativePath(const std::string& depotPath,
                               const std::string& depotFile) {
     const std::string base = stripWildcard(depotPath);  // ends with '/'
@@ -527,6 +540,28 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
                                result->output);
     }
     return parseTaggedOpened(result->output);
+}
+
+std::expected<std::vector<std::string>, std::string> haveFiles(
+    const Config& config, const std::string& depotPath) {
+    std::vector<std::string> args = clientArgs(config);
+    args.insert(args.end(), {"-ztag", "have", depotPath});
+    auto result = p4gw::run("p4", args);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    // Nothing synced under the subtree is a normal, empty result - not an
+    // error - so it must not be confused with a failed call (which would
+    // otherwise make import treat every mirror file as a stray).
+    if (result->output.find("file(s) not on client") != std::string::npos ||
+        result->output.find("no such file") != std::string::npos) {
+        return std::vector<std::string>{};
+    }
+    if (result->exitCode != 0) {
+        return std::unexpected(commandLine(args) + " failed:\n" +
+                               result->output);
+    }
+    return parseTaggedDepotFiles(result->output);
 }
 
 std::expected<void, std::string> printHeadToFile(const Config& config,
