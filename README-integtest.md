@@ -35,13 +35,17 @@ The `server.id` value is **not** cosmetic: `gw integtest` reads it back as
 This is the safety interlock that stops the destructive run from ever touching
 a real server, so use this value verbatim.
 
-Create a startup script:
+Create a startup script that lives next to `p4d` in the server root. It uses
+its own location as the root, so you can run it from any directory (and the
+whole server root can move) without it assuming `~/p4root`:
 
 ```bash
 cat > ~/p4root/start-p4d.sh << 'EOF'
 #!/bin/sh
-cd ~/p4root
-exec ./p4d -r ~/p4root -p 1666
+# Throwaway p4d launcher. Uses this script's own directory as the server
+# root, so it runs from anywhere and travels with the root if it moves.
+root="$(cd "$(dirname "$0")" && pwd)"
+exec "$root/p4d" -r "$root" -p 1666
 EOF
 chmod +x ~/p4root/start-p4d.sh
 ```
@@ -49,7 +53,7 @@ chmod +x ~/p4root/start-p4d.sh
 ### Start the server
 
 ```bash
-~/p4root/start-p4d.sh
+~/p4root/start-p4d.sh         # from any directory
 ```
 
 Leave this terminal open — p4d runs in the foreground; `Ctrl-C` stops it.
