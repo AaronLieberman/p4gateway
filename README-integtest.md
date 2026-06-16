@@ -62,11 +62,15 @@ curl -o "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\p4.exe" `
 ```
 
 `WindowsApps` is already on the PATH for most Windows installs; otherwise copy
-`p4.exe` anywhere that's on your `PATH`. Verify with:
+`p4.exe` anywhere that's on your `PATH`. Verify it's on the PATH by running the
+binary (no shell-specific syntax needed):
 
 ```
-p4 --version
+p4 -V
 ```
+
+This prints the client version banner. If you instead get a "command not
+found" error, `p4.exe` isn't on your `PATH` yet.
 
 ## Part 3 — Create the test directory and connection config
 
@@ -128,7 +132,7 @@ In the editor that opens:
    win, so it must come after the default line):
 
    ```
-   //depot/src/...   //integtest-ws/.p4gw/mirror/src/...
+   //depot/src/...   //integtest-ws/.p4gw/src/...
    ```
 
 Save and close. This remaps the `src` subtree into the mirror, which is the
@@ -143,10 +147,12 @@ From the repo root:
 ```
 cmake -S . -B build
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The binary lands at `build\Release\gw.exe`. Add it to your `PATH`, or pass
-`--gw <path>` to `gw integtest` to point at it explicitly.
+The binary lands at `build\Release\gw.exe`. The tests below run from inside
+`p4gw-test`, so invoke it by relative path as `..\build\Release\gw.exe` (or
+add it to your `PATH` and just type `gw`).
 
 ## Part 6 — Run the tests
 
@@ -154,8 +160,8 @@ From inside `p4gw-test`:
 
 ```
 cd p4gw-test
-gw integtest init
-gw integtest run
+..\build\Release\gw.exe integtest init
+..\build\Release\gw.exe integtest run
 ```
 
 `integtest init` builds the depot-side fixture and writes the config — it
@@ -166,7 +172,7 @@ keep anything of value there. Re-run it any time you want a clean slate.
 failed and the error; add `--verbose` to echo every command and its output:
 
 ```
-gw integtest run --verbose
+..\build\Release\gw.exe integtest run --verbose
 ```
 
 ## Resetting
