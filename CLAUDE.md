@@ -95,5 +95,5 @@ wrapper function, not an inline `run("p4", ...)` call.
   installed in the dev/CI environment — never write a test that requires it.
 - A real end-to-end check needs a Windows machine with a P4 workspace; flag
   changes that need that in your summary rather than claiming they're verified.
-  `gw integtest init|run` automates exactly that check on such a machine
+  `gw integtest run` automates exactly that check on such a machine
   (see PLAN-integrationtests.md) — it is never run by ctest or CI.

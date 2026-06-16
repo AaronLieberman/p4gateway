@@ -30,15 +30,22 @@ but are never invoked by ctest.
   `p4gw-test/.p4gw/src` (the repo root is `p4gw-test`; `bin/` and the root
   files stay unmapped). The tests verify this mapping is present and correct;
   they do not create it.
-- Both commands are run from inside `p4gw-test`. `integtest init` **deletes
-  everything under it** (except the `p4.ini`), so nothing of value may live
-  there.
+- `gw integtest run` is run from inside `p4gw-test`. It **deletes everything
+  under it** (except `p4.ini`/`.p4config`), so nothing of value may live there.
+- The server must be a dedicated **throwaway** p4d: `run` refuses unless its
+  `Server ID` is `p4gw-integtest-throwaway` and its security level is 0, since
+  it obliterates depot files and wipes the local tree.
 
-## `gw integtest init` — build the depot-side fixture
+`gw integtest run` is a single, self-resetting command. It does everything in
+one shot — there is no separate `init` step. The phases below describe what it
+does in order; `--clean` runs only the final cleanup phase (for recovery after
+a failed run) and `--leave` skips it.
 
-Prepares a known-good starting state in Perforce so `integtest run` has
-something to import. Rerunnable: running it again resets both the local
-state and (via reconcile) the depot fixture.
+## Phase 1 — build the depot-side fixture
+
+Prepares a known-good starting state in Perforce for the workflow phase to
+import. Self-resetting: it reverts/force-syncs and (via reconcile) restores the
+depot fixture to baseline, so a previous run's drift is undone every time.
 
 1. Verify the P4 mapping looks right, **including** the remap of the `src`
    subdirectory into the repo's mirror container `.p4gw/src` (reuses
@@ -62,11 +69,11 @@ state and (via reconcile) the depot fixture.
    partial-subtree overlay. (`.gitignore` is `gw init`'s job, exercised by
    `integtest run`.)
 
-## `gw integtest run` — drive the real workflow
+## Phase 2 — drive the real workflow
 
 Each step asserts the expected state (branch state, file contents, opened
 files, CL contents, reconcile-clean) and prints one summary line; failures
-are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
+are loud and exit nonzero, leaving state in place for inspection.
 
 1. `gw init` in `p4gw-test` — must succeed: it verifies the client
    mapping via p4 (this is the verifying-init behavior the split was for),
@@ -97,6 +104,16 @@ are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
 9. Final checks: `gw doctor` exits 0; nothing opened under the test path;
    the root and `bin/` fixture files were never touched.
 
+## Phase 3 — cleanup
+
+Runs last on success (skipped by `--leave`); also the whole job under
+`--clean`. Leaves both sides empty: revert any opens, delete this user's
+leftover pending/shelved changelists, `p4 obliterate -y` the explicitly-named
+fixture files (no wildcards), then wipe the local tree (keeping only
+`p4.ini`/`.p4config`). The throwaway-server check is re-run immediately before
+the obliterate. Because Phase 1 self-resets, a subsequent `run` rebuilds
+everything from scratch.
+
 ## Logging
 
 - Default: minimal logging (one line per high-level step, pass/fail summary).
@@ -120,7 +137,7 @@ are loud and exit nonzero. Run `integtest init` first to (re)set the stage.
 
 ## Decisions locked in
 
-- Driver: C++, inside the `gw` binary itself (`gw integtest init|run`).
-- `gw setup` / `gw init` split (see PLAN.md M1): `integtest init` writes the
-  config via `gw setup`; `integtest run` exercises the verifying `gw init`,
-  which owns `.gitignore` creation.
+- Driver: C++, inside the `gw` binary itself (`gw integtest run`).
+- `gw setup` / `gw init` split (see PLAN.md M1): Phase 1 writes the config via
+  `gw setup`; Phase 2 exercises the verifying `gw init`, which owns
+  `.gitignore` creation.

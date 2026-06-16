@@ -937,13 +937,6 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         const std::string& arg = args[i];
         if (arg == "run") {
             continue;  // optional verb, kept for muscle memory
-        } else if (arg == "init") {
-            std::fprintf(stderr,
-                         "gw integtest: 'init' has been folded into 'run'. Just "
-                         "run 'gw integtest run' - it resets the fixture itself "
-                         "and cleans up afterward (use --clean to clean up after "
-                         "a failed run).\n");
-            return 1;
         } else if (arg == "--verbose") {
             it.verbose = true;
         } else if (arg == "--force") {
