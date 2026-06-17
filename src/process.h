@@ -18,6 +18,10 @@ struct RunOptions {
                              // stderr is still captured in RunResult::output
 };
 
+// When enabled, every spawned command line is echoed to stderr before it runs
+// (the `--verbose` flag). Off by default; set once from main.
+void setVerbose(bool on);
+
 // Runs an external command and captures its output. Arguments are quoted as
 // needed for the platform shell. If `cwd` is non-empty the command runs in
 // that directory.

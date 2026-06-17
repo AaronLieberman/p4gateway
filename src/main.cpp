@@ -1,8 +1,10 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "commands.h"
+#include "process.h"
 
 namespace {
 
@@ -27,6 +29,7 @@ void printUsage() {
         "(see PLAN-integrationtests.md)\n"
         "\n"
         "global options:\n"
+        "  --verbose  Echo every git/p4 command as it runs\n"
         "  --help     Show this help\n"
         "  --version  Show version\n",
         kVersion);
@@ -35,18 +38,32 @@ void printUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2 || std::strcmp(argv[1], "--help") == 0 ||
-        std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "help") == 0) {
-        printUsage();
-        return argc < 2 ? 1 : 0;
+    // Pull the global `--verbose` flag out wherever it appears (before or after
+    // the command) so it works as `gw --verbose status` or `gw status
+    // --verbose`, and individual commands neither see it nor reject it as an
+    // unknown option; it controls the process layer's command echoing. What
+    // remains is the command name followed by that command's own arguments.
+    std::vector<std::string> tokens;
+    for (char** arg = argv + 1; arg != argv + argc; ++arg) {
+        if (std::strcmp(*arg, "--verbose") == 0) {
+            p4gw::setVerbose(true);
+        } else {
+            tokens.emplace_back(*arg);
+        }
     }
-    if (std::strcmp(argv[1], "--version") == 0) {
+
+    if (tokens.empty() || tokens[0] == "--help" || tokens[0] == "-h" ||
+        tokens[0] == "help") {
+        printUsage();
+        return tokens.empty() ? 1 : 0;
+    }
+    if (tokens[0] == "--version") {
         std::printf("gw %s\n", kVersion);
         return 0;
     }
 
-    const std::string command = argv[1];
-    const p4gw::Args args(argv + 2, argv + argc);
+    const std::string command = tokens[0];
+    const p4gw::Args args(tokens.begin() + 1, tokens.end());
 
     if (command == "setup") return p4gw::cmdSetup(args);
     if (command == "init") return p4gw::cmdInit(args);

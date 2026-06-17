@@ -15,6 +15,8 @@ namespace p4gw {
 
 namespace {
 
+bool g_verbose = false;
+
 // Quotes a single argument for the platform shell if it contains characters
 // that would otherwise be misinterpreted.
 std::string quoteArg(const std::string& arg) {
@@ -46,6 +48,8 @@ std::string quoteArg(const std::string& arg) {
 }
 
 }  // namespace
+
+void setVerbose(bool on) { g_verbose = on; }
 
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
@@ -83,6 +87,20 @@ std::expected<RunResult, std::string> run(const std::string& exe,
     cmdline += " 2>&1";
     if (!options.stdoutFile.empty()) {
         cmdline += " > " + quoteArg(options.stdoutFile);
+    }
+
+    if (g_verbose) {
+        // Echo the meaningful command, not the shell wrapping (cd/redirects);
+        // quoted so it can be copy-pasted to rerun by hand.
+        std::string display = quoteArg(exe);
+        for (const auto& arg : args) {
+            display += ' ';
+            display += quoteArg(arg);
+        }
+        if (!options.cwd.empty()) {
+            display += "   (in " + options.cwd + ")";
+        }
+        std::fprintf(stderr, "+ %s\n", display.c_str());
     }
 
     FILE* pipe = POPEN(cmdline.c_str(), "r");

@@ -90,17 +90,21 @@ std::expected<std::string, std::string> stageBlob(const std::string& root,
 // gw never submits; review the CL and submit it from P4V.
 int cmdPrepare(const Args& args) {
     bool verify = true;
+    bool dryRun = false;
     std::string messageOverride;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--no-verify") {
             verify = false;
+        } else if (args[i] == "--dry-run") {
+            dryRun = true;
         } else if (args[i] == "--message" && i + 1 < args.size()) {
             messageOverride = args[++i];
         } else {
             std::fprintf(stderr, "gw prepare: unknown option '%s'\n",
                          args[i].c_str());
             std::fprintf(stderr,
-                         "usage: gw prepare [--message <text>] [--no-verify]\n");
+                         "usage: gw prepare [--message <text>] [--no-verify] "
+                         "[--dry-run]\n");
             return 1;
         }
     }
@@ -247,6 +251,41 @@ int cmdPrepare(const Args& args) {
         return 0;
     }
 
+    // Prints the p4 operations this prepare maps to (and the pure-Git files it
+    // skips). Shared by the --dry-run preview and the post-apply confirmation,
+    // so both read identically.
+    auto printPlannedOps = [&]() {
+        for (const auto& op : *ops) {
+            const bool srcMapped = routeFor(resolved, op.path) != nullptr;
+            switch (op.kind) {
+            case P4Op::Kind::Edit:
+                if (srcMapped) std::printf("  edit    %s\n", op.path.c_str());
+                break;
+            case P4Op::Kind::Add:
+                if (srcMapped) std::printf("  add     %s\n", op.path.c_str());
+                break;
+            case P4Op::Kind::Delete:
+                if (srcMapped) std::printf("  delete  %s\n", op.path.c_str());
+                break;
+            case P4Op::Kind::Move:
+                if (srcMapped || routeFor(resolved, op.newPath)) {
+                    std::printf("  move    %s -> %s\n", op.path.c_str(),
+                                op.newPath.c_str());
+                }
+                break;
+            }
+        }
+        if (!unmapped.empty()) {
+            std::printf("\n%zu changed file(s) are outside any p4 mapping and "
+                        "were NOT added to the changelist (they stay in Git "
+                        "only):\n",
+                        unmapped.size());
+            for (const auto& path : unmapped) {
+                std::printf("  skip    %s\n", path.c_str());
+            }
+        }
+    };
+
     std::string description = messageOverride;
     if (description.empty()) {
         auto messages = git::commitMessages(depotRef, "HEAD", root);
@@ -281,6 +320,17 @@ int cmdPrepare(const Args& args) {
                      "Submit or revert\nthe existing changelist first (see "
                      "'gw status'), then rerun 'gw prepare'.\n");
         return 1;
+    }
+
+    // --dry-run stops here: everything above is read-only (git diff, the route
+    // planning, the opened-files guard). Show exactly which p4 operations a
+    // real run would open, and touch neither P4 nor the mirror.
+    if (dryRun) {
+        std::printf("[dry-run] would create a pending changelist and open:\n");
+        printPlannedOps();
+        std::printf("\n[dry-run] no changes made. Rerun without --dry-run to "
+                    "create the changelist and open these files.\n");
+        return 0;
     }
 
     auto cl = p4::createChangelist(*config, description);
@@ -339,34 +389,7 @@ int cmdPrepare(const Args& args) {
         if (!result) return fail(result.error());
     }
 
-    for (const auto& op : *ops) {
-        const bool srcMapped = routeFor(resolved, op.path) != nullptr;
-        switch (op.kind) {
-        case P4Op::Kind::Edit:
-            if (srcMapped) std::printf("  edit    %s\n", op.path.c_str());
-            break;
-        case P4Op::Kind::Add:
-            if (srcMapped) std::printf("  add     %s\n", op.path.c_str());
-            break;
-        case P4Op::Kind::Delete:
-            if (srcMapped) std::printf("  delete  %s\n", op.path.c_str());
-            break;
-        case P4Op::Kind::Move:
-            if (srcMapped || routeFor(resolved, op.newPath)) {
-                std::printf("  move    %s -> %s\n", op.path.c_str(),
-                            op.newPath.c_str());
-            }
-            break;
-        }
-    }
-    if (!unmapped.empty()) {
-        std::printf("\n%zu changed file(s) are outside any p4 mapping and were "
-                    "NOT added to the changelist (they stay in Git only):\n",
-                    unmapped.size());
-        for (const auto& path : unmapped) {
-            std::printf("  skip    %s\n", path.c_str());
-        }
-    }
+    printPlannedOps();
 
     if (verify) {
         auto preview = p4::reconcilePreview(*config);

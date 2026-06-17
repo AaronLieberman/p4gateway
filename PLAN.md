@@ -86,9 +86,14 @@ conflict/abort) on Linux.
 - [ ] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
       POSIX): separate stdout/stderr, no shell quoting risks, real exit
       codes, native stdin/stdout plumbing
-- [ ] `--dry-run` global flag: every mutating command prints the exact
-      `p4`/`git` commands it would run
-- [ ] `--verbose` echoing every spawned command line
+- [~] `--dry-run`: `gw prepare --dry-run` does all its read-only planning
+      (git diff → p4 ops, route check, opened-files guard) and prints the exact
+      `p4` operations it would open, then stops before creating the changelist
+      or touching the mirror. Still to extend to `import` and the other
+      mutating commands.
+- [x] `--verbose` (global, before or after the command) echoes every spawned
+      `git`/`p4` command line to stderr from the process layer, so it covers
+      every command uniformly
 - [ ] `gw doctor` against a real Windows P4 workspace catches each
       misconfiguration when introduced deliberately (exit criterion)
 - [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
