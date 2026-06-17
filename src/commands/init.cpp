@@ -155,8 +155,10 @@ int cmdInit(const Args& args) {
         }
         std::printf("Wrote starter .gitignore\n");
     } else {
-        std::printf("Keeping the existing .gitignore - make sure it ignores "
-                    "p4gw.cfg");
+        std::printf("Keeping the existing .gitignore - gw only auto-generates "
+                    "the allowlist for a fresh one. Make sure yours ignores "
+                    "p4gw.cfg and any unmapped depot content that syncs in "
+                    "place, so Git tracks only the mapped subtrees.\n");
         std::ifstream in(gitignore);
         std::string content((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
@@ -166,10 +168,9 @@ int cmdInit(const Args& args) {
             if (content.find(entry) == std::string::npos) {
                 out << "\n# gw's mirror directory - P4-managed, not for Git\n"
                     << entry << "\n";
-                std::printf(" and %s", entry.c_str());
+                std::printf("Added %s to .gitignore\n", entry.c_str());
             }
         }
-        std::printf("\n");
     }
     // In a brand-new (or --force-git-init) repo, commit the .gitignore so
     // the first 'gw import' starts from a clean tree.
