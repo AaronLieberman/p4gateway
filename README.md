@@ -80,6 +80,22 @@ any rebase. It reads the shelf with `p4 print` and never opens a P4 file or
 writes to the mirror, so it's safe to run no matter what's synced or checked
 out.
 
+### Using git-branchless
+
+If the repo is managed by [git-branchless](https://github.com/arxanas/git-branchless),
+gw works with it instead of around it. It detects branchless automatically (its
+`branchless.core.mainBranch` config key) and adapts:
+
+- `gw init` points branchless's main branch at the gw baseline (`p4-main`), so
+  the depot state is your trunk and the smartlog hides import commits.
+- `gw import` accepts a **detached HEAD** — no need to mint a throwaway branch
+  to absorb the depot.
+- `gw import --rebase` restacks **every visible stack** onto the new depot
+  state via `git branchless sync`, not just the commit you happen to be on, and
+  records the rewrites so the pre-import commits go obsolete (hidden from the
+  smartlog). Without `--rebase`, your stacks are left untouched and you're
+  pointed at `gw import --rebase` (or `git sync`).
+
 The golden rules of the mirror workflow: **P4 never touches your working
 tree, and you never touch the mirror.** Sync whenever and however you like —
 it can't conflict with your Git state. Don't edit files in the mirror or

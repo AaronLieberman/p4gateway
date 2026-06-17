@@ -185,6 +185,28 @@ int cmdInit(const Args& args) {
         }
     }
 
+    // If the repo is managed by git-branchless, point its main branch at the
+    // gw baseline so `gw import --rebase` (which delegates to `git branchless
+    // sync`) restacks stacks onto the depot state. We never initialize
+    // branchless for the user - that is their choice - but when it is present
+    // this keeps the two tools' idea of "trunk" aligned.
+    if (git::isBranchless(root).value_or(false)) {
+        auto mainBranch = git::configValue("branchless.core.mainBranch", root);
+        if (mainBranch && *mainBranch != config->baselineBranch) {
+            auto set = git::setConfig("branchless.core.mainBranch",
+                                      config->baselineBranch, root);
+            if (set) {
+                std::printf("Pointed branchless's main branch at '%s'\n",
+                            config->baselineBranch.c_str());
+            } else {
+                std::printf("note: could not set branchless.core.mainBranch "
+                            "(%s); set it to '%s' by hand\n",
+                            set.error().c_str(),
+                            config->baselineBranch.c_str());
+            }
+        }
+    }
+
     for (const auto& mapping : config->mappings) {
         const std::string mirrorDir =
             resolveMirrorPath(mapping.mirrorPath, root);

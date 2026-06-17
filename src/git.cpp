@@ -217,6 +217,28 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
     return run({"rebase", onto}, cwd);
 }
 
+std::expected<bool, std::string> isBranchless(const std::string& cwd) {
+    // `git branchless init` sets this key; its presence is our signal that the
+    // repo is managed by branchless (and tells us its main-branch name).
+    auto value = configValue("branchless.core.mainBranch", cwd);
+    if (!value) return std::unexpected(value.error());
+    return !value->empty();
+}
+
+std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
+    // Plain `sync` restacks onto the local main branch without pulling a
+    // remote, which is exactly what we want: the depot baseline is local-only.
+    return run({"branchless", "sync"}, cwd);
+}
+
+std::expected<void, std::string> setConfig(const std::string& key,
+                                           const std::string& value,
+                                           const std::string& cwd) {
+    auto result = run({"config", key, value}, cwd);
+    if (!result) return std::unexpected(result.error());
+    return {};
+}
+
 std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
                                                       const std::string& path,
                                                       const std::string& destFile,

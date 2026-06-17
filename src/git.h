@@ -125,6 +125,27 @@ std::expected<std::string, std::string> commit(const std::string& message,
 std::expected<std::string, std::string> rebase(const std::string& onto,
                                                const std::string& cwd = {});
 
+// True when git-branchless is initialized in this repo (its main-branch config
+// key is set). Branchless tracks commit visibility in its own event log and
+// works detached with implicit branches, so gw restacks via `git branchless
+// sync` rather than a single-branch `git rebase` and moves HEAD by commit.
+std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
+
+// `git branchless sync`: restack every visible (draft) stack onto the latest
+// location of branchless's main branch, recording the rewrites so the
+// pre-rebase commits go obsolete (hidden from the smartlog). The branchless
+// analog of rebasing all descendants of the baseline at once. On conflict the
+// error includes branchless's output and the repo is left mid-rebase for the
+// user to resolve.
+std::expected<std::string, std::string> branchlessSync(const std::string& cwd = {});
+
+// `git config <key> <value>`: set a repo-local config value. Used to point
+// branchless's main branch at the gw baseline so its restack lands on the
+// depot state.
+std::expected<void, std::string> setConfig(const std::string& key,
+                                           const std::string& value,
+                                           const std::string& cwd = {});
+
 // Writes the blob `ref:path` to `destFile` (byte-exact, safe for binaries).
 std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
                                                       const std::string& path,

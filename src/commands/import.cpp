@@ -72,21 +72,55 @@ int cmdImport(const Args& args) {
     const std::string& baseline = config->baselineBranch;
     const std::string depotRef = depotTrackingRef(*config);
 
-    // Where the user is working; empty on an unborn branch (no commits yet).
-    const bool hasCommits = git::revParse("HEAD", root).has_value();
-    std::string originalBranch;
-    if (hasCommits) {
-        auto branch = git::currentBranch(root);
-        if (!branch) {
-            std::fprintf(stderr, "gw import: %s\n", branch.error().c_str());
-            return 1;
+    // Branchless users work detached with implicit branches and track commit
+    // visibility in their own event log. When we detect it, import accepts a
+    // detached HEAD and hands the restack to `git branchless sync` so every
+    // visible stack moves and the old commits go obsolete - instead of
+    // rebasing only the branch the user happens to be on.
+    const bool branchless = git::isBranchless(root).value_or(false);
+    if (branchless) {
+        // `git branchless sync` restacks onto *its* main branch, so it must be
+        // the gw baseline or the restack would land on the wrong trunk.
+        auto mainBranch = git::configValue("branchless.core.mainBranch", root);
+        if (mainBranch && *mainBranch != baseline) {
+            auto set =
+                git::setConfig("branchless.core.mainBranch", baseline, root);
+            if (!set) {
+                std::fprintf(stderr, "gw import: %s\n", set.error().c_str());
+                return 1;
+            }
+            std::printf("note  pointed branchless's main branch at '%s'\n",
+                        baseline.c_str());
         }
-        originalBranch = *branch;
-        if (originalBranch == "HEAD") {
-            std::fprintf(stderr,
-                         "gw import: HEAD is detached - switch to a branch "
-                         "first\n");
-            return 1;
+    }
+
+    // Where the user is working. For branchless we track the commit (HEAD may
+    // be detached); otherwise the branch name, and a detached HEAD is an error.
+    // Empty on an unborn branch (no commits yet).
+    const bool hasCommits = git::revParse("HEAD", root).has_value();
+    std::string originalBranch;  // non-branchless: branch to return to
+    std::string originalHead;    // branchless: commit to return to
+    if (hasCommits) {
+        if (branchless) {
+            auto head = git::revParse("HEAD", root);
+            if (!head) {
+                std::fprintf(stderr, "gw import: %s\n", head.error().c_str());
+                return 1;
+            }
+            originalHead = *head;
+        } else {
+            auto branch = git::currentBranch(root);
+            if (!branch) {
+                std::fprintf(stderr, "gw import: %s\n", branch.error().c_str());
+                return 1;
+            }
+            originalBranch = *branch;
+            if (originalBranch == "HEAD") {
+                std::fprintf(stderr,
+                             "gw import: HEAD is detached - switch to a branch "
+                             "first\n");
+                return 1;
+            }
         }
     }
 
@@ -125,7 +159,12 @@ int cmdImport(const Args& args) {
     auto fail = [&](const std::string& message) {
         std::fprintf(stderr, "gw import: %s\n", message.c_str());
         auto where = git::currentBranch(root);
-        if (where && *where == "HEAD" && !originalBranch.empty()) {
+        if (where && *where == "HEAD" && !originalHead.empty()) {
+            std::fprintf(stderr,
+                         "note: HEAD is detached mid-import; return with: "
+                         "git switch --detach %s\n",
+                         originalHead.c_str());
+        } else if (where && *where == "HEAD" && !originalBranch.empty()) {
             std::fprintf(stderr,
                          "note: HEAD is detached mid-import; return with: "
                          "git switch -f %s\n",
@@ -267,6 +306,78 @@ int cmdImport(const Args& args) {
     }
 
     const bool importedNew = newDepot != oldDepot;
+
+    if (branchless) {
+        // Return HEAD to where the user was working (detached, branchless-
+        // style) before restacking, so `git branchless sync` carries HEAD onto
+        // the rewritten commit. The recorded commit still exists - sync marks
+        // it obsolete, it is not lost (recoverable with `git undo`).
+        if (!originalHead.empty()) {
+            auto back = git::switchDetached(originalHead, root);
+            if (!back) return fail(back.error());
+        }
+
+        // A first import against an empty mirror never created any commit.
+        if (newDepot.empty()) {
+            std::printf("Nothing to import - the mirror has no files yet.\n");
+            return 0;
+        }
+        if (importedNew) {
+            std::printf(
+                "Imported depot state to '%s' (%zu files, %zu deleted)\n",
+                depotRef.c_str(), copiedFiles, deletedFiles);
+        } else {
+            std::printf("Already up to date - the mirror matches the depot "
+                        "baseline.\n");
+        }
+
+        // Keep the convenience baseline branch - branchless's main branch -
+        // tracking the depot: create it if missing, fast-forward it when it
+        // carries no local commits.
+        auto baselineExists = git::branchExists(baseline, root);
+        if (!baselineExists) return fail(baselineExists.error());
+        if (*baselineExists) {
+            auto branchFf =
+                git::isAncestor("refs/heads/" + baseline, newDepot, root);
+            if (!branchFf) return fail(branchFf.error());
+            if (*branchFf) {
+                auto moved =
+                    git::updateRef("refs/heads/" + baseline, newDepot, root);
+                if (!moved) return fail(moved.error());
+            }
+        } else {
+            auto created =
+                git::updateRef("refs/heads/" + baseline, newDepot, root);
+            if (!created) return fail(created.error());
+        }
+
+        // Without --rebase, leave the user's stacks where they are (the same
+        // "never stomp" default as the branch workflow) and point them at sync.
+        if (!rebase) {
+            std::printf("Your stacks were left as-is. Restack them onto the "
+                        "new depot state with: gw import --rebase "
+                        "(or git sync).\n");
+            return 0;
+        }
+
+        // Restack every visible stack onto the new baseline in one shot: all
+        // descendants of the old depot state move together, and branchless
+        // records the rewrites so the pre-import commits become obsolete -
+        // unlike the single-branch `git rebase` of the named-branch workflow.
+        auto synced = git::branchlessSync(root);
+        if (!synced) {
+            std::fflush(stdout);  // keep messages ordered with stderr
+            std::fprintf(stderr, "gw import: branchless sync stopped:\n%s\n",
+                         synced.error().c_str());
+            std::fprintf(stderr,
+                         "Resolve the conflicts, then 'git rebase --continue' "
+                         "(or 'git rebase --abort' to undo).\n");
+            return 1;
+        }
+        std::printf("Restacked your visible commits onto the new depot "
+                    "state.\n");
+        return 0;
+    }
 
     // Return to the user's branch: we may be on a detached snapshot, or on the
     // freshly created baseline after a first import with pre-existing history.
