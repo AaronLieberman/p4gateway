@@ -9,7 +9,10 @@ namespace p4gw {
 // One depot subtree this Git repo overlays, and where its files live on both
 // sides of the mirror boundary. A repo can declare several of these (one per
 // `mapping` line) so a single Git tree can ship more than one depot subtree -
-// e.g. `src/` and `config/` while `bin/` and `content/` stay pure Git.
+// e.g. `src/` and `config/`. The starter `.gitignore` is an allowlist that
+// tracks only the mapped subtrees; unmapped directories (`bin/`, `content/`,
+// other depot content synced in place) stay out of Git unless re-included by
+// hand (`!/dir/`). See buildGitignore.
 struct Mapping {
     // Depot path of the subtree, e.g. "//depot/yourgame/src/...". Ends with
     // "/...". Used to scope every p4 operation so we never touch (or crawl)
@@ -65,5 +68,15 @@ std::string resolveMirrorPath(const std::string& mirrorPath,
 // container component (`.p4gw`) removed. ".p4gw/src" -> "src", ".p4gw" -> "".
 // Forward slashes, no trailing slash. Pure; unit-tested.
 std::string mirrorRepoSubtree(const std::string& mirrorPath);
+
+// Builds the starter `.gitignore` content for a fresh repo. gw tracks only the
+// depot subtree(s) the repo maps; everything else in the working tree -
+// unmapped P4 content synced in place, the `.p4gw` mirror, and gw's own
+// personal config - stays out of Git. The result is an allowlist: ignore
+// everything at the root, then re-include exactly each mapped working-tree
+// subtree (and `.gitignore` itself). A whole-repo mapping (empty repoSubtree)
+// has nothing unmapped to hide, so it falls back to a plain denylist of just
+// the gw-managed paths. Pure; unit-tested.
+std::string buildGitignore(const std::vector<Mapping>& mappings);
 
 }  // namespace p4gw

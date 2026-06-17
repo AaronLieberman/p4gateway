@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -61,6 +62,141 @@ std::string mirrorRepoSubtree(const std::string& mirrorPath) {
         subtree /= *it;
     }
     return subtree.generic_string();
+}
+
+namespace {
+
+// Splits a forward-slash path into its non-empty components.
+std::vector<std::string> pathComponents(const std::string& p) {
+    std::vector<std::string> parts;
+    std::string cur;
+    for (char c : p) {
+        if (c == '/') {
+            if (!cur.empty()) {
+                parts.push_back(cur);
+                cur.clear();
+            }
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) parts.push_back(cur);
+    return parts;
+}
+
+const std::string kGwDenylist =
+    "# gw's local config - personal, never goes to Git or P4\n"
+    "p4gw.cfg\n"
+    "# P4 connection config - personal, never goes to Git\n"
+    "p4.ini\n"
+    ".p4config\n"
+    "\n# gw's mirror directory - P4-managed, not for Git\n"
+    ".p4gw/\n";
+
+}  // namespace
+
+std::string buildGitignore(const std::vector<Mapping>& mappings) {
+    // Distinct mapped working-tree subtrees, in declaration order. An empty
+    // subtree means a mapping covers the whole repo.
+    std::vector<std::string> subtrees;
+    bool wholeRepoMapped = false;
+    for (const auto& m : mappings) {
+        if (m.repoSubtree.empty()) {
+            wholeRepoMapped = true;
+            continue;
+        }
+        if (std::find(subtrees.begin(), subtrees.end(), m.repoSubtree) ==
+            subtrees.end()) {
+            subtrees.push_back(m.repoSubtree);
+        }
+    }
+
+    // A whole-repo mapping leaves nothing unmapped to hide, so an allowlist
+    // would only ignore the repo's own content. Fall back to a plain denylist
+    // of the gw-managed paths (personal config + the mirror container).
+    if (wholeRepoMapped || subtrees.empty()) return kGwDenylist;
+
+    // The mapped subtrees as component vectors. Drop any nested under another
+    // mapped subtree: the ancestor's re-include already exposes it, and a
+    // redundant child line would be re-excluded by the ancestor's `/dir/*`.
+    std::vector<std::vector<std::string>> leaves;
+    for (const auto& s : subtrees) leaves.push_back(pathComponents(s));
+    auto isAncestor = [](const std::vector<std::string>& anc,
+                         const std::vector<std::string>& desc) {
+        if (anc.size() >= desc.size()) return false;
+        return std::equal(anc.begin(), anc.end(), desc.begin());
+    };
+    std::vector<std::vector<std::string>> kept;
+    for (const auto& leaf : leaves) {
+        bool nested = false;
+        for (const auto& other : leaves) {
+            if (&other != &leaf && isAncestor(other, leaf)) {
+                nested = true;
+                break;
+            }
+        }
+        if (!nested) kept.push_back(leaf);
+    }
+
+    // Every directory that must appear in the file: each kept subtree plus all
+    // of its ancestors. A directory is a "leaf" when it is exactly a mapped
+    // subtree (tracked whole); ancestors are intermediate (we re-include the
+    // dir but re-exclude its other children). Recorded in first-seen order so
+    // emission is deterministic.
+    struct Dir {
+        std::vector<std::string> components;
+        bool isLeaf;
+    };
+    std::vector<Dir> dirs;
+    auto findDir = [&](const std::vector<std::string>& c) -> Dir* {
+        for (auto& d : dirs)
+            if (d.components == c) return &d;
+        return nullptr;
+    };
+    for (const auto& leaf : kept) {
+        std::vector<std::string> prefix;
+        for (size_t i = 0; i < leaf.size(); ++i) {
+            prefix.push_back(leaf[i]);
+            const bool isLeaf = (i + 1 == leaf.size());
+            if (Dir* existing = findDir(prefix)) {
+                existing->isLeaf = existing->isLeaf || isLeaf;
+            } else {
+                dirs.push_back({prefix, isLeaf});
+            }
+        }
+    }
+
+    auto join = [](const std::vector<std::string>& c) {
+        std::string s;
+        for (const auto& part : c) {
+            s += '/';
+            s += part;
+        }
+        return s;  // leading slash, no trailing slash, e.g. "/a/b"
+    };
+
+    std::string out =
+        "# gw tracks only the depot subtree(s) this repo maps. Everything else\n"
+        "# in the working tree - unmapped P4 content synced in place, the .p4gw\n"
+        "# mirror, and gw's own p4gw.cfg/p4.ini/.p4config - stays out of Git. To\n"
+        "# keep a Git-only directory, add a line like '!/notes/'.\n"
+        "/*\n"
+        "!/.gitignore\n";
+
+    // Emit by depth: at each level re-include the needed directories, then
+    // re-exclude the children of any intermediate one, so the next (deeper)
+    // level's re-includes show only the mapped descendants through.
+    size_t maxDepth = 0;
+    for (const auto& d : dirs) maxDepth = std::max(maxDepth, d.components.size());
+    for (size_t depth = 1; depth <= maxDepth; ++depth) {
+        for (const auto& d : dirs)
+            if (d.components.size() == depth)
+                out += "!" + join(d.components) + "/\n";
+        for (const auto& d : dirs)
+            if (d.components.size() == depth && !d.isLeaf)
+                out += join(d.components) + "/*\n";
+    }
+    return out;
 }
 
 std::expected<Config, std::string> loadConfig(const std::string& path) {

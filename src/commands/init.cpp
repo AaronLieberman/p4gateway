@@ -151,15 +151,7 @@ int cmdInit(const Args& args) {
         {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
-            file << "# gw's local config - personal, never goes to Git or P4\n"
-                    "p4gw.cfg\n"
-                    "# P4 connection config - personal, never goes to Git\n"
-                    "p4.ini\n"
-                    ".p4config\n";
-            if (!mirrorEntries.empty()) {
-                file << "\n# gw's mirror directory - P4-managed, not for Git\n";
-                for (const auto& entry : mirrorEntries) file << entry << "\n";
-            }
+            file << buildGitignore(config->mappings);
         }
         std::printf("Wrote starter .gitignore\n");
     } else {

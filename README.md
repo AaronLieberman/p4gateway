@@ -147,8 +147,9 @@ to check.
 # mirror directory the client view remaps it into. The mirror always lives
 # under the repo's single '.p4gw' container; its path below the container is
 # the working-tree directory the subtree occupies ('.p4gw/src' -> 'src/',
-# '.p4gw' -> the whole repo). Add one 'mapping' line per subtree; directories
-# with no mapping (e.g. bin/, content/) stay pure Git. At least one required.
+# '.p4gw' -> the whole repo). Add one 'mapping' line per subtree; the starter
+# .gitignore tracks only the mapped subtrees, so unmapped directories (bin/,
+# content/) stay out of Git. At least one mapping required.
 #   mapping = <depot_path ending in /...>  <mirror_path>
 mapping = //depot/yourgame/src/...     .p4gw/src
 mapping = //depot/yourgame/config/...  .p4gw/config
@@ -160,6 +161,9 @@ client = aaron-dev
 baseline_branch = p4-main
 ```
 
-`p4gw.cfg` is personal (it names your client); the starter `.gitignore` keeps
-it — and the mirror directory (`.p4gw/`, p4's staging area) — out of Git, and
-gw never opens it (or `.gitignore`) in a changelist.
+`p4gw.cfg` is personal (it names your client); the starter `.gitignore` is an
+allowlist — `/*` then a `!/src/` line per mapping — so Git tracks only the
+mapped subtrees and everything else (the `.p4gw/` mirror, `p4gw.cfg` itself,
+and any unmapped depot content that synced in place) stays out of Git. To keep
+a directory that is Git-only (never in P4), add a `!/yourdir/` line. gw never
+opens `p4gw.cfg` or `.gitignore` in a changelist.

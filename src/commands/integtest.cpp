@@ -420,13 +420,10 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
         return std::unexpected("gw setup did not write " + it.repoDir +
                                "/p4gw.cfg");
     }
-    // The unmapped dirs (bin/, root files) sync into the repo in place; ignore
-    // them, and p4gw.cfg, so the only Git-tracked content is the src subtree.
-    // gw init keeps this .gitignore and appends the .p4gw mirror container.
-    auto wrote = writeFile(fs::path(it.repoDir) / ".gitignore",
-                           "p4gw.cfg\np4.ini\n.p4config\n"
-                           "bin/\nreadme.txt\nnotes.txt\n");
-    if (!wrote) return wrote;
+    // No hand-written .gitignore: `gw init` generates the allowlist that keeps
+    // the only Git-tracked content the mapped src subtree, ignoring the
+    // unmapped dirs (bin/, root files) that sync into the repo in place. That
+    // is exactly the guarantee itFirstImport asserts, so let init produce it.
     return {};
 }
 

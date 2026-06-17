@@ -127,3 +127,70 @@ TEST(config_rejects_malformed_lines) {
     auto config = loadFromString("mapping //depot/x/... .p4gw\n");
     CHECK(!config.has_value());
 }
+
+namespace {
+
+p4gw::Mapping mappingWithSubtree(const std::string& subtree) {
+    p4gw::Mapping m;
+    m.depotPath = "//depot/x/...";
+    m.mirrorPath = subtree.empty() ? ".p4gw" : ".p4gw/" + subtree;
+    m.repoSubtree = subtree;
+    return m;
+}
+
+bool contains(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+}  // namespace
+
+TEST(gitignore_allowlists_a_top_level_subtree) {
+    const std::string out =
+        p4gw::buildGitignore({mappingWithSubtree("src")});
+    // Ignore everything, then re-include just the mapped subtree and the
+    // .gitignore itself. Unmapped content and the mirror are not negated.
+    CHECK(contains(out, "/*\n"));
+    CHECK(contains(out, "!/.gitignore\n"));
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(!contains(out, "!/bin/"));
+    CHECK(!contains(out, ".p4gw/\n"));  // covered by the blanket /* ignore
+}
+
+TEST(gitignore_allowlists_multiple_subtrees) {
+    const std::string out = p4gw::buildGitignore(
+        {mappingWithSubtree("src"), mappingWithSubtree("config")});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(contains(out, "!/config/\n"));
+}
+
+TEST(gitignore_reincludes_ancestors_for_nested_subtree) {
+    const std::string out =
+        p4gw::buildGitignore({mappingWithSubtree("a/b")});
+    // The blanket /* hides `a`, so re-include `a/`, re-exclude its other
+    // children, then re-include `a/b/` so only that subtree shows through.
+    CHECK(contains(out, "!/a/\n"));
+    CHECK(contains(out, "/a/*\n"));
+    CHECK(contains(out, "!/a/b/\n"));
+    // Ordering: the ancestor re-include and child re-exclude precede the
+    // deeper re-include, or the leaf would be hidden again.
+    CHECK(out.find("/a/*\n") < out.find("!/a/b/\n"));
+}
+
+TEST(gitignore_drops_subtree_nested_under_another_mapping) {
+    const std::string out = p4gw::buildGitignore(
+        {mappingWithSubtree("a"), mappingWithSubtree("a/b")});
+    // `a` is tracked whole, so `a/b` is redundant and must not trigger a
+    // `/a/*` that would re-exclude the rest of `a`.
+    CHECK(contains(out, "!/a/\n"));
+    CHECK(!contains(out, "/a/*\n"));
+    CHECK(!contains(out, "!/a/b/\n"));
+}
+
+TEST(gitignore_falls_back_to_denylist_for_whole_repo_mapping) {
+    const std::string out = p4gw::buildGitignore({mappingWithSubtree("")});
+    // Nothing is unmapped, so allowlisting would only hide the repo's own
+    // content; ignore just the gw-managed paths instead.
+    CHECK(!contains(out, "/*\n"));
+    CHECK(contains(out, "p4gw.cfg\n"));
+    CHECK(contains(out, ".p4gw/\n"));
+}
