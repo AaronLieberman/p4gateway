@@ -196,19 +196,27 @@ in place for inspection; add `--verbose` to echo every command and its output:
 ..\build\Release\gw.exe integtest run --verbose
 ```
 
-Flags:
+To recover after a failed or interrupted run, use the `clean` subcommand — it
+skips the tests and *only* cleans up: revert opens, drop leftover changelists,
+obliterate the depot files, and wipe the local tree:
+
+```
+..\build\Release\gw.exe integtest clean
+```
+
+Running `gw integtest` with no subcommand prints usage and exits non-zero.
+
+Flags (apply to `run` unless noted):
 
 - `--leave` — keep the built repo/depot state instead of cleaning up at the
-  end (handy for poking around after a successful run).
-- `--clean` — skip the tests and *only* clean up: revert opens, drop leftover
-  changelists, obliterate the depot files, and wipe the local tree. Use this to
-  recover after a failed or interrupted run.
+  end (handy for poking around after a successful run). `run` only.
 - `--force` — proceed past the stray-file guard described above.
+- `--verbose` — echo every command and its output.
 
 ## Resetting
 
 - **Local state and depot fixture:** just re-run `gw integtest run` (it resets
-  itself), or `gw integtest run --clean` to clean up without running the tests.
+  itself), or `gw integtest clean` to clean up without running the tests.
 - **The entire server** (all history, users, clients): stop p4d, wipe the
   server data, and restart, keeping the binary, script, and `server.id`:
 

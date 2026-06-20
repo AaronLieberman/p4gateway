@@ -30,10 +30,10 @@ namespace {
 // is `p4gw-test` itself; bin/ and root files stay unmapped).
 // `gw integtest run` (re)builds a known fixture in the depot, drives the real
 // workflow through child `gw` processes asserting state at each step, then
-// cleans up. It is self-resetting, so it can be run repeatedly; `--clean`
-// runs only the cleanup and `--leave` skips it. The whole command is gated on
-// a throwaway-server check because it obliterates depot files and wipes the
-// local tree.
+// cleans up. It is self-resetting, so it can be run repeatedly; the sibling
+// `gw integtest clean` subcommand runs only the cleanup, and `run --leave`
+// skips it. The whole command is gated on a throwaway-server check because it
+// obliterates depot files and wipes the local tree.
 
 struct ItContext {
     std::string gw;            // gw executable to spawn for commands under test
@@ -402,6 +402,18 @@ std::expected<void, std::string> itSubmitFixture(ItContext& it) {
     }
     auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
     if (!submitted) return std::unexpected(submitted.error());
+    // Submit leaves the just-written mirror files on disk with the LF endings
+    // writeFile gave them, but a real workspace only ever sees mirror content
+    // via p4 sync, which applies the client's LineEnd (CRLF here). Force-sync
+    // the src subtree so the mirror matches what sync produces - exactly as the
+    // nothing-to-submit branch above does. Without it the first gw import reads
+    // LF from the mirror while git checks out CRLF into the working tree, and
+    // itFirstImport flags them as differing on every run that actually submits.
+    // Scope to srcDepotPath so the unmapped root/bin files keep their LF endings
+    // (a force-sync there would rewrite them and break itFinalChecks).
+    auto synced = trace(it, "p4 sync -f " + it.srcDepotPath,
+                        p4::syncForce(it.p4, it.srcDepotPath));
+    if (!synced) return std::unexpected(synced.error());
     return {};
 }
 
@@ -838,7 +850,8 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
 // Leaves both sides clean: reverts opens, sweeps any leftover changelists,
 // obliterates the explicitly-named depot files, and wipes the local tree. Runs
 // as the last step of a successful run (unless --leave) and as the whole job
-// under --clean. Shares wipeLocal (and its guard) with itResetLocal.
+// under the `clean` subcommand. Shares wipeLocal (and its guard) with
+// itResetLocal.
 std::expected<void, std::string> itCleanup(ItContext& it) {
     // 1. Drop any opened files in the test depot (no-op after a clean run;
     //    recovers an aborted one).
@@ -912,36 +925,63 @@ std::string resolveGwExe(const std::string& argv0) {
 int cmdIntegtest(const std::string& gwExe, const Args& args) {
     auto usage = [] {
         std::fprintf(stderr,
-                     "usage: gw integtest [run] [--leave|--clean] [--force] "
-                     "[--verbose] [--gw <path>]\n"
-                     "  Drives the full workflow against a throwaway p4d,\n"
-                     "  resetting the fixture (local + depot) first and cleaning\n"
-                     "  up afterward. DESTRUCTIVE: obliterates depot files and\n"
-                     "  wipes everything under the current directory except\n"
-                     "  p4.ini/.p4config. Refuses unless the server is a\n"
-                     "  throwaway (ServerID '%s', security 0).\n"
-                     "    --leave   keep the built state instead of cleaning up\n"
-                     "    --clean   only clean up (recover after a failed run)\n"
-                     "    --force   wipe even past unrecognized files\n"
-                     "Needs p4 and a live server; see README-integtest.md.\n",
+                     "usage: gw integtest <command> [options]\n"
+                     "\n"
+                     "commands:\n"
+                     "  run    Drive the full workflow against a throwaway p4d,\n"
+                     "         resetting the fixture (local + depot) first and\n"
+                     "         cleaning up afterward.\n"
+                     "  clean  Only clean up: revert opens, drop leftover\n"
+                     "         changelists, obliterate the depot files, and wipe\n"
+                     "         the local tree (recover after a failed run).\n"
+                     "\n"
+                     "options:\n"
+                     "  --leave      (run only) keep the built state instead of\n"
+                     "               cleaning up at the end\n"
+                     "  --force      wipe even past unrecognized files\n"
+                     "  --verbose    echo every command and its output\n"
+                     "  --gw <path>  gw binary to drive (default: this one)\n"
+                     "\n"
+                     "DESTRUCTIVE: obliterates depot files and wipes everything\n"
+                     "under the current directory except p4.ini/.p4config.\n"
+                     "Refuses unless the server is a throwaway (ServerID '%s',\n"
+                     "security 0). Needs p4 and a live server; see "
+                     "README-integtest.md.\n",
                      kThrowawayServerId);
         return 1;
     };
 
     ItContext it;
     it.gw = resolveGwExe(gwExe);
-    for (size_t i = 0; i < args.size(); ++i) {
+
+    if (args.empty()) {
+        std::fprintf(stderr, "gw integtest: a subcommand is required\n\n");
+        return usage();
+    }
+    const std::string& sub = args[0];
+    if (sub == "run") {
+        it.clean = false;
+    } else if (sub == "clean") {
+        it.clean = true;
+    } else {
+        std::fprintf(stderr, "gw integtest: unknown subcommand '%s'\n\n",
+                     sub.c_str());
+        return usage();
+    }
+
+    for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];
-        if (arg == "run") {
-            continue;  // optional verb, kept for muscle memory
-        } else if (arg == "--verbose") {
+        if (arg == "--verbose") {
             it.verbose = true;
         } else if (arg == "--force") {
             it.force = true;
         } else if (arg == "--leave") {
+            if (it.clean) {
+                std::fprintf(stderr,
+                             "gw integtest: --leave is not valid with 'clean'\n");
+                return usage();
+            }
             it.leave = true;
-        } else if (arg == "--clean") {
-            it.clean = true;
         } else if (arg == "--gw" && i + 1 < args.size()) {
             it.gw = args[++i];
         } else {
@@ -957,7 +997,7 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
     steps.emplace_back("confirm this is a throwaway server",
                        [&] { return itVerifyThrowaway(it); });
     if (it.clean) {
-        // Recovery only: clean up and exit (--clean wins over --leave).
+        // Recovery only: clean up and exit (the `clean` subcommand).
         steps.emplace_back("clean up the depot and local repo",
                            [&] { return itCleanup(it); });
     } else {
@@ -1002,13 +1042,12 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         std::printf("\nintegtest: all %zu steps passed.\n", steps.size());
         if (it.leave && !it.clean) {
             std::printf("Built state left in place (--leave); run "
-                        "'gw integtest run --clean' to remove it.\n");
+                        "'gw integtest clean' to remove it.\n");
         }
     } else {
         std::printf("\nintegtest failed. Rerun with --verbose for every command "
                     "and its output.\nWhen done inspecting, "
-                    "'gw integtest run --clean' resets the depot and local "
-                    "repo.\n");
+                    "'gw integtest clean' resets the depot and local repo.\n");
     }
     return rc;
 }

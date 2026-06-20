@@ -1,12 +1,38 @@
 #include "mirror.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
+#include <thread>
 #include <unordered_set>
 
 namespace fs = std::filesystem;
 
 namespace p4gw::mirror {
+
+namespace {
+
+// On Windows, antivirus and the Search indexer transiently open files the
+// moment git or p4 writes them, so a remove or overwrite that lands in that
+// window fails with a sharing violation ("being used by another process")
+// that clears within milliseconds. Retry the filesystem op a handful of times
+// with a short backoff before surfacing the error. On a genuine, persistent
+// failure this only adds a fraction of a second to the error path; on Linux
+// the op succeeds on the first attempt and the retries never run.
+template <typename Op>
+void withRetry(std::error_code& ec, Op&& op) {
+    constexpr int kMaxAttempts = 20;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        ec.clear();
+        op(ec);
+        if (!ec) return;
+        if (attempt + 1 < kMaxAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+}
+
+}  // namespace
 
 bool isGwMetadataPath(const std::string& repoRelativePath) {
     return repoRelativePath == "p4gw.cfg" || repoRelativePath == ".gitignore";
@@ -83,7 +109,7 @@ std::expected<void, std::string> applySyncActions(const SyncActions& actions,
     std::error_code ec;
     for (const auto& rel : actions.deletes) {
         const fs::path target = fs::path(worktreeDir) / rel;
-        fs::remove(target, ec);
+        withRetry(ec, [&](std::error_code& e) { fs::remove(target, e); });
         if (ec) {
             return std::unexpected("failed to delete " + target.string() +
                                    ": " + ec.message());
@@ -125,7 +151,10 @@ std::expected<void, std::string> applySyncActions(const SyncActions& actions,
             fs::permissions(target, fs::perms::owner_write,
                             fs::perm_options::add, ec);
         }
-        fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
+        withRetry(ec, [&](std::error_code& e) {
+            fs::copy_file(source, target, fs::copy_options::overwrite_existing,
+                          e);
+        });
         if (ec) {
             return std::unexpected("failed to copy " + source.string() +
                                    " to " + target.string() + ": " +
