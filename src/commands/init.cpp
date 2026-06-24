@@ -198,6 +198,27 @@ int cmdInit(const Args& args) {
     // before the first commit below uses it.
     defaultLocalIdentity(root);
 
+    // Enable git's untracked-file cache for this repo. On a big mapped subtree
+    // `gw import`'s `git add -A` re-walks the whole working tree to find what
+    // changed; the cache lets git skip directories whose mtime is unchanged,
+    // cutting that scan on re-imports. It is a per-repo, on-disk cache - no
+    // background process (unlike core.fsmonitor) - and safe on local disks. A
+    // deliberate local setting is left untouched.
+    {
+        auto existing =
+            git::configValue("core.untrackedCache", root, /*localOnly=*/true);
+        if (existing && existing->empty()) {
+            auto set = git::setConfig("core.untrackedCache", "true", root);
+            if (set) {
+                std::printf("Enabled core.untrackedCache (speeds up 'gw import' "
+                            "file scans; per-repo, no background process)\n");
+            } else {
+                std::printf("note: could not enable core.untrackedCache (%s)\n",
+                            set.error().c_str());
+            }
+        }
+    }
+
     // Gitignore each mirror container that lives inside the repo (the carved-
     // out `.p4gw` subtree p4 syncs into). Mappings share one container, so
     // dedupe to a single entry in the common case.
