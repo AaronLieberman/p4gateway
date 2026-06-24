@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 
 #ifdef _WIN32
 #define POPEN _popen
@@ -47,9 +48,34 @@ std::string quoteArg(const std::string& arg) {
 #endif
 }
 
+// Reads an environment variable, returning empty if it is unset.
+std::string envValue(const char* name) {
+#ifdef _WIN32
+    // getenv_s avoids MSVC's C4996 deprecation of std::getenv.
+    std::size_t len = 0;
+    if (getenv_s(&len, nullptr, 0, name) != 0 || len == 0) return {};
+    std::vector<char> buffer(len);
+    if (getenv_s(&len, buffer.data(), buffer.size(), name) != 0) return {};
+    return std::string(buffer.data());  // stops at the null terminator
+#else
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string{};
+#endif
+}
+
 }  // namespace
 
 void setVerbose(bool on) { g_verbose = on; }
+
+std::string currentUser() {
+    // USERNAME is the Windows login name; USER/LOGNAME cover the POSIX builds
+    // used in CI and dev.
+    for (const char* name : {"USERNAME", "USER", "LOGNAME"}) {
+        std::string value = envValue(name);
+        if (!value.empty()) return value;
+    }
+    return {};
+}
 
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,

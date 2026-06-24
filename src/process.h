@@ -22,6 +22,11 @@ struct RunOptions {
 // (the `--verbose` flag). Off by default; set once from main.
 void setVerbose(bool on);
 
+// The local login name (Windows `USERNAME`, else POSIX `USER`/`LOGNAME`), or an
+// empty string if none of those are set. Used to default a new repo's Git
+// identity to the local account.
+std::string currentUser();
+
 // Runs an external command and captures its output. Arguments are quoted as
 // needed for the platform shell. If `cwd` is non-empty the command runs in
 // that directory.

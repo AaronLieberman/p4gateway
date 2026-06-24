@@ -9,10 +9,47 @@
 #include "config.h"
 #include "git.h"
 #include "p4.h"
+#include "process.h"
 
 namespace fs = std::filesystem;
 
 namespace p4gw {
+
+namespace {
+
+// Default the new repo's Git identity to the local login account. These commits
+// never reach P4 (P4 only ever sees filesystem state), so there is no reason to
+// inherit the user's global Git name/email here - scope the identity to the
+// minimum we know. Only fills in keys the user hasn't already set repo-locally,
+// so a deliberate local identity (or a re-run of 'gw init') is left untouched.
+void defaultLocalIdentity(const std::string& root) {
+    const std::string login = currentUser();
+    if (login.empty()) return;
+    const std::pair<const char*, std::string> entries[] = {
+        {"user.name", login},
+        {"user.email", login + "@localhost"},
+    };
+    bool setAny = false;
+    for (const auto& [key, value] : entries) {
+        auto existing = git::configValue(key, root, /*localOnly=*/true);
+        if (existing && !existing->empty()) continue;  // respect a manual choice
+        auto set = git::setConfig(key, value, root);
+        if (set) {
+            setAny = true;
+        } else {
+            std::printf("note: could not set %s (%s); commits will fall back to "
+                        "your global Git identity\n",
+                        key, set.error().c_str());
+        }
+    }
+    if (setAny) {
+        std::printf("Set the repo's Git identity to '%s' (local account - these "
+                    "commits stay local; P4 only sees filesystem state)\n",
+                    login.c_str());
+    }
+}
+
+}  // namespace
 
 // The verifying half of getting started ('gw setup' writes the config):
 //   1. Load p4gw.cfg (error pointing at 'gw setup' if absent or unfilled).
@@ -156,6 +193,10 @@ int cmdInit(const Args& args) {
         }
         std::printf("Initialized empty Git repository in %s\n", root.c_str());
     }
+
+    // Scope this repo's commit identity to the local login account by default,
+    // before the first commit below uses it.
+    defaultLocalIdentity(root);
 
     // Gitignore each mirror container that lives inside the repo (the carved-
     // out `.p4gw` subtree p4 syncs into). Mappings share one container, so
