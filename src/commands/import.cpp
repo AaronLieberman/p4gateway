@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -216,12 +217,17 @@ int cmdImport(const Args& args) {
     if (!tracked) return fail(tracked.error());
 
     // Import touches the P4 server (per-mapping `p4 have`, opened-file lookup),
-    // copies the whole mirror into the working tree, and hashes it all into
-    // Git's index - any of which can run for a while on a large depot. Emit a
-    // line at the start of each phase (flushed so it shows up immediately) so
-    // the user can tell it is working rather than hung.
-    auto progress = [](const std::string& message) {
-        std::printf("%s\n", message.c_str());
+    // walks and copies the whole mirror into the working tree, and hashes it
+    // all into Git's index - any of which can run for a while on a large depot.
+    // Emit a line at the start of each phase, prefixed with elapsed-since-start
+    // (flushed so it shows immediately), so the wait reads as progress and the
+    // gaps between lines show which phase is the slow one.
+    const auto importStart = std::chrono::steady_clock::now();
+    auto progress = [&importStart](const std::string& message) {
+        const double secs = std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - importStart)
+                                .count();
+        std::printf("[+%5.1fs] %s\n", secs, message.c_str());
         std::fflush(stdout);
     };
 
@@ -249,6 +255,7 @@ int cmdImport(const Args& args) {
                 ? root
                 : (fs::path(root) / mapping.repoSubtree).string();
 
+        progress("Listing mirror files under " + mirrorDir + "...");
         auto mirrorFiles = mirror::listFiles(mirrorDir);
         if (!mirrorFiles) return fail(mirrorFiles.error());
 
@@ -258,6 +265,7 @@ int cmdImport(const Args& args) {
         // synced; strays are ignored so they never land in the baseline. A
         // failed `p4 have` is an error (don't mistake it for "everything is a
         // stray"); an empty result is legitimately nothing synced.
+        progress("Querying p4 have for " + mapping.depotPath + "...");
         auto haveDepot = p4::haveFiles(*config, mapping.depotPath);
         if (!haveDepot) return fail(haveDepot.error());
         std::unordered_set<std::string> haveRel;
@@ -364,6 +372,7 @@ int cmdImport(const Args& args) {
         if (!advanced) return fail(advanced.error());
     }
 
+    progress("Snapshot staged. Updating branch...");
     const bool importedNew = newDepot != oldDepot;
 
     if (branchless) {
