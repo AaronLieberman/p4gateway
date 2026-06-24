@@ -117,6 +117,11 @@ inline int runAll(bool verbose = false) {
     for (const auto& name : order)
         width = std::max(width, name.size());
 
+    // Header: the leading blank line separates the run from any build output
+    // above it, and the counts mirror the closing summary line.
+    std::printf("\n%sRunning %zu test(s) across %zu areas...%s\n\n", bold(),
+                tests.size(), order.size(), reset());
+
     struct Stat { int total = 0; int failed = 0; };
     std::vector<std::pair<std::string, Stat>> stats;
 
