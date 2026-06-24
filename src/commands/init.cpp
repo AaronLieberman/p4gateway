@@ -191,6 +191,7 @@ int cmdInit(const Args& args) {
     }
 
     const fs::path gitignore = fs::path(root) / ".gitignore";
+    bool wroteGitignore = false;  // gw authored or appended to .gitignore
     if (!fs::exists(gitignore)) {
         {
             // Close (flush) before `git add` sees the file.
@@ -198,6 +199,7 @@ int cmdInit(const Args& args) {
             file << buildGitignore(config->mappings);
         }
         std::printf("Wrote starter .gitignore\n");
+        wroteGitignore = true;
     } else {
         std::printf("Keeping the existing .gitignore - gw only auto-generates "
                     "the allowlist for a fresh one. Make sure yours ignores "
@@ -208,13 +210,12 @@ int cmdInit(const Args& args) {
                              std::istreambuf_iterator<char>());
         in.close();
         std::ofstream out(gitignore, std::ios::app);
-        bool addedAny = false;
         for (const auto& entry : mirrorEntries) {
             if (content.find(entry) == std::string::npos) {
                 out << "\n# gw's mirror directory - P4-managed, not for Git\n"
                     << entry << "\n";
                 std::printf("Added %s to .gitignore\n", entry.c_str());
-                addedAny = true;
+                wroteGitignore = true;
             }
         }
         for (const auto& entry : excludeEntries) {
@@ -223,22 +224,16 @@ int cmdInit(const Args& args) {
                        "place, not for Git\n"
                     << entry << "\n";
                 std::printf("Added %s to .gitignore\n", entry.c_str());
-                addedAny = true;
+                wroteGitignore = true;
             }
         }
-        out.close();
-        // On an existing repo (one that already has commits) init does not
-        // auto-commit .gitignore, so an append leaves the tree dirty and the
-        // next 'gw import' would refuse. Point the user at the commit.
-        if (addedAny && git::revParse("HEAD", root)) {
-            std::printf("Commit the updated .gitignore before 'gw import' (the "
-                        "tree must be clean):\n"
-                        "  git add .gitignore && git commit -m \"gw: ignore "
-                        "mirror and carved-out dirs\"\n");
-        }
     }
-    // In a brand-new (or --force-git-init) repo, commit the .gitignore so
-    // the first 'gw import' starts from a clean tree.
+    // Land .gitignore so the first 'gw import' starts from a clean tree. On a
+    // brand-new (or --force-git-init) repo there is no history to disturb, so
+    // commit it as the first commit. On a repo that already has commits we do
+    // NOT inject a commit onto the user's current branch (it could be a feature
+    // branch, or carry their own staged changes); instead, when gw wrote or
+    // changed the file, point them at committing it themselves.
     if (!git::revParse("HEAD", root)) {
         auto added = git::run({"add", ".gitignore"}, root);
         auto committed =
@@ -248,6 +243,11 @@ int cmdInit(const Args& args) {
                         "yourself before 'gw import'\n",
                         committed.error().c_str());
         }
+    } else if (wroteGitignore) {
+        std::printf("Commit the updated .gitignore before 'gw import' (the tree "
+                    "must be clean):\n"
+                    "  git add .gitignore && git commit -m \"gw: ignore mirror "
+                    "and carved-out dirs\"\n");
     }
 
     // If the repo is managed by git-branchless, point its main branch at the
