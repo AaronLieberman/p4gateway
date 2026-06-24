@@ -18,7 +18,7 @@ std::string trim(const std::string& s) {
     return s.substr(begin, end - begin + 1);
 }
 
-// Splits a `mapping` value into whitespace-separated tokens, honoring double
+// Splits an `include` value into whitespace-separated tokens, honoring double
 // quotes around paths that contain spaces.
 std::vector<std::string> tokenize(const std::string& value) {
     std::vector<std::string> tokens;
@@ -278,11 +278,11 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
         const std::string value = trim(stripped.substr(eq + 1));
         const std::string where = path + ":" + std::to_string(lineNumber);
 
-        if (key == "mapping") {
+        if (key == "include") {
             const auto tokens = tokenize(value);
             if (tokens.size() != 2) {
                 return std::unexpected(
-                    where + ": 'mapping' takes two values: "
+                    where + ": 'include' takes two values: "
                     "<depot_path> <mirror_path>");
             }
             Mapping mapping;
@@ -313,7 +313,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             // and gw gitignores it rather than mirroring it.
             if (config.mappings.empty()) {
                 return std::unexpected(
-                    where + ": 'exclude' must follow the 'mapping' it carves "
+                    where + ": 'exclude' must follow the 'include' it carves "
                     "out of");
             }
             const auto tokens = tokenize(value);
@@ -353,9 +353,9 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
     }
 
     if (config.mappings.empty()) {
-        return std::unexpected(path + ": no 'mapping' lines - add at least one "
+        return std::unexpected(path + ": no 'include' lines - add at least one "
                                "('gw setup' writes the template). Format: "
-                               "mapping = //depot/yourgame/src/... .p4gw/src");
+                               "include = //depot/yourgame/src/... .p4gw/src");
     }
     return config;
 }

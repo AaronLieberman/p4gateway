@@ -85,8 +85,8 @@ int cmdInit(const Args& args) {
         if (anyGeneral) {
             std::fprintf(stderr,
                          "Fix the client view ('p4 client'), then rerun "
-                         "'gw init'. Each mapping line\nbelongs after any view "
-                         "line it overlaps - later lines win.\n");
+                         "'gw init'. Each include's remap line\nbelongs after "
+                         "any view line it overlaps - later lines win.\n");
         }
         if (!divertPaths.empty()) {
             if (anyGeneral) std::fprintf(stderr, "\n");
@@ -103,7 +103,7 @@ int cmdInit(const Args& args) {
         }
         return 1;
     }
-    std::printf("ok    client view maps all %zu mapping(s) into the mirror\n",
+    std::printf("ok    client view maps all %zu include(s) into the mirror\n",
                 config->mappings.size());
 
     const fs::path gitDir = fs::path(root) / ".git";

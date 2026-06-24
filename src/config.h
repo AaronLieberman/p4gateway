@@ -8,7 +8,7 @@ namespace p4gw {
 
 // One depot subtree this Git repo overlays, and where its files live on both
 // sides of the mirror boundary. A repo can declare several of these (one per
-// `mapping` line) so a single Git tree can ship more than one depot subtree -
+// `include` line) so a single Git tree can ship more than one depot subtree -
 // e.g. `src/` and `config/`. The starter `.gitignore` is an allowlist that
 // tracks only the mapped subtrees; unmapped directories (`bin/`, `content/`,
 // other depot content synced in place) stay out of Git unless re-included by

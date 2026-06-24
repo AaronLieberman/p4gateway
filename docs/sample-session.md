@@ -18,14 +18,14 @@ C:\work\game\src> gw setup --depot-path //depot/game/main/src/... --client aaron
 Wrote C:\work\game\src\p4gw.cfg
 
 Next steps:
-1. Add a remap line to your client view (p4 client) for each mapping:
+1. Add a remap line to your client view (p4 client) for each include:
 
      //depot/game/main/src/... //aaron-dev/<workspace-relative path of .p4gw>/...
 
    so the depot subtree syncs into the mirror instead of this
    directory. Later view lines win, so each remap must come after
    any broader line it overlaps.
-2. Run 'gw init' to verify the mapping(s) and set up the Git repo.
+2. Run 'gw init' to verify the include(s) and set up the Git repo.
 ```
 
 You add `//depot/game/main/src/... //aaron-dev/src/.p4gw/...` to the view
@@ -33,7 +33,7 @@ and run init, which checks it against the live spec before touching anything:
 
 ```
 C:\work\game\src> gw init
-ok    client view maps all 1 mapping(s) into the mirror
+ok    client view maps all 1 include(s) into the mirror
 Initialized empty Git repository in C:\work\game\src
 Wrote starter .gitignore
 Mirror directory C:\work\game\src\.p4gw does not exist yet — it appears on the first sync.
@@ -154,7 +154,7 @@ of spelunking, you run:
 C:\work\game\src> gw doctor
 ok    git found: git version 2.45.1
 ok    p4 found
-ok    p4gw.cfg found at C:\work\game\src (1 mapping(s))
+ok    p4gw.cfg found at C:\work\game\src (1 include(s))
       //depot/game/main/src/... -> .p4gw
 ok    mirror directory exists: C:\work\game\src\.p4gw
 ok    p4 connection works

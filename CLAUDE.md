@@ -7,12 +7,12 @@ static library keep the `p4gw` prefix (`p4gw::`, `p4gw_core`), as does the
 
 A Windows command-line tool, written in C++23, that lets a developer work in
 Git locally and ship Perforce changelists. The architecture is the **mirror
-workflow**: one client view line per `mapping` remaps a depot subtree into the
+workflow**: one client view line per `include` remaps a depot subtree into the
 repo's `.p4gw` mirror container, so every p4 sync lands in the mirror and the
 canonical directory is purely a Git repo. The config is a list of
-`mapping = <depot_path> <mirror_path>` lines — one repo can ship several
+`include = <depot_path> <mirror_path>` lines — one repo can ship several
 subtrees (e.g. `src/` and `config/`); the mirror path below `.p4gw` is the
-working-tree subtree it feeds. A `mapping` may carry `exclude = <depot_subpath>`
+working-tree subtree it feeds. An `include` may carry `exclude = <depot_subpath>`
 lines that carve directories out of the mirror (vendored `thirdparty/`,
 generated `devtools/`): the client view drops them or syncs them in place, and
 gw gitignores them and ships nothing through them — they behave like the

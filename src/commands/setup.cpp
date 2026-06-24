@@ -72,7 +72,7 @@ int cmdSetup(const Args& args) {
                 "local paths);\n"
                 "# keep it out of Git and P4. Read by every gw command.\n"
                 "\n"
-                "# Each 'mapping' line ties a depot subtree to the mirror "
+                "# Each 'include' line ties a depot subtree to the mirror "
                 "directory the\n"
                 "# client view remaps it into. The mirror always lives under "
                 "the repo's\n"
@@ -84,25 +84,25 @@ int cmdSetup(const Args& args) {
                 ".gitignore tracks\n"
                 "# only the mapped subtrees, so unmapped directories stay out "
                 "of Git. Format:\n"
-                "#   mapping = <depot_path ending in /...>  <mirror_path>\n"
+                "#   include = <depot_path ending in /...>  <mirror_path>\n"
                 "# Example (two subtrees):\n"
-                "#   mapping = //depot/yourgame/src/...     .p4gw/src\n"
-                "#   mapping = //depot/yourgame/config/...  .p4gw/config\n";
+                "#   include = //depot/yourgame/src/...     .p4gw/src\n"
+                "#   include = //depot/yourgame/config/...  .p4gw/config\n";
         if (depotPath.empty()) {
-            file << "#mapping = //depot/yourgame/src/... " << mirrorPath << "\n";
+            file << "#include = //depot/yourgame/src/... " << mirrorPath << "\n";
         } else {
-            file << "mapping = " << depotPath << " " << mirrorPath << "\n";
+            file << "include = " << depotPath << " " << mirrorPath << "\n";
         }
         file << "\n"
                 "# Optional 'exclude' lines carve a depot subtree out of the "
-                "mapping above it:\n"
+                "include above it:\n"
                 "# the client view drops it (a '-' line) or syncs it in place, "
                 "and gw keeps\n"
                 "# it out of the mirror and gitignores it - just like unmapped "
                 "depot content,\n"
                 "# even though it lives under a mapped subtree. One line per "
                 "carved-out path,\n"
-                "# each ending in '/...' and under its mapping's depot path:\n"
+                "# each ending in '/...' and under its include's depot path:\n"
                 "#   exclude = //depot/yourgame/src/thirdparty/...\n"
                 "#   exclude = //depot/yourgame/src/devtools/...\n"
                 "\n"
@@ -122,12 +122,12 @@ int cmdSetup(const Args& args) {
     int step = 1;
     std::printf("\nNext steps:\n");
     if (depotPath.empty()) {
-        std::printf("%d. Edit p4gw.cfg and add a 'mapping' line per depot "
+        std::printf("%d. Edit p4gw.cfg and add an 'include' line per depot "
                     "subtree.\n", step++);
     }
     std::printf(
         "%d. Add a remap line to your client view (p4 client) for each "
-        "mapping:\n"
+        "include:\n"
         "\n"
         "     %s //%s/<workspace-relative path of %s>/...\n"
         "\n"
@@ -135,7 +135,7 @@ int cmdSetup(const Args& args) {
         "   directory. Later view lines win, so each remap must come after\n"
         "   any broader line it overlaps.\n",
         step++, depotShown.c_str(), clientShown.c_str(), mirrorPath.c_str());
-    std::printf("%d. Run 'gw init' to verify the mapping(s) and set up the "
+    std::printf("%d. Run 'gw init' to verify the include(s) and set up the "
                 "Git repo.\n", step);
     return 0;
 }

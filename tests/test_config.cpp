@@ -26,7 +26,7 @@ std::expected<p4gw::Config, std::string> loadFromString(const std::string& conte
 TEST(config_parses_a_single_mapping) {
     auto config = loadFromString(
         "# overlay for the engine source tree\n"
-        "mapping = //depot/yourgame/src/... .p4gw\n"
+        "include = //depot/yourgame/src/... .p4gw\n"
         "client = aaron-dev\n"
         "baseline_branch = p4-base\n");
     CHECK(config.has_value());
@@ -42,8 +42,8 @@ TEST(config_parses_a_single_mapping) {
 
 TEST(config_parses_multiple_mappings_in_order) {
     auto config = loadFromString(
-        "mapping = //depot/develop/src/...    .p4gw/src\n"
-        "mapping = //depot/develop/config/... .p4gw/config\n");
+        "include = //depot/develop/src/...    .p4gw/src\n"
+        "include = //depot/develop/config/... .p4gw/config\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->mappings.size() == 2);
@@ -58,7 +58,7 @@ TEST(config_parses_multiple_mappings_in_order) {
 
 TEST(config_parses_exclude_lines_under_a_mapping) {
     auto config = loadFromString(
-        "mapping = //depot/project/main/src/... .p4gw/src\n"
+        "include = //depot/project/main/src/... .p4gw/src\n"
         "exclude = //depot/project/main/src/lib/...\n"
         "exclude = //depot/project/main/src/thirdparty/...\n"
         "exclude = //depot/project/main/src/devtools/...\n");
@@ -77,9 +77,9 @@ TEST(config_parses_exclude_lines_under_a_mapping) {
 
 TEST(config_excludes_attach_to_the_preceding_mapping) {
     auto config = loadFromString(
-        "mapping = //depot/develop/src/...    .p4gw/src\n"
+        "include = //depot/develop/src/...    .p4gw/src\n"
         "exclude = //depot/develop/src/lib/...\n"
-        "mapping = //depot/develop/config/... .p4gw/config\n"
+        "include = //depot/develop/config/... .p4gw/config\n"
         "exclude = //depot/develop/config/generated/...\n");
     CHECK(config.has_value());
     if (config) {
@@ -115,7 +115,7 @@ TEST(config_rejects_exclude_without_a_mapping) {
 
 TEST(config_rejects_exclude_outside_its_mapping) {
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/x\n"
+              "include = //depot/x/... .p4gw/x\n"
               "exclude = //depot/y/lib/...\n")
                .has_value());
 }
@@ -124,21 +124,21 @@ TEST(config_rejects_exclude_at_mapping_root) {
     // Excluding the whole subtree (== the mapping's own depot path) is not a
     // carve-out; it would empty the mirror.
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/x\n"
+              "include = //depot/x/... .p4gw/x\n"
               "exclude = //depot/x/...\n")
                .has_value());
 }
 
 TEST(config_rejects_exclude_without_wildcard) {
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/x\n"
+              "include = //depot/x/... .p4gw/x\n"
               "exclude = //depot/x/lib\n")
                .has_value());
 }
 
 TEST(config_rejects_duplicate_exclude) {
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/x\n"
+              "include = //depot/x/... .p4gw/x\n"
               "exclude = //depot/x/lib/...\n"
               "exclude = //depot/x/lib/...\n")
                .has_value());
@@ -170,7 +170,7 @@ TEST(config_keeps_absolute_mirror_path) {
 }
 
 TEST(config_defaults_baseline_branch) {
-    auto config = loadFromString("mapping = //depot/yourgame/src/... .p4gw\n");
+    auto config = loadFromString("include = //depot/yourgame/src/... .p4gw\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->client.empty());
@@ -191,35 +191,35 @@ TEST(config_requires_at_least_one_mapping) {
 }
 
 TEST(config_rejects_depot_path_without_wildcard) {
-    auto config = loadFromString("mapping = //depot/x .p4gw\n");
+    auto config = loadFromString("include = //depot/x .p4gw\n");
     CHECK(!config.has_value());
 }
 
 TEST(config_rejects_mapping_with_wrong_arity) {
-    CHECK(!loadFromString("mapping = //depot/x/...\n").has_value());
-    CHECK(!loadFromString("mapping = //depot/x/... a b\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/...\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/... a b\n").has_value());
 }
 
 TEST(config_rejects_duplicate_depot_or_mirror) {
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/a\n"
-              "mapping = //depot/x/... .p4gw/b\n")
+              "include = //depot/x/... .p4gw/a\n"
+              "include = //depot/x/... .p4gw/b\n")
                .has_value());
     CHECK(!loadFromString(
-              "mapping = //depot/x/... .p4gw/a\n"
-              "mapping = //depot/y/... .p4gw/a\n")
+              "include = //depot/x/... .p4gw/a\n"
+              "include = //depot/y/... .p4gw/a\n")
                .has_value());
 }
 
 TEST(config_rejects_unknown_keys) {
     auto config = loadFromString(
-        "mapping = //depot/x/... .p4gw\n"
+        "include = //depot/x/... .p4gw\n"
         "mapping_paht = typo\n");
     CHECK(!config.has_value());
 }
 
 TEST(config_rejects_malformed_lines) {
-    auto config = loadFromString("mapping //depot/x/... .p4gw\n");
+    auto config = loadFromString("include //depot/x/... .p4gw\n");
     CHECK(!config.has_value());
 }
 

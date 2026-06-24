@@ -111,7 +111,7 @@ gw setup --depot-path //depot/game/main/src/... --client aaron-dev
 ```
 
 `setup` writes `p4gw.cfg` (anything not given as a flag is left as a commented
-placeholder to edit) and prints the one manual step: for each mapping, add a
+placeholder to edit) and prints the one manual step: for each include, add a
 line like
 
 ```
@@ -161,22 +161,22 @@ to check.
 (`key = value`, `#` comments):
 
 ```
-# Each 'mapping' ties a depot subtree (scoping every p4 command) to the
+# Each 'include' ties a depot subtree (scoping every p4 command) to the
 # mirror directory the client view remaps it into. The mirror always lives
 # under the repo's single '.p4gw' container; its path below the container is
 # the working-tree directory the subtree occupies ('.p4gw/src' -> 'src/',
-# '.p4gw' -> the whole repo). Add one 'mapping' line per subtree; the starter
+# '.p4gw' -> the whole repo). Add one 'include' line per subtree; the starter
 # .gitignore tracks only the mapped subtrees, so unmapped directories (bin/,
-# content/) stay out of Git. At least one mapping required.
-#   mapping = <depot_path ending in /...>  <mirror_path>
-mapping = //depot/yourgame/src/...     .p4gw/src
-mapping = //depot/yourgame/config/...  .p4gw/config
+# content/) stay out of Git. At least one include required.
+#   include = <depot_path ending in /...>  <mirror_path>
+include = //depot/yourgame/src/...     .p4gw/src
+include = //depot/yourgame/config/...  .p4gw/config
 
-# Optional 'exclude' lines carve a depot subtree out of the mapping above
+# Optional 'exclude' lines carve a depot subtree out of the 'include' above
 # them. The client view either drops it (a '-' line) or syncs it in place,
 # and gw keeps it out of the mirror and gitignores it - exactly like unmapped
 # depot content (bin/, content/), even though it lives under a mapped subtree.
-# Each must end in '/...' and lie under its mapping's depot path.
+# Each must end in '/...' and lie under its include's depot path.
 exclude = //depot/yourgame/src/thirdparty/...
 exclude = //depot/yourgame/src/devtools/...
 
@@ -190,7 +190,7 @@ baseline_branch = p4-main
 ```
 
 `p4gw.cfg` is personal (it names your client); the starter `.gitignore` is an
-allowlist — `/*` then a `!/src/` line per mapping — so Git tracks only the
+allowlist — `/*` then a `!/src/` line per include — so Git tracks only the
 mapped subtrees and everything else (the `.p4gw/` mirror, `p4gw.cfg` itself,
 and any unmapped depot content that synced in place) stays out of Git. Each
 `exclude` line adds a matching re-exclusion (e.g. `/src/thirdparty/`) so a

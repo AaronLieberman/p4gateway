@@ -53,7 +53,7 @@ int cmdDoctor(const Args& args) {
         }
         return failures == 0 ? 0 : 1;
     }
-    std::printf("ok    p4gw.cfg found at %s (%zu mapping(s))\n", root.c_str(),
+    std::printf("ok    p4gw.cfg found at %s (%zu include(s))\n", root.c_str(),
                 config->mappings.size());
     for (const auto& mapping : config->mappings) {
         std::printf("      %s -> %s\n", mapping.depotPath.c_str(),
