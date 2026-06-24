@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -67,8 +68,11 @@ bool copyNeeded(std::uintmax_t srcSize,
 
 // Copies/deletes per `actions` between the mirror and the working tree.
 // Copied files are made writable (mirror files are typically read-only).
-std::expected<void, std::string> applySyncActions(const SyncActions& actions,
-                                                  const std::string& mirrorDir,
-                                                  const std::string& worktreeDir);
+// Returns the number of files actually copied - the ones copyNeeded flagged as
+// changed - which is far fewer than `actions.copies.size()` on a re-import
+// where most of the mirror is unchanged.
+std::expected<std::size_t, std::string> applySyncActions(
+    const SyncActions& actions, const std::string& mirrorDir,
+    const std::string& worktreeDir);
 
 }  // namespace p4gw::mirror

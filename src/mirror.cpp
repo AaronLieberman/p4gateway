@@ -103,10 +103,11 @@ bool copyNeeded(std::uintmax_t srcSize, fs::file_time_type srcMtime,
     return srcSize != dstSize || srcMtime != dstMtime;
 }
 
-std::expected<void, std::string> applySyncActions(const SyncActions& actions,
-                                                  const std::string& mirrorDir,
-                                                  const std::string& worktreeDir) {
+std::expected<std::size_t, std::string> applySyncActions(
+    const SyncActions& actions, const std::string& mirrorDir,
+    const std::string& worktreeDir) {
     std::error_code ec;
+    std::size_t copied = 0;
     for (const auto& rel : actions.deletes) {
         const fs::path target = fs::path(worktreeDir) / rel;
         withRetry(ec, [&](std::error_code& e) { fs::remove(target, e); });
@@ -179,8 +180,9 @@ std::expected<void, std::string> applySyncActions(const SyncActions& actions,
             return std::unexpected("failed to set mtime on " + target.string() +
                                    ": " + ec.message());
         }
+        ++copied;  // reached only when the file was actually (re)copied
     }
-    return {};
+    return copied;
 }
 
 }  // namespace p4gw::mirror

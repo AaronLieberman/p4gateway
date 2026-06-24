@@ -294,17 +294,23 @@ int cmdImport(const Args& args) {
         }
         const auto plan = mirror::planImport(actions, openedMirror);
 
-        const size_t toCopy = plan.actions.copies.size() + plan.depotReads.size();
+        // "Scan" count: import reconciles the *whole* mirror against the
+        // working tree every time (it is not diff-based), then copies only the
+        // files that actually changed - so this is how many it inspects, not how
+        // many it copies. Say "Importing", not "Syncing": nothing is synced from
+        // P4 here, gw only moves already-synced mirror files into the repo.
+        const size_t toScan = plan.actions.copies.size();
         const size_t toDelete = plan.actions.deletes.size();
-        if (toCopy != 0 || toDelete != 0) {
-            progress("Syncing " + mapping.depotPath + " (" +
-                     std::to_string(toCopy) + " to copy, " +
+        if (toScan != 0 || toDelete != 0 || !plan.depotReads.empty()) {
+            progress("Importing " + mapping.depotPath + " (" +
+                     std::to_string(toScan) + " mirror file(s) to scan, " +
                      std::to_string(toDelete) + " to delete)...");
         }
 
         auto applied =
             mirror::applySyncActions(plan.actions, mirrorDir, worktreeDir);
         if (!applied) return fail(applied.error());
+        const size_t actuallyCopied = *applied;
 
         // Restore depot-head content for files open in the mirror.
         if (!plan.depotReads.empty()) {
@@ -328,7 +334,7 @@ int cmdImport(const Args& args) {
                                 fs::perm_options::add, ec);
             }
         }
-        copiedFiles += plan.actions.copies.size() + plan.depotReads.size();
+        copiedFiles += actuallyCopied + plan.depotReads.size();
         deletedFiles += plan.actions.deletes.size();
     }
 
@@ -377,7 +383,7 @@ int cmdImport(const Args& args) {
         }
         if (importedNew) {
             std::printf(
-                "Imported depot state to '%s' (%zu files, %zu deleted)\n",
+                "Imported depot state to '%s' (%zu file(s) updated, %zu deleted)\n",
                 depotRef.c_str(), copiedFiles, deletedFiles);
         } else {
             std::printf("Already up to date - the mirror matches the depot "
@@ -451,7 +457,7 @@ int cmdImport(const Args& args) {
     }
 
     if (importedNew) {
-        std::printf("Imported depot state to '%s' (%zu files, %zu deleted)\n",
+        std::printf("Imported depot state to '%s' (%zu file(s) updated, %zu deleted)\n",
                     depotRef.c_str(), copiedFiles, deletedFiles);
     } else {
         std::printf("Already up to date - the mirror matches the depot "
