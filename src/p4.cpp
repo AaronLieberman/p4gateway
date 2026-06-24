@@ -112,12 +112,6 @@ std::string stripWildcard(const std::string& path) {
     return path;
 }
 
-bool pathsOverlap(const std::string& a, const std::string& b) {
-    const std::string baseA = stripWildcard(a);
-    const std::string baseB = stripWildcard(b);
-    return baseA.starts_with(baseB) || baseB.starts_with(baseA);
-}
-
 }  // namespace
 
 std::expected<std::string, std::string> run(const Config& config,
@@ -208,15 +202,37 @@ std::vector<std::string> checkViewMapping(
     const ViewLine* effective = nullptr;
     for (const auto& line : view) {
         const std::string lineBase = stripWildcard(line.depot);
+        const std::string clientBase = stripWildcard(line.client);
         if (depotBase.starts_with(lineBase)) {
             effective = &line;  // this line's scope covers all of depotPath
         }
-        const std::string clientBase = stripWildcard(line.client);
-        const bool mapsIntoRepo =
-            !repoClientPrefix.empty() && !line.exclude &&
-            clientBase.starts_with(repoClientPrefix) &&
-            !(!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix));
-        if (mapsIntoRepo && !underExclude(lineBase)) {
+
+        // A `-` line removes content (never writes into the repo), a line into
+        // the mirror is the whole point, and a declared exclude is intentional:
+        // none of these need flagging.
+        const bool intoMirror =
+            !mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix);
+        if (line.exclude || intoMirror || underExclude(lineBase)) continue;
+
+        // A line strictly under the mapped subtree that lands anywhere but the
+        // mirror diverts part of depotPath out of it - typically an in-place
+        // sync into the repo working tree. gw must be told (an `exclude` line)
+        // so it gitignores the path and ships nothing through it; otherwise p4
+        // would write into a Git-tracked directory. This keys off the depot
+        // subtree, so it fires even when the repo is the client root and the
+        // repo-prefix test below is disabled (every sync lands under the root).
+        const bool underDepot =
+            lineBase.starts_with(depotBase) && lineBase != depotBase;
+        if (underDepot) {
+            problems.push_back(
+                "view line '" + line.depot + " " + line.client +
+                "' diverts part of " + depotPath +
+                " out of the mirror; add an 'exclude' line for it in p4gw.cfg "
+                "so gw gitignores it (otherwise p4 writes into Git-tracked "
+                "files)");
+        } else if (!repoClientPrefix.empty() &&
+                   clientBase.starts_with(repoClientPrefix)) {
+            // Content outside the subtree that still lands in the repo dir.
             problems.push_back("view line '" + line.depot + " " + line.client +
                                "' maps depot files into the Git repo directory; "
                                "P4 must never write there (declare it with an "

@@ -212,6 +212,9 @@ A subtree need not sync as one solid block. Two patterns are supported:
   not to your Git history. List them as `exclude` lines: gw leaves them out of
   the mirror, gitignores them, and ships nothing through them — they behave
   just like the top-level unmapped directories (`bin/`, `content/`), even
-  though they live under `src/`. An in-place sync line for one of these would
-  otherwise be flagged as "maps into the repo"; the `exclude` declaration is
-  what tells gw it is intentional.
+  though they live under `src/`. `gw init` requires the declaration: a view
+  line that diverts part of a mapped subtree out of the mirror is flagged until
+  you add the matching `exclude`, so gw never gitignore-tracks a p4-owned
+  directory. (This holds even when the repo sits at the client root, where a
+  generic "maps into the repo" check can't fire because everything syncs under
+  the root.)

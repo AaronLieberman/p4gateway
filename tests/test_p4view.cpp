@@ -161,6 +161,33 @@ TEST(view_check_allows_excluded_subtree_with_nested_client_carveouts) {
     CHECK(flagged.size() == 1);
 }
 
+TEST(view_check_flags_inplace_carveout_even_at_client_root) {
+    // When the repo IS the client root, the repo prefix is empty and the
+    // "maps into the repo" rule is off - yet an in-place line that diverts part
+    // of the mapped subtree out of the mirror must still be caught, or gw would
+    // gitignore-track p4-owned files. The detection keys off the depot subtree,
+    // not the client prefix. Content outside the subtree (bin/, synced in place
+    // like any unmapped directory) stays fine.
+    const std::string depot = "//depot/project/main/src/...";
+    const std::string mirror = "//client/.p4gw/src/...";
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {depot, mirror, false, false},
+        {"//depot/project/main/bin/...", "//client/bin/...", false, false},
+        {"//depot/project/main/src/lib/...", "//client/src/lib/...", false, false},
+    };
+    // Empty repo prefix == the repo is the client root.
+    const auto undeclared = p4gw::p4::checkViewMapping(view, depot, mirror, "");
+    CHECK(undeclared.size() == 1);  // only src/lib, not bin/
+
+    // Declaring the exclude resolves it.
+    const auto declared = p4gw::p4::checkViewMapping(
+        view, depot, mirror, "", {"//depot/project/main/src/lib/..."});
+    for (const auto& problem : declared) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(declared.empty());
+}
+
 TEST(view_check_flags_undeclared_inplace_carveout) {
     // A narrower line that syncs a sub-path in place into the repo (not the
     // mirror) is the dangerous case: p4 would write into a Git-tracked

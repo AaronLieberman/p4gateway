@@ -38,12 +38,14 @@ std::vector<ViewLine> parseClientView(const std::string& spec);
 // ignored - other custom mappings are fine. Narrower lines *under* `depotPath`
 // may legitimately carve the subtree up (a `-` exclusion of a per-platform peer
 // directory, or a re-include of a deeper directory back into the mirror), so
-// those are allowed. The one hard rule: any line whose client side falls under
-// `repoClientPrefix` (the Git repo's location, e.g. "//client/src/"; pass empty
-// to skip) but not under the mirror is an error - P4 must never write into the
-// repo - unless its depot side lies under one of `excludedDepotPaths`, the
-// subtrees the config deliberately carves out to sync in place (gitignored).
-// Returns human-readable problems; empty means consistent.
+// those are allowed. Two things are flagged unless declared in
+// `excludedDepotPaths` (the subtrees the config carves out to sync in place,
+// gitignored): a narrower line *under* `depotPath` that lands anywhere but the
+// mirror (it diverts part of the subtree out of the mirror - caught even when
+// the repo is the client root); and any other line whose client side falls
+// under `repoClientPrefix` (the Git repo's location, e.g. "//client/src/"; pass
+// empty to skip) but not under the mirror. Either way P4 must never write into
+// a Git-tracked path. Returns human-readable problems; empty means consistent.
 std::vector<std::string> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
