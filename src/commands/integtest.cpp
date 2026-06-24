@@ -335,7 +335,7 @@ std::expected<void, std::string> itVerifyMapping(ItContext& it) {
 
     std::string message;
     for (const auto& problem : problems) {
-        message += problem + "\n";
+        message += problem.message + "\n";
     }
     const std::string expected =
         p4::clientViewPath(p4::specField(*spec, "Client"),

@@ -111,7 +111,7 @@ int cmdDoctor(const Args& args) {
                                 mapping.depotPath.c_str());
                 }
                 for (const auto& problem : problems) {
-                    std::printf("FAIL  %s\n", problem.c_str());
+                    std::printf("FAIL  %s\n", problem.message.c_str());
                     ++failures;
                 }
             }

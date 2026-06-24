@@ -1,5 +1,6 @@
 #include "p4.h"
 
+#include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -173,12 +174,12 @@ std::vector<ViewLine> parseClientView(const std::string& spec) {
     return view;
 }
 
-std::vector<std::string> checkViewMapping(
+std::vector<ViewProblem> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
     const std::string& repoClientPrefix,
     const std::vector<std::string>& excludedDepotPaths) {
-    std::vector<std::string> problems;
+    std::vector<ViewProblem> problems;
 
     // The mirror typically lives inside the repo (the recommended `.p4gw`),
     // so its client path is itself under the repo prefix. That mapping is the
@@ -225,38 +226,69 @@ std::vector<std::string> checkViewMapping(
             lineBase.starts_with(depotBase) && lineBase != depotBase;
         if (underDepot) {
             problems.push_back(
-                "view line '" + line.depot + " " + line.client +
-                "' diverts part of " + depotPath +
-                " out of the mirror; add an 'exclude' line for it in p4gw.cfg "
-                "so gw gitignores it (otherwise p4 writes into Git-tracked "
-                "files)");
+                {"'" + line.depot + " " + line.client + "' diverts part of " +
+                     depotPath + " out of the mirror - add 'exclude = " +
+                     line.depot + "' to p4gw.cfg so gw gitignores it",
+                 line.depot});
         } else if (!repoClientPrefix.empty() &&
                    clientBase.starts_with(repoClientPrefix)) {
             // Content outside the subtree that still lands in the repo dir.
-            problems.push_back("view line '" + line.depot + " " + line.client +
-                               "' maps depot files into the Git repo directory; "
-                               "P4 must never write there (declare it with an "
-                               "'exclude' line if it should sync in place)");
+            problems.push_back(
+                {"view line '" + line.depot + " " + line.client +
+                     "' maps depot files into the Git repo directory; "
+                     "P4 must never write there (declare it with an "
+                     "'exclude' line if it should sync in place)",
+                 ""});
         }
     }
 
     if (effective == nullptr) {
-        problems.push_back("depot path " + depotPath +
-                           " is not mapped in the client view");
+        problems.push_back(
+            {"depot path " + depotPath + " is not mapped in the client view",
+             ""});
     } else if (effective->exclude) {
         problems.push_back(
-            "depot path " + depotPath + " is excluded by view line '-" +
-            effective->depot + " " + effective->client +
-            "' - the mirror would be empty");
+            {"depot path " + depotPath + " is excluded by view line '-" +
+                 effective->depot + " " + effective->client +
+                 "' - the mirror would be empty",
+             ""});
     } else if (effective->depot != depotPath ||
                effective->client != expectedClientPath) {
         problems.push_back(
-            "the effective mapping for " + depotPath + " is '" +
-            effective->depot + " " + effective->client + "'; expected '" +
-            depotPath + " " + expectedClientPath +
-            "' (place it after any view line it overlaps - later lines win)");
+            {"the effective mapping for " + depotPath + " is '" +
+                 effective->depot + " " + effective->client + "'; expected '" +
+                 depotPath + " " + expectedClientPath +
+                 "' (place it after any view line it overlaps - later lines "
+                 "win)",
+             ""});
     }
     return problems;
+}
+
+std::vector<std::string> minimalExcludePaths(
+    const std::vector<std::string>& excludePaths) {
+    std::vector<std::string> unique;
+    for (const auto& p : excludePaths) {
+        if (std::find(unique.begin(), unique.end(), p) == unique.end()) {
+            unique.push_back(p);
+        }
+    }
+    std::vector<std::string> result;
+    for (const auto& p : unique) {
+        const std::string pBase = stripWildcard(p);  // ends with '/'
+        bool nested = false;
+        for (const auto& q : unique) {
+            if (q == p) continue;
+            const std::string qBase = stripWildcard(q);
+            // p strictly under q: excluding q already covers p.
+            if (pBase.size() > qBase.size() && pBase.starts_with(qBase)) {
+                nested = true;
+                break;
+            }
+        }
+        if (!nested) result.push_back(p);
+    }
+    return result;
 }
 
 std::string clientViewPath(const std::string& clientName,
@@ -273,20 +305,21 @@ std::string clientViewPath(const std::string& clientName,
     return "//" + clientName + "/" + relStr + suffix;
 }
 
-std::vector<std::string> checkSpecMapping(
+std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
     const std::string& repoDir, const std::string& mirrorDir,
     const std::vector<std::string>& excludedDepotPaths) {
     const std::string clientName = specField(spec, "Client");
     const std::string clientRoot = specField(spec, "Root");
     if (clientName.empty() || clientRoot.empty()) {
-        return {"client spec has no Client:/Root: field"};
+        return {{"client spec has no Client:/Root: field", ""}};
     }
     const std::string expectedClientPath =
         clientViewPath(clientName, clientRoot, mirrorDir, "/...");
     if (expectedClientPath.empty()) {
-        return {"mirror " + mirrorDir + " is not inside the client root " +
-                clientRoot + " - p4 cannot map it"};
+        return {{"mirror " + mirrorDir + " is not inside the client root " +
+                     clientRoot + " - p4 cannot map it",
+                 ""}};
     }
     const std::string repoPrefix =
         clientViewPath(clientName, clientRoot, repoDir, "/");

@@ -56,7 +56,7 @@ TEST(view_check_passes_with_remap_line) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }
@@ -88,7 +88,7 @@ TEST(view_check_allows_narrower_exclusion_of_a_peer_dir) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }
@@ -105,7 +105,7 @@ TEST(view_check_allows_exclude_then_reinclude_into_mirror) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }
@@ -147,7 +147,7 @@ TEST(view_check_allows_excluded_subtree_with_nested_client_carveouts) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, depot, mirror, repoPrefix, excludes);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 
@@ -183,9 +183,55 @@ TEST(view_check_flags_inplace_carveout_even_at_client_root) {
     const auto declared = p4gw::p4::checkViewMapping(
         view, depot, mirror, "", {"//depot/project/main/src/lib/..."});
     for (const auto& problem : declared) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(declared.empty());
+}
+
+TEST(view_check_diversion_carries_exclude_suggestion) {
+    // A diversion problem reports the depot path to add as an `exclude`, so the
+    // command can group these into a single copy-pasteable hint.
+    const std::string depot = "//depot/project/main/src/...";
+    const std::string mirror = "//client/.p4gw/src/...";
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {depot, mirror, false, false},
+        {"//depot/project/main/src/lib/...", "//client/src/lib/...", false, false},
+    };
+    const auto problems = p4gw::p4::checkViewMapping(view, depot, mirror, "");
+    CHECK(problems.size() == 1);
+    if (problems.size() == 1) {
+        CHECK(problems[0].excludePath == "//depot/project/main/src/lib/...");
+        CHECK(!problems[0].message.empty());
+    }
+}
+
+TEST(minimal_exclude_paths_drops_nested_under_an_ancestor) {
+    // The user's view flags lib plus two win64 re-includes under it, and the
+    // two leaf carve-outs. Excluding lib covers the win64 lines, so only three
+    // `exclude` lines are suggested - in first-seen order.
+    const auto out = p4gw::p4::minimalExcludePaths({
+        "//depot/project/main/src/lib/...",
+        "//depot/project/main/src/lib/public/win64/...",
+        "//depot/project/main/src/lib/common/win64*/...",
+        "//depot/project/main/src/thirdparty/...",
+        "//depot/project/main/src/devtools/...",
+    });
+    CHECK(out.size() == 3);
+    if (out.size() == 3) {
+        CHECK(out[0] == "//depot/project/main/src/lib/...");
+        CHECK(out[1] == "//depot/project/main/src/thirdparty/...");
+        CHECK(out[2] == "//depot/project/main/src/devtools/...");
+    }
+}
+
+TEST(minimal_exclude_paths_dedups_and_keeps_siblings) {
+    const auto dups = p4gw::p4::minimalExcludePaths(
+        {"//d/src/lib/...", "//d/src/lib/...", "//d/src/foo/..."});
+    CHECK(dups.size() == 2);
+    // A shared name prefix is not a parent: lib2 is not under lib.
+    const auto siblings =
+        p4gw::p4::minimalExcludePaths({"//d/src/lib/...", "//d/src/lib2/..."});
+    CHECK(siblings.size() == 2);
 }
 
 TEST(view_check_flags_undeclared_inplace_carveout) {
@@ -211,7 +257,7 @@ TEST(view_check_allows_declared_inplace_carveout) {
     const auto problems = p4gw::p4::checkViewMapping(
         view, kDepotPath, kMirrorPath, kRepoPrefix, excludes);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }
@@ -279,7 +325,7 @@ TEST(check_spec_mapping_end_to_end) {
     const auto good = p4gw::p4::checkSpecMapping(
         spec, "//depot/game/src/...", "/work/game/src", "/work/mirror/src");
     for (const auto& problem : good) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(good.empty());
 
@@ -307,7 +353,7 @@ TEST(check_spec_mapping_allows_mirror_inside_repo) {
     const auto good = p4gw::p4::checkSpecMapping(
         spec, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw");
     for (const auto& problem : good) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(good.empty());
 
@@ -345,7 +391,7 @@ TEST(check_spec_mapping_exempts_declared_inplace_exclude) {
         spec, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw",
         excludes);
     for (const auto& problem : declared) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(declared.empty());
 }
@@ -373,7 +419,7 @@ TEST(view_check_passes_when_correct_remap_wins_over_earlier_wrong_line) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }
@@ -391,7 +437,7 @@ TEST(view_check_passes_when_remap_is_not_last_but_unshadowed) {
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     for (const auto& problem : problems) {
-        std::printf("  unexpected problem: %s\n", problem.c_str());
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
     }
     CHECK(problems.empty());
 }

@@ -56,7 +56,7 @@ int cmdInit(const Args& args) {
                      ".p4config).\n", spec.error().c_str());
         return 1;
     }
-    std::vector<std::string> problems;
+    std::vector<p4::ViewProblem> problems;
     for (const auto& mapping : config->mappings) {
         const std::string mirrorDir =
             resolveMirrorPath(mapping.mirrorPath, root);
@@ -67,13 +67,40 @@ int cmdInit(const Args& args) {
                         mappingProblems.end());
     }
     if (!problems.empty()) {
+        // Two kinds of problem want two kinds of advice. "General" ones (a
+        // missing/mis-ordered remap) are fixed in the client view; "diversion"
+        // ones (a subtree sub-path syncing in place) are fixed in p4gw.cfg.
+        // Group the latter into a single hint with copy-pasteable `exclude`
+        // lines, rather than repeating the same explanation per view line.
+        std::vector<std::string> divertPaths;
+        bool anyGeneral = false;
         for (const auto& problem : problems) {
-            std::fprintf(stderr, "gw init: %s\n", problem.c_str());
+            if (problem.excludePath.empty()) {
+                std::fprintf(stderr, "gw init: %s\n", problem.message.c_str());
+                anyGeneral = true;
+            } else {
+                divertPaths.push_back(problem.excludePath);
+            }
         }
-        std::fprintf(stderr,
-                     "Fix the client view ('p4 client'), then rerun "
-                     "'gw init'. Each mapping line belongs\nafter any view "
-                     "line it overlaps - later lines win.\n");
+        if (anyGeneral) {
+            std::fprintf(stderr,
+                         "Fix the client view ('p4 client'), then rerun "
+                         "'gw init'. Each mapping line\nbelongs after any view "
+                         "line it overlaps - later lines win.\n");
+        }
+        if (!divertPaths.empty()) {
+            if (anyGeneral) std::fprintf(stderr, "\n");
+            std::fprintf(
+                stderr,
+                "gw init: %zu client view line(s) sync part of a mapped subtree "
+                "in place,\noutside the mirror. gw would track those P4-owned "
+                "files in Git unless you\ndeclare them. Add to p4gw.cfg:\n\n",
+                divertPaths.size());
+            for (const auto& ex : p4::minimalExcludePaths(divertPaths)) {
+                std::fprintf(stderr, "    exclude = %s\n", ex.c_str());
+            }
+            std::fprintf(stderr, "\nthen rerun 'gw init'.\n");
+        }
         return 1;
     }
     std::printf("ok    client view maps all %zu mapping(s) into the mirror\n",

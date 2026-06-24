@@ -23,6 +23,16 @@ struct ViewLine {
     bool overlay = false; // leading '+'
 };
 
+// A problem found while checking the client view. `message` is self-contained
+// and human-readable. When `excludePath` is non-empty the problem is a subtree
+// diverted out of the mirror, and `excludePath` is the depot path to declare as
+// an `exclude` in p4gw.cfg to resolve it - init groups these into one hint
+// rather than repeating the explanation per line.
+struct ViewProblem {
+    std::string message;
+    std::string excludePath;
+};
+
 // Value of a single-line field ("Root", "Client", "LineEnd", ...) in
 // `p4 client -o` output; empty string if absent.
 std::string specField(const std::string& spec, const std::string& field);
@@ -45,12 +55,20 @@ std::vector<ViewLine> parseClientView(const std::string& spec);
 // the repo is the client root); and any other line whose client side falls
 // under `repoClientPrefix` (the Git repo's location, e.g. "//client/src/"; pass
 // empty to skip) but not under the mirror. Either way P4 must never write into
-// a Git-tracked path. Returns human-readable problems; empty means consistent.
-std::vector<std::string> checkViewMapping(
+// a Git-tracked path. Returns the problems found; empty means consistent.
+std::vector<ViewProblem> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
     const std::string& repoClientPrefix,
     const std::vector<std::string>& excludedDepotPaths = {});
+
+// The minimal set of depot paths that cover all of `excludePaths`: duplicates
+// removed and any path strictly under another in the set dropped (excluding the
+// ancestor already covers the descendant). Order follows first appearance. Used
+// to suggest the fewest `exclude` lines that resolve a batch of diversions.
+// Pure; unit-tested.
+std::vector<std::string> minimalExcludePaths(
+    const std::vector<std::string>& excludePaths);
 
 // "C:\work\game\mirror" under client root "C:\work\game" for client
 // "aaron-dev" -> "//aaron-dev/mirror" + suffix; empty if `localDir` is not
@@ -64,9 +82,9 @@ std::string clientViewPath(const std::string& clientName,
 // must map into the mirror directory and nothing may map into the repo
 // directory. `excludedDepotPaths` are subtrees the config carves out of the
 // mirror (synced in place / gitignored), whose in-place view lines are exempt
-// from the repo-mapping rule. Returns human-readable problems; empty means
+// from the repo-mapping rule. Returns the problems found; empty means
 // consistent.
-std::vector<std::string> checkSpecMapping(
+std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
     const std::string& repoDir, const std::string& mirrorDir,
     const std::vector<std::string>& excludedDepotPaths = {});
