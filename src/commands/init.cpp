@@ -174,6 +174,22 @@ int cmdInit(const Args& args) {
         }
     }
 
+    // Re-exclusions for each carved-out subtree (an `exclude` line): they sync
+    // in place like unmapped depot content and must stay out of Git, the same
+    // as `/src/thirdparty/`. buildGitignore writes these for a fresh allowlist;
+    // for an existing .gitignore we append any that are missing below.
+    std::vector<std::string> excludeEntries;
+    for (const auto& mapping : config->mappings) {
+        for (const auto& sub : mapping.excludedSubtrees) {
+            if (sub.empty()) continue;
+            const std::string entry = "/" + sub + "/";
+            if (std::find(excludeEntries.begin(), excludeEntries.end(),
+                          entry) == excludeEntries.end()) {
+                excludeEntries.push_back(entry);
+            }
+        }
+    }
+
     const fs::path gitignore = fs::path(root) / ".gitignore";
     if (!fs::exists(gitignore)) {
         {
@@ -192,12 +208,33 @@ int cmdInit(const Args& args) {
                              std::istreambuf_iterator<char>());
         in.close();
         std::ofstream out(gitignore, std::ios::app);
+        bool addedAny = false;
         for (const auto& entry : mirrorEntries) {
             if (content.find(entry) == std::string::npos) {
                 out << "\n# gw's mirror directory - P4-managed, not for Git\n"
                     << entry << "\n";
                 std::printf("Added %s to .gitignore\n", entry.c_str());
+                addedAny = true;
             }
+        }
+        for (const auto& entry : excludeEntries) {
+            if (content.find(entry) == std::string::npos) {
+                out << "\n# carved out of the mirror ('exclude') - syncs in "
+                       "place, not for Git\n"
+                    << entry << "\n";
+                std::printf("Added %s to .gitignore\n", entry.c_str());
+                addedAny = true;
+            }
+        }
+        out.close();
+        // On an existing repo (one that already has commits) init does not
+        // auto-commit .gitignore, so an append leaves the tree dirty and the
+        // next 'gw import' would refuse. Point the user at the commit.
+        if (addedAny && git::revParse("HEAD", root)) {
+            std::printf("Commit the updated .gitignore before 'gw import' (the "
+                        "tree must be clean):\n"
+                        "  git add .gitignore && git commit -m \"gw: ignore "
+                        "mirror and carved-out dirs\"\n");
         }
     }
     // In a brand-new (or --force-git-init) repo, commit the .gitignore so
