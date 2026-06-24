@@ -110,6 +110,57 @@ TEST(view_check_allows_exclude_then_reinclude_into_mirror) {
     CHECK(problems.empty());
 }
 
+TEST(view_check_allows_excluded_subtree_with_nested_client_carveouts) {
+    // The "lib in place" form of the peer-exclusion trick: instead of putting
+    // win64 in the mirror, lib/ is excluded from the mirror entirely (an
+    // `exclude` line) and its internal shape - drop the linux peers, keep the
+    // win64 ones - is expressed purely with client-view lines *under* lib. With
+    // lib, thirdparty, and devtools all declared as excludes, every in-place
+    // map and `-` sub-exclusion beneath them is intentional and must pass.
+    // A non-empty repo prefix (the repo is a sub-directory of the client root)
+    // makes the "maps into the repo" rule active so the exemption is exercised.
+    const std::string depot = "//depot/project/main/src/...";
+    const std::string mirror = "//client/game/.p4gw/src/...";
+    const std::string repoPrefix = "//client/game/";
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {depot, mirror, false, false},
+        {"//depot/project/main/src/lib/...", "//client/game/src/lib/...", false,
+         false},
+        {"//depot/project/main/src/lib/public/...",
+         "//client/game/src/lib/public/...", true, false},
+        {"//depot/project/main/src/lib/public/win64/...",
+         "//client/game/src/lib/public/win64/...", false, false},
+        {"//depot/project/main/src/lib/common/...",
+         "//client/game/src/lib/common/...", true, false},
+        {"//depot/project/main/src/lib/common/win64*/...",
+         "//client/game/src/lib/common/win64*/...", false, false},
+        {"//depot/project/main/src/thirdparty/...",
+         "//client/game/src/thirdparty/...", false, false},
+        {"//depot/project/main/src/devtools/...", "//client/game/src/devtools/...",
+         false, false},
+    };
+    const std::vector<std::string> excludes{
+        "//depot/project/main/src/lib/...",
+        "//depot/project/main/src/thirdparty/...",
+        "//depot/project/main/src/devtools/...",
+    };
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, depot, mirror, repoPrefix, excludes);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+
+    // Drop the thirdparty declaration: its in-place line is now an undeclared
+    // mapping into the repo and is the only thing flagged - the lib lines and
+    // its nested win64/linux carve-outs stay exempt under the lib exclude.
+    const std::vector<std::string> missingThirdparty{
+        "//depot/project/main/src/lib/...", "//depot/project/main/src/devtools/..."};
+    const auto flagged = p4gw::p4::checkViewMapping(view, depot, mirror,
+                                                    repoPrefix, missingThirdparty);
+    CHECK(flagged.size() == 1);
+}
+
 TEST(view_check_flags_undeclared_inplace_carveout) {
     // A narrower line that syncs a sub-path in place into the repo (not the
     // mirror) is the dangerous case: p4 would write into a Git-tracked
