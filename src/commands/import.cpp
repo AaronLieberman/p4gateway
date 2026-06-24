@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <unordered_set>
 
 #include "commands.h"
@@ -202,10 +203,21 @@ int cmdImport(const Args& args) {
     auto tracked = git::lsFiles(root);
     if (!tracked) return fail(tracked.error());
 
+    // Import touches the P4 server (per-mapping `p4 have`, opened-file lookup),
+    // copies the whole mirror into the working tree, and hashes it all into
+    // Git's index - any of which can run for a while on a large depot. Emit a
+    // line at the start of each phase (flushed so it shows up immediately) so
+    // the user can tell it is working rather than hung.
+    auto progress = [](const std::string& message) {
+        std::printf("%s\n", message.c_str());
+        std::fflush(stdout);
+    };
+
     // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
     // have an un-submitted working copy. The baseline must stay pristine
     // submitted depot state, so for those files read the depot head instead of
     // copying the mirror, and omit add-only files (no depot revision exists).
+    progress("Reading P4 state...");
     auto opened = p4::openedFilesTagged(*config);
     if (!opened) return fail(opened.error());
 
@@ -270,6 +282,14 @@ int cmdImport(const Args& args) {
         }
         const auto plan = mirror::planImport(actions, openedMirror);
 
+        const size_t toCopy = plan.actions.copies.size() + plan.depotReads.size();
+        const size_t toDelete = plan.actions.deletes.size();
+        if (toCopy != 0 || toDelete != 0) {
+            progress("Syncing " + mapping.depotPath + " (" +
+                     std::to_string(toCopy) + " to copy, " +
+                     std::to_string(toDelete) + " to delete)...");
+        }
+
         auto applied =
             mirror::applySyncActions(plan.actions, mirrorDir, worktreeDir);
         if (!applied) return fail(applied.error());
@@ -300,6 +320,7 @@ int cmdImport(const Args& args) {
         deletedFiles += plan.actions.deletes.size();
     }
 
+    progress("Staging snapshot in Git...");
     auto added = git::addAll(root);
     if (!added) return fail(added.error());
     auto clean = git::indexMatchesHead(root);
