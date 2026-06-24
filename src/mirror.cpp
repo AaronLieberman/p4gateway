@@ -86,7 +86,12 @@ std::expected<std::vector<std::string>, std::string> listFiles(
     for (auto it = fs::recursive_directory_iterator(dir, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         if (it->is_regular_file(ec)) {
-            files.push_back(fs::relative(it->path(), dir, ec).generic_string());
+            // lexically_relative is pure string work. fs::relative would
+            // weakly_canonical both paths - a filesystem hit per file (opening
+            // each one on Windows) - which dominates the walk on a big mirror.
+            // The iterator yields paths already rooted at `dir`, so a lexical
+            // strip is correct and far cheaper.
+            files.push_back(it->path().lexically_relative(dir).generic_string());
         }
     }
     if (ec) {
