@@ -60,8 +60,9 @@ int cmdInit(const Args& args) {
     for (const auto& mapping : config->mappings) {
         const std::string mirrorDir =
             resolveMirrorPath(mapping.mirrorPath, root);
-        const auto mappingProblems =
-            p4::checkSpecMapping(*spec, mapping.depotPath, root, mirrorDir);
+        const auto mappingProblems = p4::checkSpecMapping(
+            *spec, mapping.depotPath, root, mirrorDir,
+            mapping.excludedDepotPaths);
         problems.insert(problems.end(), mappingProblems.begin(),
                         mappingProblems.end());
     }

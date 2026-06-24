@@ -77,10 +77,75 @@ TEST(view_check_fails_when_depot_path_unmapped) {
     CHECK(problems.size() == 1);
 }
 
-TEST(view_check_fails_on_late_exclusion) {
+TEST(view_check_allows_narrower_exclusion_of_a_peer_dir) {
+    // Carving a sub-directory out of the mirror with a `-` line is legitimate
+    // (e.g. dropping a per-platform peer directory you don't build here). It
+    // narrows what syncs but never sends depot files into the repo, so it is
+    // allowed - the bulk remap of the subtree still wins.
     auto view = p4gw::p4::parseClientView(kSpec);
-    view.push_back({"//depot/game/main/src/generated/...",
-                    "//aaron-dev/src/.p4gw/generated/...", true, false});
+    view.push_back({"//depot/game/main/src/lib/linux/...",
+                    "//aaron-dev/src/.p4gw/lib/linux/...", true, false});
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+}
+
+TEST(view_check_allows_exclude_then_reinclude_into_mirror) {
+    // The win64-yes-linux-no pattern: exclude a directory, then re-include one
+    // peer back into the mirror. Both lines are narrower than the subtree and
+    // neither maps into the repo, so the bulk remap still governs.
+    auto view = p4gw::p4::parseClientView(kSpec);
+    view.push_back({"//depot/game/main/src/lib/public/...",
+                    "//aaron-dev/src/lib/public/...", true, false});
+    view.push_back({"//depot/game/main/src/lib/public/win64/...",
+                    "//aaron-dev/src/.p4gw/lib/public/win64/...", false, false});
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+}
+
+TEST(view_check_flags_undeclared_inplace_carveout) {
+    // A narrower line that syncs a sub-path in place into the repo (not the
+    // mirror) is the dangerous case: p4 would write into a Git-tracked
+    // directory. Without an `exclude` declaration it is flagged.
+    auto view = p4gw::p4::parseClientView(kSpec);
+    view.push_back({"//depot/game/main/src/thirdparty/...",
+                    "//aaron-dev/src/thirdparty/...", false, false});
+    const auto problems =
+        p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
+    CHECK(problems.size() == 1);
+}
+
+TEST(view_check_allows_declared_inplace_carveout) {
+    // The same in-place line is fine once the config carves it out: the user
+    // has told gw it should sync in place and be gitignored.
+    auto view = p4gw::p4::parseClientView(kSpec);
+    view.push_back({"//depot/game/main/src/thirdparty/...",
+                    "//aaron-dev/src/thirdparty/...", false, false});
+    const std::vector<std::string> excludes{
+        "//depot/game/main/src/thirdparty/..."};
+    const auto problems = p4gw::p4::checkViewMapping(
+        view, kDepotPath, kMirrorPath, kRepoPrefix, excludes);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(problems.empty());
+}
+
+TEST(view_check_still_fails_when_whole_subtree_excluded) {
+    // A `-` line at the subtree's own scope (not a narrower sub-path) empties
+    // the mirror entirely, which is a misconfiguration worth catching.
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {"//depot/game/main/...", "//aaron-dev/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/src/.p4gw/...", false, false},
+        {"//depot/game/main/src/...", "//aaron-dev/src/.p4gw/...", true, false},
+    };
     const auto problems =
         p4gw::p4::checkViewMapping(view, kDepotPath, kMirrorPath, kRepoPrefix);
     CHECK(!problems.empty());
@@ -179,6 +244,32 @@ TEST(check_spec_mapping_allows_mirror_inside_repo) {
     const auto problems = p4gw::p4::checkSpecMapping(
         leaks, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw");
     CHECK(problems.size() == 1);
+}
+
+TEST(check_spec_mapping_exempts_declared_inplace_exclude) {
+    // Repo is a sub-directory of the client root, so the repo prefix is real
+    // and the "maps into the repo" rule is active. A line that syncs
+    // src/thirdparty in place would normally trip it...
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/game/... //c/game/...\n"
+        "\t//depot/game/src/... //c/game/src/.p4gw/...\n"
+        "\t//depot/game/src/thirdparty/... //c/game/src/thirdparty/...\n";
+    const auto undeclared = p4gw::p4::checkSpecMapping(
+        spec, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw");
+    CHECK(undeclared.size() == 1);
+
+    // ... but is exempt once the config declares it as a carved-out subtree.
+    const std::vector<std::string> excludes{"//depot/game/src/thirdparty/..."};
+    const auto declared = p4gw::p4::checkSpecMapping(
+        spec, "//depot/game/src/...", "/work/game/src", "/work/game/src/.p4gw",
+        excludes);
+    for (const auto& problem : declared) {
+        std::printf("  unexpected problem: %s\n", problem.c_str());
+    }
+    CHECK(declared.empty());
 }
 
 TEST(view_check_fails_when_correct_remap_is_shadowed) {

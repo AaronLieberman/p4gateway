@@ -64,6 +64,24 @@ std::string mirrorRepoSubtree(const std::string& mirrorPath) {
     return subtree.generic_string();
 }
 
+std::string excludedRepoSubtree(const std::string& mappingDepotPath,
+                                const std::string& repoSubtree,
+                                const std::string& excludeDepotPath) {
+    // Drop the trailing "..." but keep the slash so prefix tests are anchored
+    // at a path boundary (".../src/" must not match ".../srclib/").
+    auto stripWildcard = [](std::string p) {
+        if (p.ends_with("...")) p.resize(p.size() - 3);
+        return p;
+    };
+    const std::string base = stripWildcard(mappingDepotPath);   // //d/src/
+    const std::string excl = stripWildcard(excludeDepotPath);   // //d/src/lib/
+    if (excl.size() <= base.size() || !excl.starts_with(base)) return {};
+    std::string rel = excl.substr(base.size());                 // lib/  or  a/b/
+    while (!rel.empty() && rel.back() == '/') rel.pop_back();    // lib   or  a/b
+    if (rel.empty()) return repoSubtree;
+    return repoSubtree.empty() ? rel : repoSubtree + "/" + rel;
+}
+
 namespace {
 
 // Splits a forward-slash path into its non-empty components.
@@ -111,10 +129,44 @@ std::string buildGitignore(const std::vector<Mapping>& mappings) {
         }
     }
 
+    // Distinct carved-out subtrees across all mappings, in declaration order.
+    // These are directories under a mapped subtree that the user excluded from
+    // the mirror (an `exclude` line); they sync in place / are unsynced and
+    // must stay out of Git, so they get re-excluded after the allowlist below.
+    std::vector<std::string> excludedSubtrees;
+    for (const auto& m : mappings) {
+        for (const auto& ex : m.excludedSubtrees) {
+            if (ex.empty()) continue;
+            if (std::find(excludedSubtrees.begin(), excludedSubtrees.end(),
+                          ex) == excludedSubtrees.end()) {
+                excludedSubtrees.push_back(ex);
+            }
+        }
+    }
+
+    // Re-excludes the carved-out subtrees, e.g. "/src/thirdparty/". Appended to
+    // whichever body is built below: in the allowlist they re-exclude a tracked
+    // subtree's children; in the denylist they ignore an otherwise-tracked dir.
+    auto appendExclusions = [&](std::string& out) {
+        if (excludedSubtrees.empty()) return;
+        out += "\n# Directories under a mapped subtree that are carved out of "
+               "the mirror\n# (an 'exclude' line): they sync in place / are "
+               "unsynced, like unmapped\n# depot content, so Git ignores "
+               "them.\n";
+        for (const auto& ex : excludedSubtrees) {
+            out += "/" + ex + "/\n";
+        }
+    };
+
     // A whole-repo mapping leaves nothing unmapped to hide, so an allowlist
     // would only ignore the repo's own content. Fall back to a plain denylist
-    // of the gw-managed paths (personal config + the mirror container).
-    if (wholeRepoMapped || subtrees.empty()) return kGwDenylist;
+    // of the gw-managed paths (personal config + the mirror container), plus
+    // any carved-out directories.
+    if (wholeRepoMapped || subtrees.empty()) {
+        std::string out = kGwDenylist;
+        appendExclusions(out);
+        return out;
+    }
 
     // The mapped subtrees as component vectors. Drop any nested under another
     // mapped subtree: the ancestor's re-include already exposes it, and a
@@ -196,6 +248,10 @@ std::string buildGitignore(const std::vector<Mapping>& mappings) {
             if (d.components.size() == depth && !d.isLeaf)
                 out += join(d.components) + "/*\n";
     }
+    // The allowlist re-includes each mapped subtree whole (`!/src/`); a later
+    // `/src/thirdparty/` line then carves the excluded directories back out.
+    // Git applies the patterns in order, so these must come last.
+    appendExclusions(out);
     return out;
 }
 
@@ -251,6 +307,42 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                 }
             }
             config.mappings.push_back(std::move(mapping));
+        } else if (key == "exclude") {
+            // An `exclude` carves a depot subtree out of the most recently
+            // declared mapping: the client view drops it or syncs it in place,
+            // and gw gitignores it rather than mirroring it.
+            if (config.mappings.empty()) {
+                return std::unexpected(
+                    where + ": 'exclude' must follow the 'mapping' it carves "
+                    "out of");
+            }
+            const auto tokens = tokenize(value);
+            if (tokens.size() != 1) {
+                return std::unexpected(
+                    where + ": 'exclude' takes one value: <depot_path>");
+            }
+            const std::string& excludePath = tokens[0];
+            if (!excludePath.ends_with("/...")) {
+                return std::unexpected(where + ": exclude path '" + excludePath +
+                                       "' must end with '/...'");
+            }
+            Mapping& owner = config.mappings.back();
+            const std::string subtree = excludedRepoSubtree(
+                owner.depotPath, owner.repoSubtree, excludePath);
+            if (subtree.empty()) {
+                return std::unexpected(
+                    where + ": exclude path '" + excludePath +
+                    "' is not strictly under its mapping's depot path '" +
+                    owner.depotPath + "'");
+            }
+            if (std::find(owner.excludedDepotPaths.begin(),
+                          owner.excludedDepotPaths.end(),
+                          excludePath) != owner.excludedDepotPaths.end()) {
+                return std::unexpected(where + ": exclude path '" + excludePath +
+                                       "' is listed twice");
+            }
+            owner.excludedDepotPaths.push_back(excludePath);
+            owner.excludedSubtrees.push_back(subtree);
         } else if (key == "client") {
             config.client = value;
         } else if (key == "baseline_branch") {

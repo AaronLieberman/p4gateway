@@ -94,6 +94,18 @@ int cmdSetup(const Args& args) {
             file << "mapping = " << depotPath << " " << mirrorPath << "\n";
         }
         file << "\n"
+                "# Optional 'exclude' lines carve a depot subtree out of the "
+                "mapping above it:\n"
+                "# the client view drops it (a '-' line) or syncs it in place, "
+                "and gw keeps\n"
+                "# it out of the mirror and gitignores it - just like unmapped "
+                "depot content,\n"
+                "# even though it lives under a mapped subtree. One line per "
+                "carved-out path,\n"
+                "# each ending in '/...' and under its mapping's depot path:\n"
+                "#   exclude = //depot/yourgame/src/thirdparty/...\n"
+                "#   exclude = //depot/yourgame/src/devtools/...\n"
+                "\n"
                 "# P4 client name; leave commented out to use the ambient\n"
                 "# P4CLIENT (e.g. from a .p4config / p4.ini).\n";
         if (client.empty()) {

@@ -26,7 +26,8 @@ struct ResolvedMapping {
 // The mapping that owns a repo-relative path: the one whose repoSubtree is the
 // longest matching prefix (an empty subtree, i.e. the whole repo, is the
 // catch-all). Returns nullptr for paths under no mapping (pure Git files like
-// bin/ or content/).
+// bin/ or content/) and for paths under a mapping's carved-out `exclude`
+// subtree (those sync in place / are unsynced and never ship through gw).
 const ResolvedMapping* routeFor(const std::vector<ResolvedMapping>& resolved,
                                 const std::string& repoRel) {
     const ResolvedMapping* best = nullptr;
@@ -42,6 +43,11 @@ const ResolvedMapping* routeFor(const std::vector<ResolvedMapping>& resolved,
         if (best == nullptr || len > bestLen) {
             best = &r;
             bestLen = len;
+        }
+    }
+    if (best != nullptr) {
+        for (const auto& ex : best->mapping->excludedSubtrees) {
+            if (repoRel == ex || repoRel.starts_with(ex + "/")) return nullptr;
         }
     }
     return best;

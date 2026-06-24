@@ -172,6 +172,14 @@ to check.
 mapping = //depot/yourgame/src/...     .p4gw/src
 mapping = //depot/yourgame/config/...  .p4gw/config
 
+# Optional 'exclude' lines carve a depot subtree out of the mapping above
+# them. The client view either drops it (a '-' line) or syncs it in place,
+# and gw keeps it out of the mirror and gitignores it - exactly like unmapped
+# depot content (bin/, content/), even though it lives under a mapped subtree.
+# Each must end in '/...' and lie under its mapping's depot path.
+exclude = //depot/yourgame/src/thirdparty/...
+exclude = //depot/yourgame/src/devtools/...
+
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
 
@@ -184,6 +192,26 @@ baseline_branch = p4-main
 `p4gw.cfg` is personal (it names your client); the starter `.gitignore` is an
 allowlist — `/*` then a `!/src/` line per mapping — so Git tracks only the
 mapped subtrees and everything else (the `.p4gw/` mirror, `p4gw.cfg` itself,
-and any unmapped depot content that synced in place) stays out of Git. To keep
-a directory that is Git-only (never in P4), add a `!/yourdir/` line. gw never
+and any unmapped depot content that synced in place) stays out of Git. Each
+`exclude` line adds a matching re-exclusion (e.g. `/src/thirdparty/`) so a
+carved-out directory under a mapped subtree stays out of Git too. To keep a
+directory that is Git-only (never in P4), add a `!/yourdir/` line. gw never
 opens `p4gw.cfg` or `.gitignore` in a changelist.
+
+### Complex client views
+
+A subtree need not sync as one solid block. Two patterns are supported:
+
+- **Per-platform / peer carve-outs.** You can exclude directories from the
+  client view and re-include their peers — keep `win64/` but drop the `linux/`
+  and `osx/` peers, say. As long as the bulk of the subtree still remaps into
+  the mirror and nothing re-includes into the repo outside it, `gw init`
+  accepts the view; the absent peers simply never appear. No config needed.
+- **Unmapped directories under a mapped subtree.** Some directories under
+  `src/` (vendored `thirdparty/`, generated `devtools/`) may belong to P4 but
+  not to your Git history. List them as `exclude` lines: gw leaves them out of
+  the mirror, gitignores them, and ships nothing through them — they behave
+  just like the top-level unmapped directories (`bin/`, `content/`), even
+  though they live under `src/`. An in-place sync line for one of these would
+  otherwise be flagged as "maps into the repo"; the `exclude` declaration is
+  what tells gw it is intentional.

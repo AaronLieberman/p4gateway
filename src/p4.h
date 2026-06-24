@@ -31,16 +31,24 @@ std::string specField(const std::string& spec, const std::string& field);
 // and -/+ prefixes.
 std::vector<ViewLine> parseClientView(const std::string& spec);
 
-// Checks that the view maps `depotPath` to exactly `expectedClientPath`
-// (both in `//.../...` form). Mapping lines that don't overlap `depotPath`
-// are ignored - other custom mappings are fine - except that any line whose
-// client side falls under `repoClientPrefix` (the Git repo's location, e.g.
-// "//client/src/"; pass empty to skip) is an error: P4 must never write
-// into the repo. Returns human-readable problems; empty means consistent.
-std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
-                                          const std::string& depotPath,
-                                          const std::string& expectedClientPath,
-                                          const std::string& repoClientPrefix);
+// Checks that the view maps the *bulk* of `depotPath` to exactly
+// `expectedClientPath` (both in `//.../...` form): the last view line covering
+// `depotPath` (it or a broader scope) must be that remap, so a later line can't
+// shadow it back into the wrong place. Lines that don't overlap `depotPath` are
+// ignored - other custom mappings are fine. Narrower lines *under* `depotPath`
+// may legitimately carve the subtree up (a `-` exclusion of a per-platform peer
+// directory, or a re-include of a deeper directory back into the mirror), so
+// those are allowed. The one hard rule: any line whose client side falls under
+// `repoClientPrefix` (the Git repo's location, e.g. "//client/src/"; pass empty
+// to skip) but not under the mirror is an error - P4 must never write into the
+// repo - unless its depot side lies under one of `excludedDepotPaths`, the
+// subtrees the config deliberately carves out to sync in place (gitignored).
+// Returns human-readable problems; empty means consistent.
+std::vector<std::string> checkViewMapping(
+    const std::vector<ViewLine>& view, const std::string& depotPath,
+    const std::string& expectedClientPath,
+    const std::string& repoClientPrefix,
+    const std::vector<std::string>& excludedDepotPaths = {});
 
 // "C:\work\game\mirror" under client root "C:\work\game" for client
 // "aaron-dev" -> "//aaron-dev/mirror" + suffix; empty if `localDir` is not
@@ -52,11 +60,14 @@ std::string clientViewPath(const std::string& clientName,
 
 // Full mapping consistency check against `p4 client -o` output: `depotPath`
 // must map into the mirror directory and nothing may map into the repo
-// directory. Returns human-readable problems; empty means consistent.
-std::vector<std::string> checkSpecMapping(const std::string& spec,
-                                          const std::string& depotPath,
-                                          const std::string& repoDir,
-                                          const std::string& mirrorDir);
+// directory. `excludedDepotPaths` are subtrees the config carves out of the
+// mirror (synced in place / gitignored), whose in-place view lines are exempt
+// from the repo-mapping rule. Returns human-readable problems; empty means
+// consistent.
+std::vector<std::string> checkSpecMapping(
+    const std::string& spec, const std::string& depotPath,
+    const std::string& repoDir, const std::string& mirrorDir,
+    const std::vector<std::string>& excludedDepotPaths = {});
 
 // ---- wrappers over the p4 CLI ----
 

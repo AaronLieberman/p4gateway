@@ -287,7 +287,7 @@ std::expected<void, std::string> discover(ItContext& it) {
     it.mirrorDir = (fs::path(it.testRoot) / ".p4gw" / "src").string();
     // The raw-p4 helper config carries one whole-depot mapping so calls like
     // p4::openedFiles scope to the test depot; its mirror path is unused here.
-    it.p4.mappings = {{it.p4DepotPath, ".p4gw", ""}};
+    it.p4.mappings = {{it.p4DepotPath, ".p4gw", "", {}, {}}};
     return {};
 }
 

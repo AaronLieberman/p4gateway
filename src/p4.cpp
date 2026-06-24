@@ -179,10 +179,11 @@ std::vector<ViewLine> parseClientView(const std::string& spec) {
     return view;
 }
 
-std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
-                                          const std::string& depotPath,
-                                          const std::string& expectedClientPath,
-                                          const std::string& repoClientPrefix) {
+std::vector<std::string> checkViewMapping(
+    const std::vector<ViewLine>& view, const std::string& depotPath,
+    const std::string& expectedClientPath,
+    const std::string& repoClientPrefix,
+    const std::vector<std::string>& excludedDepotPaths) {
     std::vector<std::string> problems;
 
     // The mirror typically lives inside the repo (the recommended `.p4gw`),
@@ -190,21 +191,36 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
     // whole point, so exempt anything under the mirror from the "maps into the
     // repo" check below while still catching every other line.
     const std::string mirrorPrefix = stripWildcard(expectedClientPath);
+    const std::string depotBase = stripWildcard(depotPath);  // ends with '/'
 
-    // Later view lines win per depot file, so only the last line overlapping
-    // the depot path determines where it lands.
+    // A depot path lies under one of the carved-out exclude subtrees, so its
+    // in-place client mapping is intentional (the config gitignores it).
+    auto underExclude = [&](const std::string& lineDepotBase) {
+        for (const auto& ex : excludedDepotPaths) {
+            if (lineDepotBase.starts_with(stripWildcard(ex))) return true;
+        }
+        return false;
+    };
+
+    // Later view lines win per depot file. Where the *bulk* of depotPath lands
+    // is set by the last line whose scope covers depotPath (it or broader);
+    // narrower lines only carve up sub-paths and must not shadow the bulk remap.
     const ViewLine* effective = nullptr;
     for (const auto& line : view) {
-        if (pathsOverlap(line.depot, depotPath)) {
-            effective = &line;
+        const std::string lineBase = stripWildcard(line.depot);
+        if (depotBase.starts_with(lineBase)) {
+            effective = &line;  // this line's scope covers all of depotPath
         }
         const std::string clientBase = stripWildcard(line.client);
-        if (!repoClientPrefix.empty() && !line.exclude &&
+        const bool mapsIntoRepo =
+            !repoClientPrefix.empty() && !line.exclude &&
             clientBase.starts_with(repoClientPrefix) &&
-            !(!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix))) {
+            !(!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix));
+        if (mapsIntoRepo && !underExclude(lineBase)) {
             problems.push_back("view line '" + line.depot + " " + line.client +
                                "' maps depot files into the Git repo directory; "
-                               "P4 must never write there");
+                               "P4 must never write there (declare it with an "
+                               "'exclude' line if it should sync in place)");
         }
     }
 
@@ -213,9 +229,9 @@ std::vector<std::string> checkViewMapping(const std::vector<ViewLine>& view,
                            " is not mapped in the client view");
     } else if (effective->exclude) {
         problems.push_back(
-            (effective->depot == depotPath ? "depot path " : "part of ") +
-            depotPath + " is excluded by view line '-" + effective->depot +
-            " " + effective->client + "' - the mirror would be incomplete");
+            "depot path " + depotPath + " is excluded by view line '-" +
+            effective->depot + " " + effective->client +
+            "' - the mirror would be empty");
     } else if (effective->depot != depotPath ||
                effective->client != expectedClientPath) {
         problems.push_back(
@@ -241,10 +257,10 @@ std::string clientViewPath(const std::string& clientName,
     return "//" + clientName + "/" + relStr + suffix;
 }
 
-std::vector<std::string> checkSpecMapping(const std::string& spec,
-                                          const std::string& depotPath,
-                                          const std::string& repoDir,
-                                          const std::string& mirrorDir) {
+std::vector<std::string> checkSpecMapping(
+    const std::string& spec, const std::string& depotPath,
+    const std::string& repoDir, const std::string& mirrorDir,
+    const std::vector<std::string>& excludedDepotPaths) {
     const std::string clientName = specField(spec, "Client");
     const std::string clientRoot = specField(spec, "Root");
     if (clientName.empty() || clientRoot.empty()) {
@@ -259,7 +275,7 @@ std::vector<std::string> checkSpecMapping(const std::string& spec,
     const std::string repoPrefix =
         clientViewPath(clientName, clientRoot, repoDir, "/");
     return checkViewMapping(parseClientView(spec), depotPath,
-                            expectedClientPath, repoPrefix);
+                            expectedClientPath, repoPrefix, excludedDepotPaths);
 }
 
 std::expected<std::string, std::string> info(const Config& config) {

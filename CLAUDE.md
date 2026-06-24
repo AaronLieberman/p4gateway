@@ -12,10 +12,18 @@ repo's `.p4gw` mirror container, so every p4 sync lands in the mirror and the
 canonical directory is purely a Git repo. The config is a list of
 `mapping = <depot_path> <mirror_path>` lines — one repo can ship several
 subtrees (e.g. `src/` and `config/`); the mirror path below `.p4gw` is the
-working-tree subtree it feeds. The starter `.gitignore` `gw init` writes is an
-allowlist (`/*` then `!/src/`…): Git tracks only the mapped subtrees, and
-unmapped depot content that syncs in place stays out of Git unless the user
-re-includes a directory by hand (`!/dir/`). `gw import` commits mirror state to the `p4-main`
+working-tree subtree it feeds. A `mapping` may carry `exclude = <depot_subpath>`
+lines that carve directories out of the mirror (vendored `thirdparty/`,
+generated `devtools/`): the client view drops them or syncs them in place, and
+gw gitignores them and ships nothing through them — they behave like the
+top-level unmapped directories even though they live under a mapped subtree.
+The view check tolerates this plus per-platform peer carve-outs (keep `win64/`,
+drop its `linux/` peer); its one hard rule is that nothing may map into the repo
+outside the mirror unless an `exclude` declares it. The starter `.gitignore`
+`gw init` writes is an allowlist (`/*` then `!/src/`…): Git tracks only the
+mapped subtrees, and unmapped depot content that syncs in place stays out of
+Git unless the user re-includes a directory by hand (`!/dir/`); each `exclude`
+adds a matching re-exclusion (`/src/thirdparty/`). `gw import` commits mirror state to the `p4-main`
 baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds

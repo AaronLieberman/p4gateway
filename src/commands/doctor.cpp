@@ -58,6 +58,10 @@ int cmdDoctor(const Args& args) {
     for (const auto& mapping : config->mappings) {
         std::printf("      %s -> %s\n", mapping.depotPath.c_str(),
                     mapping.mirrorPath.c_str());
+        for (const auto& ex : mapping.excludedDepotPaths) {
+            std::printf("        excluded (in place, gitignored): %s\n",
+                        ex.c_str());
+        }
     }
 
     for (const auto& mapping : config->mappings) {
@@ -100,7 +104,8 @@ int cmdDoctor(const Args& args) {
                 const std::string mirrorDir =
                     resolveMirrorPath(mapping.mirrorPath, root);
                 const auto problems = p4::checkSpecMapping(
-                    *spec, mapping.depotPath, root, mirrorDir);
+                    *spec, mapping.depotPath, root, mirrorDir,
+                    mapping.excludedDepotPaths);
                 if (problems.empty()) {
                     std::printf("ok    client view maps %s to the mirror\n",
                                 mapping.depotPath.c_str());

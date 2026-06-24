@@ -29,6 +29,22 @@ struct Mapping {
     // dropping its leading `.p4gw` container component: ".p4gw/src" -> "src",
     // ".p4gw" -> "" (the whole repo). Forward slashes; no trailing slash.
     std::string repoSubtree;
+
+    // Depot subtrees *under* this mapping that are deliberately carved out of
+    // the mirror: the client view either drops them (a `-` line) or syncs them
+    // in place into the repo working tree, the same as unmapped depot content
+    // (`bin/`, `content/`). gw gitignores them and never ships them through the
+    // mirror. Each ends with "/..." and lies strictly under `depotPath`. Source
+    // of an `exclude` line in p4gw.cfg. Example: a `src` mapping that excludes
+    // "//depot/yourgame/src/thirdparty/...".
+    std::vector<std::string> excludedDepotPaths;
+
+    // The same carve-outs as repo-relative working-tree subtrees (forward
+    // slashes, no trailing slash), derived from `excludedDepotPaths`:
+    // "//depot/yourgame/src/thirdparty/..." under repoSubtree "src" ->
+    // "src/thirdparty". buildGitignore re-excludes these even though they live
+    // under a tracked mapped subtree.
+    std::vector<std::string> excludedSubtrees;
 };
 
 // Project configuration, loaded from a `p4gw.cfg` file at the root of the Git
@@ -69,6 +85,16 @@ std::string resolveMirrorPath(const std::string& mirrorPath,
 // Forward slashes, no trailing slash. Pure; unit-tested.
 std::string mirrorRepoSubtree(const std::string& mirrorPath);
 
+// Repo-relative working-tree subtree of a depot path carved out of a mapping:
+// the part of `excludeDepotPath` below `mappingDepotPath`, prefixed by the
+// mapping's `repoSubtree`. ("//d/src/...", "src", "//d/src/lib/...") -> "src/lib";
+// ("//d/...", "", "//d/lib/...") -> "lib". Empty when `excludeDepotPath` is not
+// strictly under `mappingDepotPath`. Forward slashes, no trailing slash. Pure;
+// unit-tested.
+std::string excludedRepoSubtree(const std::string& mappingDepotPath,
+                                const std::string& repoSubtree,
+                                const std::string& excludeDepotPath);
+
 // Builds the starter `.gitignore` content for a fresh repo. gw tracks only the
 // depot subtree(s) the repo maps; everything else in the working tree -
 // unmapped P4 content synced in place, the `.p4gw` mirror, and gw's own
@@ -76,7 +102,9 @@ std::string mirrorRepoSubtree(const std::string& mirrorPath);
 // everything at the root, then re-include exactly each mapped working-tree
 // subtree (and `.gitignore` itself). A whole-repo mapping (empty repoSubtree)
 // has nothing unmapped to hide, so it falls back to a plain denylist of just
-// the gw-managed paths. Pure; unit-tested.
+// the gw-managed paths. Any `excludedSubtrees` are re-excluded afterwards
+// (`/src/thirdparty/`) so a carved-out directory under a tracked subtree stays
+// out of Git, the same as unmapped depot content. Pure; unit-tested.
 std::string buildGitignore(const std::vector<Mapping>& mappings);
 
 // The hidden Git ref that tracks pristine depot state - the `origin/main`

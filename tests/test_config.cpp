@@ -56,6 +56,94 @@ TEST(config_parses_multiple_mappings_in_order) {
     }
 }
 
+TEST(config_parses_exclude_lines_under_a_mapping) {
+    auto config = loadFromString(
+        "mapping = //depot/project/main/src/... .p4gw/src\n"
+        "exclude = //depot/project/main/src/lib/...\n"
+        "exclude = //depot/project/main/src/thirdparty/...\n"
+        "exclude = //depot/project/main/src/devtools/...\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->mappings.size() == 1);
+        const auto& m = config->mappings[0];
+        CHECK(m.excludedDepotPaths.size() == 3);
+        CHECK(m.excludedDepotPaths[0] == "//depot/project/main/src/lib/...");
+        CHECK(m.excludedSubtrees.size() == 3);
+        CHECK(m.excludedSubtrees[0] == "src/lib");
+        CHECK(m.excludedSubtrees[1] == "src/thirdparty");
+        CHECK(m.excludedSubtrees[2] == "src/devtools");
+    }
+}
+
+TEST(config_excludes_attach_to_the_preceding_mapping) {
+    auto config = loadFromString(
+        "mapping = //depot/develop/src/...    .p4gw/src\n"
+        "exclude = //depot/develop/src/lib/...\n"
+        "mapping = //depot/develop/config/... .p4gw/config\n"
+        "exclude = //depot/develop/config/generated/...\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->mappings.size() == 2);
+        CHECK(config->mappings[0].excludedSubtrees.size() == 1);
+        CHECK(config->mappings[0].excludedSubtrees[0] == "src/lib");
+        CHECK(config->mappings[1].excludedSubtrees.size() == 1);
+        CHECK(config->mappings[1].excludedSubtrees[0] == "config/generated");
+    }
+}
+
+TEST(excluded_repo_subtree_maps_depot_to_worktree) {
+    CHECK(p4gw::excludedRepoSubtree("//d/src/...", "src", "//d/src/lib/...") ==
+          "src/lib");
+    CHECK(p4gw::excludedRepoSubtree("//d/src/...", "src",
+                                    "//d/src/lib/public/...") ==
+          "src/lib/public");
+    // A whole-repo mapping (empty subtree) yields a top-level exclude.
+    CHECK(p4gw::excludedRepoSubtree("//d/...", "", "//d/lib/...") == "lib");
+    // Not strictly under the mapping -> empty.
+    CHECK(p4gw::excludedRepoSubtree("//d/src/...", "src", "//d/src/...")
+              .empty());
+    CHECK(p4gw::excludedRepoSubtree("//d/src/...", "src", "//d/other/...")
+              .empty());
+    // A peer with a shared name prefix must not match (boundary anchored).
+    CHECK(p4gw::excludedRepoSubtree("//d/src/...", "src", "//d/srclib/...")
+              .empty());
+}
+
+TEST(config_rejects_exclude_without_a_mapping) {
+    CHECK(!loadFromString("exclude = //depot/x/lib/...\n").has_value());
+}
+
+TEST(config_rejects_exclude_outside_its_mapping) {
+    CHECK(!loadFromString(
+              "mapping = //depot/x/... .p4gw/x\n"
+              "exclude = //depot/y/lib/...\n")
+               .has_value());
+}
+
+TEST(config_rejects_exclude_at_mapping_root) {
+    // Excluding the whole subtree (== the mapping's own depot path) is not a
+    // carve-out; it would empty the mirror.
+    CHECK(!loadFromString(
+              "mapping = //depot/x/... .p4gw/x\n"
+              "exclude = //depot/x/...\n")
+               .has_value());
+}
+
+TEST(config_rejects_exclude_without_wildcard) {
+    CHECK(!loadFromString(
+              "mapping = //depot/x/... .p4gw/x\n"
+              "exclude = //depot/x/lib\n")
+               .has_value());
+}
+
+TEST(config_rejects_duplicate_exclude) {
+    CHECK(!loadFromString(
+              "mapping = //depot/x/... .p4gw/x\n"
+              "exclude = //depot/x/lib/...\n"
+              "exclude = //depot/x/lib/...\n")
+               .has_value());
+}
+
 TEST(config_derives_repo_subtree_from_mirror) {
     // The leading `.p4gw` container is dropped; the rest is the working-tree
     // directory the subtree occupies.
@@ -145,6 +233,13 @@ p4gw::Mapping mappingWithSubtree(const std::string& subtree) {
     return m;
 }
 
+p4gw::Mapping mappingWithExcludes(const std::string& subtree,
+                                  const std::vector<std::string>& excludes) {
+    p4gw::Mapping m = mappingWithSubtree(subtree);
+    m.excludedSubtrees = excludes;
+    return m;
+}
+
 bool contains(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
@@ -191,6 +286,28 @@ TEST(gitignore_drops_subtree_nested_under_another_mapping) {
     CHECK(contains(out, "!/a/\n"));
     CHECK(!contains(out, "/a/*\n"));
     CHECK(!contains(out, "!/a/b/\n"));
+}
+
+TEST(gitignore_reexcludes_carved_out_subtrees) {
+    // The mapped subtree is re-included whole, then each carved-out directory
+    // is re-excluded so it stays out of Git (it syncs in place / is unsynced).
+    const std::string out = p4gw::buildGitignore(
+        {mappingWithExcludes("src", {"src/lib", "src/thirdparty"})});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(contains(out, "/src/lib/\n"));
+    CHECK(contains(out, "/src/thirdparty/\n"));
+    // The re-exclusions must come after the subtree's re-include, or Git would
+    // re-include them again.
+    CHECK(out.find("!/src/\n") < out.find("/src/lib/\n"));
+}
+
+TEST(gitignore_reexcludes_under_whole_repo_mapping) {
+    // A whole-repo mapping uses the denylist body; carved-out directories are
+    // still ignored, by an ordinary ignore line.
+    const std::string out =
+        p4gw::buildGitignore({mappingWithExcludes("", {"lib"})});
+    CHECK(contains(out, "p4gw.cfg\n"));  // denylist body
+    CHECK(contains(out, "/lib/\n"));
 }
 
 TEST(gitignore_falls_back_to_denylist_for_whole_repo_mapping) {
