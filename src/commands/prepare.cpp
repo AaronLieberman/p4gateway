@@ -398,6 +398,14 @@ int cmdPrepare(const Args& args) {
     printPlannedOps();
 
     if (verify) {
+        // `p4 reconcile -n` scans the whole subtree to catch anything the diff
+        // didn't account for (a stray edit, a sync that landed mid-prepare), so
+        // it scales with subtree size, not the size of this change - on a big
+        // subtree it can take a while. Announce it (flushed) so the wait does
+        // not look like a hang.
+        std::printf("Verifying with p4 reconcile -n (scans the whole subtree; "
+                    "--no-verify to skip)...\n");
+        std::fflush(stdout);
         auto preview = p4::reconcilePreview(*config);
         if (!preview) {
             std::fprintf(stderr, "gw prepare: verify failed: %s\n",
