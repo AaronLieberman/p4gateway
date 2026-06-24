@@ -17,6 +17,12 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX  // keep <windows.h> from clobbering std::min/std::max
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <io.h>
 #include <windows.h>
 #else
@@ -41,11 +47,21 @@ inline int& failureCount() {
     return failures;
 }
 
-// Color is enabled only for an interactive terminal and when NO_COLOR is unset
-// (https://no-color.org). On Windows we also flip the console into ANSI mode.
+// True when the NO_COLOR environment variable is present (https://no-color.org).
+inline bool noColorRequested() {
+#ifdef _WIN32
+    std::size_t len = 0;  // getenv_s avoids MSVC's C4996 on getenv
+    return getenv_s(&len, nullptr, 0, "NO_COLOR") == 0 && len > 0;
+#else
+    return std::getenv("NO_COLOR") != nullptr;
+#endif
+}
+
+// Color is enabled only for an interactive terminal and when NO_COLOR is unset.
+// On Windows we also flip the console into ANSI mode.
 inline bool colorEnabled() {
     static const bool enabled = [] {
-        if (std::getenv("NO_COLOR")) return false;
+        if (noColorRequested()) return false;
 #ifdef _WIN32
         if (!_isatty(_fileno(stdout))) return false;
         HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
