@@ -58,7 +58,7 @@ struct Config {
     std::string client;
 
     // Name of the Git branch that tracks pristine P4 state.
-    std::string baselineBranch = "p4-main";
+    std::string baselineBranch = "main";
 };
 
 // Loads configuration from `path`. Unknown keys are an error so typos

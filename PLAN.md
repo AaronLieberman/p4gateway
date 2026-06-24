@@ -21,7 +21,7 @@ state — lands in the mirror. The directory at the canonical `src/` path is
 the right place. gw moves state across the boundary explicitly:
 
 - `gw import` commits the mirror's current state to the hidden depot-tracking
-  ref `refs/p4gw/p4-main` (the `origin/main` analog), like `git fetch`. Your
+  ref `refs/p4gw/main` (the `origin/main` analog), like `git fetch`. Your
   branch fast-forwards when it has no local commits; `--rebase` replays local
   commits onto the new depot state, like `git pull --rebase`. A like-named
   local branch is kept fast-forwarded to the ref for convenience.
@@ -60,7 +60,7 @@ worst external failure (the remap line vanishing from the client spec) is a
       connection — then git init if needed (`--force-git-init` starts the
       repo over) + starter `.gitignore`; never edits the client spec
 - [x] `gw import`: clean-tree check, build the depot snapshot off a detached
-      checkout of the hidden ref `refs/p4gw/p4-main` (orphan baseline on the
+      checkout of the hidden ref `refs/p4gw/main` (orphan baseline on the
       very first import; legacy repos seed the ref from the baseline branch's
       last import commit), copy mirror → working tree / delete vanished
       tracked files, commit (best-effort CL label), advance the ref, then
@@ -109,7 +109,7 @@ conflict/abort) on Linux.
       tested. **Needs real-workspace check**: pending-CL count parsing against
       live `p4 opened` output.
 - [x] `gw shelf import <CL>`: recreate a shelved changelist as a branch off
-      `p4-main`, replaying the shelf's delta with a git 3-way merge (base =
+      `main`, replaying the shelf's delta with a git 3-way merge (base =
       `p4 print //depot/f#rev`, theirs = `p4 print //depot/f@=CL`, ours =
       baseline tip). Binary types take the shelved content wholesale; conflicts
       leave git markers for the user to resolve and commit. Read-only on P4 —
@@ -175,7 +175,7 @@ conflict/abort) on Linux.
 - **Mirror tampering** (builds writing into it, hand edits): `import`
   filters the mirror listing through `p4 have`, so stray files p4 never
   tracked (build output, leftovers from a botched sync) are ignored instead
-  of absorbed into `p4-main`. In-place edits to *tracked* files are still
+  of absorbed into `main`. In-place edits to *tracked* files are still
   imported (they're in `have`); prepare's reconcile preview is the canary
   for that residue. Treat the mirror as gw's — never point editors or
   builds at it.

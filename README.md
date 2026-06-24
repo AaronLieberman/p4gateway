@@ -41,11 +41,11 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 |---|---|
 | `gw setup` | Writes the `p4gw.cfg` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
 | `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed) and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
-| `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the hidden `refs/p4gw/p4-main` ref that tracks pristine depot state (the `origin/main` analog). Your branch is fast-forwarded when it has no local commits; `--rebase` replays local commits on top, and without it divergent commits are left untouched — never stomped. Like `git fetch` / `git pull --rebase`. |
+| `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the hidden `refs/p4gw/main` ref that tracks pristine depot state (the `origin/main` analog). Your branch is fast-forwarded when it has no local commits; `--rebase` replays local commits on top, and without it divergent commits are left untouched — never stomped. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. `--no-verify` skips the reconcile-preview safety check; `--dry-run` prints the exact `p4` operations it would open and stops without touching P4 or the mirror. |
 | `gw status` | One-screen view of where Git and P4 stand: current branch, commits ahead of / behind the baseline, working-tree cleanliness, the last imported changelist, and any pending changelist — plus the single most useful next step. Read-only; degrades gracefully when P4 isn't reachable. |
 | `gw shelf list` | Lists your pending and shelved changelists under the subtree (newest first, shelved ones flagged), so you can pick a CL number to import. |
-| `gw shelf import <cl>` | Brings a P4 shelf into Git as a new branch off `p4-main`: replays the shelf's changes on top of the latest imported depot state with a git 3-way merge (conflicts surface as normal git markers to resolve). Reads everything with `p4 print` — it never touches the mirror or opens a P4 file. `--branch <name>` overrides the default `shelf-<cl>`. |
+| `gw shelf import <cl>` | Brings a P4 shelf into Git as a new branch off `main`: replays the shelf's changes on top of the latest imported depot state with a git 3-way merge (conflicts surface as normal git markers to resolve). Reads everything with `p4 print` — it never touches the mirror or opens a P4 file. `--branch <name>` overrides the default `shelf-<cl>`. |
 | `gw doctor` | Checks the environment, and above all the client view: the depot path must map into the mirror and nothing may map into the Git repo. Run it whenever something smells off. |
 
 The global `--verbose` flag (usable before or after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4` command to stderr as it runs — handy for seeing exactly what gw does against your depot.
@@ -54,26 +54,26 @@ Day to day:
 
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
-gw import --rebase               # absorb it: commit to p4-main, rebase your branch
+gw import --rebase               # absorb it: commit to main, rebase your branch
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
 gw prepare                       # ship it: builds the pending CL
 <review and submit in P4V>
-gw import                        # absorb your own submit into p4-main
+gw import                        # absorb your own submit into main
 ```
 
 Starting from a shelf instead:
 
 ```
-gw import                        # make sure p4-main is up to date
+gw import                        # make sure main is up to date
 gw shelf list                    # find the CL: your pending/shelved changelists
-gw shelf import 4821             # branch 'shelf-4821' = the shelf, rebased onto p4-main
+gw shelf import 4821             # branch 'shelf-4821' = the shelf, rebased onto main
 <resolve any conflicts, then commit>
 gw prepare                       # ship it back as a fresh pending CL
 ```
 
 A shelf is just pending work on top of a submitted base — the same shape as a
-Git feature branch. `gw shelf import` recreates it as a branch off `p4-main`
+Git feature branch. `gw shelf import` recreates it as a branch off `main`
 and replays the shelf's changes with a git 3-way merge, so if the depot moved
 on since the shelf was made you resolve it once, in Git, the way you resolve
 any rebase. It reads the shelf with `p4 print` and never opens a P4 file or
@@ -86,7 +86,7 @@ If the repo is managed by [git-branchless](https://github.com/arxanas/git-branch
 gw works with it instead of around it. It detects branchless automatically (its
 `branchless.core.mainBranch` config key) and adapts:
 
-- `gw init` points branchless's main branch at the gw baseline (`p4-main`), so
+- `gw init` points branchless's main branch at the gw baseline (`main`), so
   the depot state is your trunk and the smartlog hides import commits.
 - `gw import` accepts a **detached HEAD** — no need to mint a throwaway branch
   to absorb the depot.
@@ -130,7 +130,7 @@ gw init
 
 verifies that mapping against the live client spec — it fails loudly if the
 view line is missing or wrong — and creates the Git repo. Sync, and run
-`gw import` to create the `p4-main` baseline. `gw doctor` re-checks
+`gw import` to create the `main` baseline. `gw doctor` re-checks
 everything whenever you like.
 
 Note for an existing synced workspace: after the view line is added, the
@@ -183,10 +183,10 @@ exclude = //depot/yourproject/src/devtools/...
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
 
-# Name for the baseline that tracks pristine depot state. Default: p4-main.
+# Name for the baseline that tracks pristine depot state. Default: main.
 # gw keeps the canonical depot state on the hidden ref refs/p4gw/<name> and
 # fast-forwards a like-named local branch to it for convenience.
-baseline_branch = p4-main
+baseline_branch = main
 ```
 
 `p4gw.cfg` is personal (it names your client); the starter `.gitignore` is an

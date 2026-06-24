@@ -15,7 +15,7 @@ StatusInfo featureBranch() {
     StatusInfo info;
     info.hasCommits = true;
     info.branch = "fix-anim-blend";
-    info.baselineBranch = "p4-main";
+    info.baselineBranch = "main";
     info.baselineExists = true;
     info.lastImportedCl = "48213";
     info.p4Reachable = true;
@@ -40,13 +40,13 @@ TEST(parse_imported_cl_stops_at_non_digit) {
 TEST(next_step_fresh_repo_points_at_import) {
     StatusInfo info;
     info.hasCommits = false;
-    info.baselineBranch = "p4-main";
+    info.baselineBranch = "main";
     CHECK(contains(p4gw::nextStep(info), "gw import"));
 }
 
 TEST(next_step_on_baseline_starts_a_branch) {
     StatusInfo info = featureBranch();
-    info.branch = "p4-main";
+    info.branch = "main";
     info.onBaseline = true;
     CHECK(contains(p4gw::nextStep(info), "git switch -c"));
 }
@@ -94,7 +94,7 @@ TEST(render_shows_core_rows) {
     const std::string out = p4gw::renderStatus(info);
     CHECK(contains(out, "Branch"));
     CHECK(contains(out, "fix-anim-blend"));
-    CHECK(contains(out, "p4-main - 3 ahead"));
+    CHECK(contains(out, "main - 3 ahead"));
     CHECK(contains(out, "Working tree"));
     CHECK(contains(out, "clean"));
     CHECK(contains(out, "CL 48213"));
@@ -122,7 +122,7 @@ TEST(render_dirty_count_is_pluralized) {
 TEST(render_fresh_repo_has_no_rows) {
     StatusInfo info;
     info.hasCommits = false;
-    info.baselineBranch = "p4-main";
+    info.baselineBranch = "main";
     const std::string out = p4gw::renderStatus(info);
     CHECK(contains(out, "No commits yet"));
     CHECK(contains(out, "Next:"));

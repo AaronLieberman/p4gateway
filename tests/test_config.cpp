@@ -174,13 +174,13 @@ TEST(config_defaults_baseline_branch) {
     CHECK(config.has_value());
     if (config) {
         CHECK(config->client.empty());
-        CHECK(config->baselineBranch == "p4-main");
+        CHECK(config->baselineBranch == "main");
     }
 }
 
 TEST(depot_tracking_ref_derives_from_baseline) {
     p4gw::Config config;  // default baseline branch
-    CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/p4-main");
+    CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/main");
     config.baselineBranch = "p4-base";
     CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/p4-base");
 }

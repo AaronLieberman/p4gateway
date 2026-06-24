@@ -446,8 +446,8 @@ std::expected<void, std::string> itGwInit(ItContext& it) {
     if (!out) return std::unexpected(out.error());
     auto branch = git::currentBranch(it.repoDir);
     if (!branch) return std::unexpected(branch.error());
-    if (*branch != "p4-main") {
-        return std::unexpected("expected to be on p4-main after init, got '" +
+    if (*branch != "main") {
+        return std::unexpected("expected to be on main after init, got '" +
                                *branch + "'");
     }
     if (!git::revParse("HEAD", it.repoDir)) {
@@ -613,13 +613,13 @@ std::expected<void, std::string> itSubmitAndAbsorb(ItContext& it) {
     if (!out) return std::unexpected(out.error());
 
     auto featureTip = git::revParse("it-feature", it.repoDir);
-    auto baselineTip = git::revParse("p4-main", it.repoDir);
+    auto baselineTip = git::revParse("main", it.repoDir);
     if (!featureTip) return std::unexpected(featureTip.error());
     if (!baselineTip) return std::unexpected(baselineTip.error());
     if (*featureTip != *baselineTip) {
         return std::unexpected(
             "after submitting and importing, the branch commits should melt "
-            "away (it-feature " + *featureTip + " != p4-main " +
+            "away (it-feature " + *featureTip + " != main " +
             *baselineTip + ")");
     }
     if (fs::exists(fs::path(it.srcWork) / "docs" / "overview.md")) {
@@ -670,11 +670,11 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
         return std::unexpected("the teammate's submitted change is missing "
                                "from the repo after import --rebase");
     }
-    auto ahead = git::run({"rev-list", "--count", "p4-main..HEAD"},
+    auto ahead = git::run({"rev-list", "--count", "main..HEAD"},
                           it.repoDir);
     if (!ahead) return std::unexpected(ahead.error());
     if (*ahead != "1") {
-        return std::unexpected("expected exactly 1 commit ahead of p4-main "
+        return std::unexpected("expected exactly 1 commit ahead of main "
                                "after the rebase, got " + *ahead);
     }
     return {};
@@ -708,11 +708,11 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
     // import must commit the depot head, not the un-submitted working copy.
     auto imported = runGw(it, it.repoDir, {"import"});
     if (!imported) return std::unexpected(imported.error());
-    auto baselineUtil = git::run({"show", "p4-main:src/util.cpp"}, it.repoDir);
+    auto baselineUtil = git::run({"show", "main:src/util.cpp"}, it.repoDir);
     if (!baselineUtil) return std::unexpected(baselineUtil.error());
     if (baselineUtil->find("UNSUBMITTED stray edit") != std::string::npos) {
         return std::unexpected("import absorbed an un-submitted mirror edit "
-                               "into p4-main:\n" + *baselineUtil);
+                               "into main:\n" + *baselineUtil);
     }
 
     // Clean up: revert the open, drop the empty CL, restore the mirror.
@@ -730,7 +730,7 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
 std::expected<void, std::string> itShelfImport(ItContext& it) {
     // Build a shelved CL on the server (an edit plus an add), then revert the
     // workspace so the mirror is clean and only the shelf remains. The shelf
-    // is based on the current depot head, which p4-main already tracks, so
+    // is based on the current depot head, which main already tracks, so
     // `gw shelf import` should reconstruct it as a clean one-commit branch.
     auto cl = p4::createChangelist(it.p4, "gw integtest: shelved change");
     if (!cl) return std::unexpected(cl.error());
@@ -777,7 +777,7 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
                         p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
-    // Import the shelf: a new branch off p4-main carrying the shelved delta.
+    // Import the shelf: a new branch off main carrying the shelved delta.
     auto out = runGw(it, it.repoDir, {"shelf", "import", *cl});
     if (!out) return std::unexpected(out.error());
 
@@ -788,7 +788,7 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
         return std::unexpected("expected to be on '" + branch +
                                "' after shelf import, got '" + *current + "'");
     }
-    auto ahead = git::run({"rev-list", "--count", "p4-main..HEAD"}, it.repoDir);
+    auto ahead = git::run({"rev-list", "--count", "main..HEAD"}, it.repoDir);
     if (!ahead) return std::unexpected(ahead.error());
     if (*ahead != "1") {
         return std::unexpected("expected exactly 1 commit on the shelf branch, "
@@ -804,8 +804,8 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
         return std::unexpected("shelf import did not add shelfnew.cpp");
     }
 
-    // Clean up: back to p4-main, drop the shelf branch, delete shelf + CL.
-    auto back = git::switchBranch("p4-main", it.repoDir);
+    // Clean up: back to main, drop the shelf branch, delete shelf + CL.
+    auto back = git::switchBranch("main", it.repoDir);
     if (!back) return std::unexpected(back.error());
     auto dropped = git::run({"branch", "-D", branch}, it.repoDir);
     if (!dropped) return std::unexpected(dropped.error());
@@ -1013,7 +1013,7 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itGwSetup(it); });
         steps.emplace_back("gw init verifies the mapping and creates the repo",
                            [&] { return itGwInit(it); });
-        steps.emplace_back("sync + first gw import builds p4-main",
+        steps.emplace_back("sync + first gw import builds main",
                            [&] { return itFirstImport(it); });
         steps.emplace_back("feature branch: edit/add then delete/rename",
                            [&] { return itFeatureBranch(it); });

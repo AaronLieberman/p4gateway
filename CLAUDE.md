@@ -23,7 +23,7 @@ outside the mirror unless an `exclude` declares it. The starter `.gitignore`
 `gw init` writes is an allowlist (`/*` then `!/src/`…): Git tracks only the
 mapped subtrees, and unmapped depot content that syncs in place stays out of
 Git unless the user re-includes a directory by hand (`!/dir/`); each `exclude`
-adds a matching re-exclusion (`/src/thirdparty/`). `gw import` commits mirror state to the `p4-main`
+adds a matching re-exclusion (`/src/thirdparty/`). `gw import` commits mirror state to the `main`
 baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds

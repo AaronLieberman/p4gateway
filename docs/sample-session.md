@@ -38,7 +38,7 @@ Initialized empty Git repository in C:\work\project\src
 Wrote starter .gitignore
 Mirror directory C:\work\project\src\.p4gw does not exist yet — it appears on the first sync.
 
-All set. Sync (any tool you like), then run 'gw import' to build the 'p4-main' baseline.
+All set. Sync (any tool you like), then run 'gw import' to build the 'main' baseline.
 ```
 
 (Had you forgotten the view line, init would have refused with the exact
@@ -49,8 +49,8 @@ live in the mirror now.) Then:
 
 ```
 C:\work\project\src> gw import
-Committed depot state to 'p4-main' (38,114 files, 0 deleted)
-You are on 'p4-main'. Start work with: git switch -c <branch>
+Committed depot state to 'main' (38,114 files, 0 deleted)
+You are on 'main'. Start work with: git switch -c <branch>
 ```
 
 From here on, you never run `p4 edit` and Perforce never writes into your
@@ -63,8 +63,8 @@ directory to its own known-good CL. Whenever you feel like absorbing it:
 
 ```
 C:\work\project\src> gw import
-Committed depot state to 'p4-main' (214 files, 3 deleted)
-You are on 'p4-main'. Start work with: git switch -c <branch>
+Committed depot state to 'main' (214 files, 3 deleted)
+You are on 'main'. Start work with: git switch -c <branch>
 ```
 
 It's `git fetch` (and later, with `--rebase`, `git pull --rebase`) with the
@@ -88,7 +88,7 @@ Mid-afternoon, a teammate pings you: "did you break the cooker?" You check
 in seconds, because it's just Git:
 
 ```
-C:\work\project\src> git stash && git switch p4-main   # pristine depot state
+C:\work\project\src> git stash && git switch main   # pristine depot state
 C:\work\project\src> ...build, reproduce: nope, broken in the depot too...
 C:\work\project\src> git switch fix-anim-blend && git stash pop
 ```
@@ -102,8 +102,8 @@ Absorb the latest depot state first so the changelist is built against it:
 
 ```
 C:\work\project\src> gw import --rebase
-Committed depot state to 'p4-main' (89 files, 0 deleted)
-Rebased 'fix-anim-blend' onto 'p4-main'.
+Committed depot state to 'main' (89 files, 0 deleted)
+Rebased 'fix-anim-blend' onto 'main'.
 ```
 
 (If the rebase had conflicted, gw would stop and leave you in a normal
@@ -121,7 +121,7 @@ Created pending changelist 481469
 Verified: mirror matches the branch exactly.
 
 Changelist 481469 is ready — review and submit it from P4V (or: p4 submit -c 481469).
-After it is submitted, run 'gw import' to absorb the new depot state into 'p4-main'.
+After it is submitted, run 'gw import' to absorb the new depot state into 'main'.
 ```
 
 Because the diff comes from Git, gw runs the exact `p4 edit/add/delete/move`
@@ -137,8 +137,8 @@ submit it there. Then:
 
 ```
 C:\work\project\src> gw import --rebase
-Committed depot state to 'p4-main' (3 files, 0 deleted)
-Rebased 'fix-anim-blend' onto 'p4-main'.
+Committed depot state to 'main' (3 files, 0 deleted)
+Rebased 'fix-anim-blend' onto 'main'.
 ```
 
 The branch's commits melt away during that rebase — the depot already has

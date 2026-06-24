@@ -12,7 +12,7 @@ struct StatusInfo {
     bool hasCommits = false;        // false on a fresh repo (unborn branch)
     std::string branch;             // current branch name
     bool detached = false;          // HEAD is not on a branch
-    std::string baselineBranch;     // e.g. "p4-main"
+    std::string baselineBranch;     // e.g. "main"
     bool baselineExists = false;    // the baseline branch has been created
     bool onBaseline = false;        // current branch is the baseline
     int ahead = 0;                  // commits on the branch, not yet shipped

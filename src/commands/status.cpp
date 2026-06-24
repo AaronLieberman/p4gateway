@@ -70,7 +70,7 @@ int cmdStatus(const Args& args) {
 
     // The baseline is the hidden depot-tracking ref, not the like-named branch:
     // ahead/behind are measured against pristine depot state, so local commits
-    // on the p4-main branch itself still show up as "ahead".
+    // on the main branch itself still show up as "ahead".
     info.baselineExists = git::revParse(depotRef, root).has_value();
 
     if (info.baselineExists) {
