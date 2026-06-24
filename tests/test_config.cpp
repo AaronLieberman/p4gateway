@@ -26,13 +26,13 @@ std::expected<p4gw::Config, std::string> loadFromString(const std::string& conte
 TEST(config_parses_a_single_mapping) {
     auto config = loadFromString(
         "# overlay for the engine source tree\n"
-        "include = //depot/yourgame/src/... .p4gw\n"
+        "include = //depot/yourproject/src/... .p4gw\n"
         "client = aaron-dev\n"
         "baseline_branch = p4-base\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->mappings.size() == 1);
-        CHECK(config->mappings[0].depotPath == "//depot/yourgame/src/...");
+        CHECK(config->mappings[0].depotPath == "//depot/yourproject/src/...");
         CHECK(config->mappings[0].mirrorPath == ".p4gw");
         CHECK(config->mappings[0].repoSubtree.empty());
         CHECK(config->client == "aaron-dev");
@@ -154,13 +154,13 @@ TEST(config_derives_repo_subtree_from_mirror) {
 }
 
 TEST(config_resolves_relative_mirror_path) {
-    const fs::path root = fs::path("work") / "game" / "src";
+    const fs::path root = fs::path("work") / "project" / "src";
     CHECK(fs::path(p4gw::resolveMirrorPath(".p4gw/src", root.string())) ==
           root / ".p4gw" / "src");
 
     // A parent-relative mirror still normalizes correctly.
     CHECK(fs::path(p4gw::resolveMirrorPath("../sibling", root.string())) ==
-          fs::path("work") / "game" / "sibling");
+          fs::path("work") / "project" / "sibling");
 }
 
 TEST(config_keeps_absolute_mirror_path) {
@@ -170,7 +170,7 @@ TEST(config_keeps_absolute_mirror_path) {
 }
 
 TEST(config_defaults_baseline_branch) {
-    auto config = loadFromString("include = //depot/yourgame/src/... .p4gw\n");
+    auto config = loadFromString("include = //depot/yourproject/src/... .p4gw\n");
     CHECK(config.has_value());
     if (config) {
         CHECK(config->client.empty());

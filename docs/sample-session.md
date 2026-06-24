@@ -3,8 +3,8 @@
 A walkthrough of a typical couple of days using `gw`, as terminal
 transcripts. The shape of the output matches the implemented commands
 (`status` is still aspirational; see [PLAN.md](../PLAN.md)); the commit
-contents are deliberately trivial. `C:\work\game\src>` is the source subtree
-inside a much larger P4 workspace, and `C:\work\game\src\.p4gw` is the
+contents are deliberately trivial. `C:\work\project\src>` is the source subtree
+inside a much larger P4 workspace, and `C:\work\project\src\.p4gw` is the
 mirror directory (a gitignored subdirectory of the repo) the client view
 routes that subtree into.
 
@@ -14,13 +14,13 @@ Two halves: `gw setup` writes the config (offline — works on the train),
 then `gw init` verifies your client view actually matches it.
 
 ```
-C:\work\game\src> gw setup --depot-path //depot/game/main/src/... --client aaron-dev
-Wrote C:\work\game\src\p4gw.cfg
+C:\work\project\src> gw setup --depot-path //depot/project/main/src/... --client aaron-dev
+Wrote C:\work\project\src\p4gw.cfg
 
 Next steps:
 1. Add a remap line to your client view (p4 client) for each include:
 
-     //depot/game/main/src/... //aaron-dev/<workspace-relative path of .p4gw>/...
+     //depot/project/main/src/... //aaron-dev/<workspace-relative path of .p4gw>/...
 
    so the depot subtree syncs into the mirror instead of this
    directory. Later view lines win, so each remap must come after
@@ -28,27 +28,27 @@ Next steps:
 2. Run 'gw init' to verify the include(s) and set up the Git repo.
 ```
 
-You add `//depot/game/main/src/... //aaron-dev/src/.p4gw/...` to the view
+You add `//depot/project/main/src/... //aaron-dev/src/.p4gw/...` to the view
 and run init, which checks it against the live spec before touching anything:
 
 ```
-C:\work\game\src> gw init
+C:\work\project\src> gw init
 ok    client view maps all 1 include(s) into the mirror
-Initialized empty Git repository in C:\work\game\src
+Initialized empty Git repository in C:\work\project\src
 Wrote starter .gitignore
-Mirror directory C:\work\game\src\.p4gw does not exist yet — it appears on the first sync.
+Mirror directory C:\work\project\src\.p4gw does not exist yet — it appears on the first sync.
 
 All set. Sync (any tool you like), then run 'gw import' to build the 'p4-main' baseline.
 ```
 
 (Had you forgotten the view line, init would have refused with the exact
-line to add — that's its job.) You sync with the studio's sync tool like
+line to add — that's its job.) You sync with the team's sync tool like
 always — and the subtree lands in the mirror. (If `src/` was previously
 synced the old way, that sync also removes the old copies from it: they
 live in the mirror now.) Then:
 
 ```
-C:\work\game\src> gw import
+C:\work\project\src> gw import
 Committed depot state to 'p4-main' (38,114 files, 0 deleted)
 You are on 'p4-main'. Start work with: git switch -c <branch>
 ```
@@ -58,11 +58,11 @@ working tree. You just use Git.
 
 ## Day 1, morning: pick up the team's changes
 
-Sync with whatever you like — P4V, `p4 sync`, the studio tool syncing each
+Sync with whatever you like — P4V, `p4 sync`, the team tool syncing each
 directory to its own known-good CL. Whenever you feel like absorbing it:
 
 ```
-C:\work\game\src> gw import
+C:\work\project\src> gw import
 Committed depot state to 'p4-main' (214 files, 3 deleted)
 You are on 'p4-main'. Start work with: git switch -c <branch>
 ```
@@ -74,13 +74,13 @@ you're mid-edit on any branch, because it only ever writes to the mirror.
 ## Working: just Git
 
 ```
-C:\work\game\src> git switch -c fix-anim-blend
+C:\work\project\src> git switch -c fix-anim-blend
 Switched to a new branch 'fix-anim-blend'
 
-C:\work\game\src> git commit -am "Clamp blend weights before normalization"
+C:\work\project\src> git commit -am "Clamp blend weights before normalization"
 [fix-anim-blend 3f1c2aa] Clamp blend weights before normalization
 
-C:\work\game\src> git commit -am "Add regression test for zero-weight blend"
+C:\work\project\src> git commit -am "Add regression test for zero-weight blend"
 [fix-anim-blend 91d04be] Add regression test for zero-weight blend
 ```
 
@@ -88,9 +88,9 @@ Mid-afternoon, a teammate pings you: "did you break the cooker?" You check
 in seconds, because it's just Git:
 
 ```
-C:\work\game\src> git stash && git switch p4-main   # pristine depot state
-C:\work\game\src> ...build, reproduce: nope, broken in the depot too...
-C:\work\game\src> git switch fix-anim-blend && git stash pop
+C:\work\project\src> git stash && git switch p4-main   # pristine depot state
+C:\work\project\src> ...build, reproduce: nope, broken in the depot too...
+C:\work\project\src> git switch fix-anim-blend && git stash pop
 ```
 
 That's the overlay's quiet superpower: a known-pristine copy of the depot
@@ -101,7 +101,7 @@ state is always one `git switch` away, without touching the server.
 Absorb the latest depot state first so the changelist is built against it:
 
 ```
-C:\work\game\src> gw import --rebase
+C:\work\project\src> gw import --rebase
 Committed depot state to 'p4-main' (89 files, 0 deleted)
 Rebased 'fix-anim-blend' onto 'p4-main'.
 ```
@@ -113,7 +113,7 @@ is involved yet, so nothing can be half-shipped.)
 Now turn the branch into a pending changelist:
 
 ```
-C:\work\game\src> gw prepare
+C:\work\project\src> gw prepare
 Created pending changelist 481469
   edit    anim/Blend.cpp
   edit    anim/Blend.h
@@ -136,7 +136,7 @@ colleague would make, description stitched from your commit messages — and
 submit it there. Then:
 
 ```
-C:\work\game\src> gw import --rebase
+C:\work\project\src> gw import --rebase
 Committed depot state to 'p4-main' (3 files, 0 deleted)
 Rebased 'fix-anim-blend' onto 'p4-main'.
 ```
@@ -151,16 +151,16 @@ A month later, a sync mysteriously writes files into `src/` again. Instead
 of spelunking, you run:
 
 ```
-C:\work\game\src> gw doctor
+C:\work\project\src> gw doctor
 ok    git found: git version 2.45.1
 ok    p4 found
-ok    p4gw.cfg found at C:\work\game\src (1 include(s))
-      //depot/game/main/src/... -> .p4gw
-ok    mirror directory exists: C:\work\game\src\.p4gw
+ok    p4gw.cfg found at C:\work\project\src (1 include(s))
+      //depot/project/main/src/... -> .p4gw
+ok    mirror directory exists: C:\work\project\src\.p4gw
 ok    p4 connection works
-FAIL  the effective mapping for //depot/game/main/src/... is
-      '//depot/game/main/... //aaron-dev/...'; expected
-      '//depot/game/main/src/... //aaron-dev/src/.p4gw/...'
+FAIL  the effective mapping for //depot/project/main/src/... is
+      '//depot/project/main/... //aaron-dev/...'; expected
+      '//depot/project/main/src/... //aaron-dev/src/.p4gw/...'
       (place it after any view line it overlaps — later lines win)
 ok    LineEnd 'unix' and core.autocrlf=false agree
 ok    no files opened under the configured mappings

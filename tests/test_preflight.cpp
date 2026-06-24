@@ -46,20 +46,20 @@ TEST(import_plan_passes_through_unopened) {
 
 TEST(parse_tagged_opened_reads_action_and_path) {
     const std::string out =
-        "... depotFile //depot/game/src/a.cpp\n"
+        "... depotFile //depot/project/src/a.cpp\n"
         "... clientFile /ws/a.cpp\n"
         "... rev 3\n"
         "... action edit\n"
         "... change 123\n"
         "\n"
-        "... depotFile //depot/game/src/b.cpp\n"
+        "... depotFile //depot/project/src/b.cpp\n"
         "... action move/add\n"
         "\n";
     const auto files = p4gw::p4::parseTaggedOpened(out);
     CHECK(files.size() == 2);
-    CHECK(files[0].depotFile == "//depot/game/src/a.cpp");
+    CHECK(files[0].depotFile == "//depot/project/src/a.cpp");
     CHECK(files[0].action == "edit");
-    CHECK(files[1].depotFile == "//depot/game/src/b.cpp");
+    CHECK(files[1].depotFile == "//depot/project/src/b.cpp");
     CHECK(files[1].action == "move/add");
 }
 
@@ -69,16 +69,16 @@ TEST(parse_tagged_opened_empty_is_empty) {
 
 TEST(parse_tagged_depot_files_reads_have_listing) {
     const std::string out =
-        "... depotFile //depot/game/src/a.cpp\n"
+        "... depotFile //depot/project/src/a.cpp\n"
         "... clientFile /ws/a.cpp\n"
         "... haveRev 5\n"
         "\n"
-        "... depotFile //depot/game/src/sub/b.h\n"
+        "... depotFile //depot/project/src/sub/b.h\n"
         "... haveRev 2\n"
         "\n";
     const auto files = p4gw::p4::parseTaggedDepotFiles(out);
-    CHECK(files == (std::vector<std::string>{"//depot/game/src/a.cpp",
-                                             "//depot/game/src/sub/b.h"}));
+    CHECK(files == (std::vector<std::string>{"//depot/project/src/a.cpp",
+                                             "//depot/project/src/sub/b.h"}));
 }
 
 TEST(parse_tagged_depot_files_empty_is_empty) {
@@ -86,12 +86,12 @@ TEST(parse_tagged_depot_files_empty_is_empty) {
 }
 
 TEST(depot_relative_path_strips_subtree) {
-    CHECK(p4gw::p4::depotRelativePath("//depot/game/src/...",
-                                      "//depot/game/src/sub/a.cpp") ==
+    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
+                                      "//depot/project/src/sub/a.cpp") ==
           "sub/a.cpp");
-    CHECK(p4gw::p4::depotRelativePath("//depot/game/src/...",
-                                      "//depot/game/src/a.cpp") == "a.cpp");
-    CHECK(p4gw::p4::depotRelativePath("//depot/game/src/...",
+    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
+                                      "//depot/project/src/a.cpp") == "a.cpp");
+    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
                                       "//other/x.cpp") == "");
 }
 

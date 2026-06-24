@@ -355,7 +355,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
     if (config.mappings.empty()) {
         return std::unexpected(path + ": no 'include' lines - add at least one "
                                "('gw setup' writes the template). Format: "
-                               "include = //depot/yourgame/src/... .p4gw/src");
+                               "include = //depot/yourproject/src/... .p4gw/src");
     }
     return config;
 }

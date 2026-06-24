@@ -53,7 +53,7 @@ The global `--verbose` flag (usable before or after the command, e.g. `gw --verb
 Day to day:
 
 ```
-<sync however you like>          # P4V, p4 sync, your studio's sync tool...
+<sync however you like>          # P4V, p4 sync, your team's sync tool...
 gw import --rebase               # absorb it: commit to p4-main, rebase your branch
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
@@ -106,8 +106,8 @@ multi-terabyte depot is never touched.
 ## Setup
 
 ```
-cd C:\work\game\src              # the subtree you want to work on in Git
-gw setup --depot-path //depot/game/main/src/... --client aaron-dev
+cd C:\work\project\src              # the subtree you want to work on in Git
+gw setup --depot-path //depot/project/main/src/... --client aaron-dev
 ```
 
 `setup` writes `p4gw.cfg` (anything not given as a flag is left as a commented
@@ -115,7 +115,7 @@ placeholder to edit) and prints the one manual step: for each include, add a
 line like
 
 ```
-//depot/game/main/src/...   //aaron-dev/src/.p4gw/...
+//depot/project/main/src/...   //aaron-dev/src/.p4gw/...
 ```
 
 to your client view (`p4 client`). Later view lines win, so each remap must
@@ -169,16 +169,16 @@ to check.
 # .gitignore tracks only the mapped subtrees, so unmapped directories (bin/,
 # content/) stay out of Git. At least one include required.
 #   include = <depot_path ending in /...>  <mirror_path>
-include = //depot/yourgame/src/...     .p4gw/src
-include = //depot/yourgame/config/...  .p4gw/config
+include = //depot/yourproject/src/...     .p4gw/src
+include = //depot/yourproject/config/...  .p4gw/config
 
 # Optional 'exclude' lines carve a depot subtree out of the 'include' above
 # them. The client view either drops it (a '-' line) or syncs it in place,
 # and gw keeps it out of the mirror and gitignores it - exactly like unmapped
 # depot content (bin/, content/), even though it lives under a mapped subtree.
 # Each must end in '/...' and lie under its include's depot path.
-exclude = //depot/yourgame/src/thirdparty/...
-exclude = //depot/yourgame/src/devtools/...
+exclude = //depot/yourproject/src/thirdparty/...
+exclude = //depot/yourproject/src/devtools/...
 
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev

@@ -81,7 +81,7 @@ wrapper function, not an inline `run("p4", ...)` call.
 - Formatting: 4-space indent, ~90 columns, `{` on the same line.
 - Every p4 operation that touches files MUST be scoped to the configured
   `depot_path` or to an explicit file list. An unscoped `p4 reconcile` or
-  `p4 sync` against a game-studio depot can run for hours and open thousands
+  `p4 sync` against a large project depot can run for hours and open thousands
   of files — treat an unscoped p4 call as a bug even when it happens to work.
 - P4 owns the mirror directory; gw owns moving state across the boundary.
   The recommended mirror is `.p4gw/` — a gitignored subdirectory *inside*

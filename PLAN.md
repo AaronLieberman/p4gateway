@@ -12,10 +12,10 @@ elsewhere in the workspace (view lines are ordered and later-wins per depot
 file, so one added line is enough):
 
 ```
-//depot/yourgame/src/...   //client/src/.p4gw/...
+//depot/yourproject/src/...   //client/src/.p4gw/...
 ```
 
-Every sync — `p4 sync`, P4V, the studio's own sync tool, at any time, in any
+Every sync — `p4 sync`, P4V, the team's own sync tool, at any time, in any
 state — lands in the mirror. The directory at the canonical `src/` path is
 *purely* a Git repo that P4 never touches, while builds still see files in
 the right place. gw moves state across the boundary explicitly:
@@ -167,7 +167,7 @@ conflict/abort) on Linux.
 - **The remap line disappearing from the client spec** (hand edits, spec
   regeneration) would make the next sync write into the Git repo again.
   `gw doctor`'s view check is the mitigation; run it when anything smells
-  off. The studio sync tool is known not to rewrite the spec.
+  off. The team sync tool is known not to rewrite the spec.
 - **Line endings**: the mirror is written with the client `LineEnd` and
   committed by git on import, then written back from blobs on prepare. The
   doctor warning plus the reconcile-preview canary are the mitigations;

@@ -86,10 +86,10 @@ int cmdSetup(const Args& args) {
                 "of Git. Format:\n"
                 "#   include = <depot_path ending in /...>  <mirror_path>\n"
                 "# Example (two subtrees):\n"
-                "#   include = //depot/yourgame/src/...     .p4gw/src\n"
-                "#   include = //depot/yourgame/config/...  .p4gw/config\n";
+                "#   include = //depot/yourproject/src/...     .p4gw/src\n"
+                "#   include = //depot/yourproject/config/...  .p4gw/config\n";
         if (depotPath.empty()) {
-            file << "#include = //depot/yourgame/src/... " << mirrorPath << "\n";
+            file << "#include = //depot/yourproject/src/... " << mirrorPath << "\n";
         } else {
             file << "include = " << depotPath << " " << mirrorPath << "\n";
         }
@@ -103,8 +103,8 @@ int cmdSetup(const Args& args) {
                 "# even though it lives under a mapped subtree. One line per "
                 "carved-out path,\n"
                 "# each ending in '/...' and under its include's depot path:\n"
-                "#   exclude = //depot/yourgame/src/thirdparty/...\n"
-                "#   exclude = //depot/yourgame/src/devtools/...\n"
+                "#   exclude = //depot/yourproject/src/thirdparty/...\n"
+                "#   exclude = //depot/yourproject/src/devtools/...\n"
                 "\n"
                 "# P4 client name; leave commented out to use the ambient\n"
                 "# P4CLIENT (e.g. from a .p4config / p4.ini).\n";

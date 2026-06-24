@@ -17,7 +17,7 @@ std::expected<std::string, std::string> run(const Config& config,
 
 // One mapping line from the View: section of a client spec.
 struct ViewLine {
-    std::string depot;    // e.g. //depot/game/src/...
+    std::string depot;    // e.g. //depot/project/src/...
     std::string client;   // e.g. //aaron-dev/src/.p4gw/...
     bool exclude = false; // leading '-'
     bool overlay = false; // leading '+'
@@ -70,7 +70,7 @@ std::vector<ViewProblem> checkViewMapping(
 std::vector<std::string> minimalExcludePaths(
     const std::vector<std::string>& excludePaths);
 
-// "C:\work\game\mirror" under client root "C:\work\game" for client
+// "C:\work\project\mirror" under client root "C:\work\project" for client
 // "aaron-dev" -> "//aaron-dev/mirror" + suffix; empty if `localDir` is not
 // inside the client root.
 std::string clientViewPath(const std::string& clientName,

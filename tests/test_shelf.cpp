@@ -13,15 +13,15 @@ const char* kZtag =
     "... desc Fix anim blend\n"
     "More detail on the second line\n"
     "... status pending\n"
-    "... depotFile0 //depot/game/src/anim/Blend.cpp\n"
+    "... depotFile0 //depot/project/src/anim/Blend.cpp\n"
     "... action0 edit\n"
     "... type0 text\n"
     "... rev0 5\n"
-    "... depotFile1 //depot/game/src/anim/New.cpp\n"
+    "... depotFile1 //depot/project/src/anim/New.cpp\n"
     "... action1 add\n"
     "... type1 text\n"
     "... rev1 1\n"
-    "... depotFile2 //depot/game/src/anim/Old.cpp\n"
+    "... depotFile2 //depot/project/src/anim/Old.cpp\n"
     "... action2 delete\n"
     "... type2 text\n"
     "... rev2 9\n";
@@ -41,7 +41,7 @@ TEST(shelf_parses_file_fields_in_index_order) {
     auto info = parseShelveDescribe(kZtag);
     CHECK(info.has_value());
     if (!info) return;
-    CHECK(info->files[0].depotFile == "//depot/game/src/anim/Blend.cpp");
+    CHECK(info->files[0].depotFile == "//depot/project/src/anim/Blend.cpp");
     CHECK(info->files[0].action == ShelveAction::Edit);
     CHECK(info->files[0].rev == "5");
     CHECK(info->files[1].action == ShelveAction::Add);

@@ -9,7 +9,7 @@ tests natively on Windows against it.
 > **⚠️ Destructive — throwaway servers only.** Every run **obliterates** the
 > test depot files and **wipes** everything under the current directory (except
 > `p4.ini`/`.p4config`). Only ever point it at a dedicated, disposable p4d you
-> control — never a shared or studio server. `gw` enforces this: it refuses to
+> control — never a shared or team server. `gw` enforces this: it refuses to
 > run unless the server's `Server ID` is `p4gw-integtest-throwaway` **and** its
 > security level is `0` (a fresh, unsecured server). There is no override.
 

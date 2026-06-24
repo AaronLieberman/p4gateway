@@ -13,7 +13,7 @@ enum class ShelveAction { Edit, Add, Delete, MoveAdd, MoveDelete, Other };
 
 // One file in a shelved changelist, parsed from `p4 -ztag describe -S`.
 struct ShelvedFile {
-    std::string depotFile;            // e.g. //depot/game/src/anim/Blend.cpp
+    std::string depotFile;            // e.g. //depot/project/src/anim/Blend.cpp
     ShelveAction action = ShelveAction::Other;
     std::string type;                 // p4 filetype, e.g. "text", "binary"
     std::string rev;                  // base revision the shelf opened from

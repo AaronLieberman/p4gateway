@@ -14,7 +14,7 @@ namespace p4gw {
 // other depot content synced in place) stay out of Git unless re-included by
 // hand (`!/dir/`). See buildGitignore.
 struct Mapping {
-    // Depot path of the subtree, e.g. "//depot/yourgame/src/...". Ends with
+    // Depot path of the subtree, e.g. "//depot/yourproject/src/...". Ends with
     // "/...". Used to scope every p4 operation so we never touch (or crawl)
     // the rest of the workspace.
     std::string depotPath;
@@ -36,12 +36,12 @@ struct Mapping {
     // (`bin/`, `content/`). gw gitignores them and never ships them through the
     // mirror. Each ends with "/..." and lies strictly under `depotPath`. Source
     // of an `exclude` line in p4gw.cfg. Example: a `src` mapping that excludes
-    // "//depot/yourgame/src/thirdparty/...".
+    // "//depot/yourproject/src/thirdparty/...".
     std::vector<std::string> excludedDepotPaths;
 
     // The same carve-outs as repo-relative working-tree subtrees (forward
     // slashes, no trailing slash), derived from `excludedDepotPaths`:
-    // "//depot/yourgame/src/thirdparty/..." under repoSubtree "src" ->
+    // "//depot/yourproject/src/thirdparty/..." under repoSubtree "src" ->
     // "src/thirdparty". buildGitignore re-excludes these even though they live
     // under a tracked mapped subtree.
     std::vector<std::string> excludedSubtrees;
