@@ -3,11 +3,25 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <vector>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <aclapi.h>
+#pragma comment(lib, "advapi32.lib")
 #define POPEN _popen
 #define PCLOSE _pclose
 #else
+#include <sys/stat.h>
+#include <unistd.h>
 #define POPEN popen
 #define PCLOSE pclose
 #endif
@@ -143,5 +157,50 @@ std::expected<RunResult, std::string> run(const std::string& exe,
     result.exitCode = PCLOSE(pipe);
     return result;
 }
+
+#ifdef _WIN32
+std::expected<bool, std::string> isOwnedByCurrentUser(const std::string& path) {
+    const std::wstring wpath = std::filesystem::path(path).wstring();
+
+    PSID ownerSid = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    DWORD rc = GetNamedSecurityInfoW(
+        wpath.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &ownerSid,
+        nullptr, nullptr, nullptr, &sd);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected("could not read the owner of " + path +
+                               " (error " + std::to_string(rc) + ")");
+    }
+
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        LocalFree(sd);
+        return std::unexpected("OpenProcessToken failed");
+    }
+    DWORD needed = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+    std::vector<unsigned char> buffer(needed);
+    const bool got =
+        GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed);
+    CloseHandle(token);
+    if (!got) {
+        LocalFree(sd);
+        return std::unexpected("GetTokenInformation failed");
+    }
+
+    const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
+    const bool owned = EqualSid(ownerSid, user->User.Sid) != FALSE;
+    LocalFree(sd);
+    return owned;
+}
+#else
+std::expected<bool, std::string> isOwnedByCurrentUser(const std::string& path) {
+    struct stat info{};
+    if (::stat(path.c_str(), &info) != 0) {
+        return std::unexpected("could not stat " + path);
+    }
+    return info.st_uid == ::geteuid();
+}
+#endif
 
 }  // namespace p4gw

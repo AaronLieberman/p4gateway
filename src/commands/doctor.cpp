@@ -78,6 +78,28 @@ int cmdDoctor(const Args& args) {
         }
     }
 
+    // Repo-directory ownership. gw works through the git CLI, which tolerates a
+    // repo owned by another user; libgit2-based tools (git-branchless) do not -
+    // they crash with a "not owned by current user" error that is easy to
+    // misattribute. Flag it here so it is not a mystery.
+    auto owned = isOwnedByCurrentUser(root);
+    if (!owned) {
+        std::printf("WARN  could not check ownership of %s: %s\n", root.c_str(),
+                    owned.error().c_str());
+        ++warnings;
+    } else if (!*owned) {
+        const std::string gitPath = fs::path(root).generic_string();
+        std::printf("WARN  %s is not owned by the current user - gw is fine, "
+                    "but libgit2 tools like git-branchless will refuse to open "
+                    "it.\n      Fix with: git config --global --add "
+                    "safe.directory %s\n      (or take ownership of the "
+                    "directory).\n",
+                    root.c_str(), gitPath.c_str());
+        ++warnings;
+    } else {
+        std::printf("ok    repo directory is owned by the current user\n");
+    }
+
     if (p4Found) {
         auto info = p4::info(*config);
         if (info) {

@@ -41,4 +41,11 @@ std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const RunOptions& options);
 
+// True when `path` is owned by the current user. Mismatched ownership is what
+// breaks libgit2-based tools (git-branchless refuses to open the repo) even
+// when the git CLI tolerates it - a confusing failure worth flagging. On
+// Windows this compares the directory's owner SID to the process user's SID;
+// on POSIX it compares st_uid to the effective uid.
+std::expected<bool, std::string> isOwnedByCurrentUser(const std::string& path);
+
 }  // namespace p4gw
