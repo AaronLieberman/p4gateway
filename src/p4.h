@@ -122,9 +122,17 @@ std::expected<std::string, std::string> moveFile(const Config& config,
                                                  const std::string& from,
                                                  const std::string& to);
 
-// `p4 reconcile -n` scoped to the configured depot path. Returns p4's
-// preview output; an empty string means nothing unexpected to reconcile.
+// `p4 reconcile -n` scoped to the configured depot path - the full canary that
+// scans the whole subtree. Returns p4's preview output; an empty string means
+// nothing unexpected to reconcile.
 std::expected<std::string, std::string> reconcilePreview(const Config& config);
+
+// `p4 reconcile -n` scoped to an explicit `files` list (chunked to stay under
+// the command-line limit). The fast check: it inspects only the files prepare
+// touched, so it confirms the change landed but does not scan the rest of the
+// subtree for strays. Empty output means clean.
+std::expected<std::string, std::string> reconcilePreviewFiles(
+    const Config& config, const std::vector<std::string>& files);
 
 // Highest submitted changelist among the synced revisions of the subtree
 // (`p4 changes -m1 -s submitted <depot_path>#have`); empty if none.

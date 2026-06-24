@@ -6,7 +6,7 @@
 namespace p4gw {
 
 // Arguments remaining after the command name, e.g. for
-// `gw prepare --no-verify` this holds {"--no-verify"}.
+// `gw prepare --verify` this holds {"--verify"}.
 using Args = std::vector<std::string>;
 
 // Each command returns a process exit code (0 = success).

@@ -450,6 +450,35 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     return result->output;
 }
 
+std::expected<std::string, std::string> reconcilePreviewFiles(
+    const Config& config, const std::vector<std::string>& files) {
+    std::string combined;
+    for (size_t i = 0; i < files.size(); i += kMaxFilesPerCall) {
+        std::vector<std::string> args = clientArgs(config);
+        args.insert(args.end(), {"reconcile", "-n"});
+        for (size_t j = i; j < files.size() && j < i + kMaxFilesPerCall; ++j) {
+            args.push_back(files[j]);
+        }
+        auto result = p4gw::run("p4", args);
+        if (!result) {
+            return std::unexpected(result.error());
+        }
+        // A clean chunk reports "no file(s) to reconcile" (possibly non-zero
+        // exit); skip it. Anything else is either real preview output or a
+        // failure.
+        if (result->output.find("no file(s) to reconcile") !=
+            std::string::npos) {
+            continue;
+        }
+        if (result->exitCode != 0) {
+            return std::unexpected(commandLine(args) + " failed:\n" +
+                                   result->output);
+        }
+        combined += result->output;
+    }
+    return combined;
+}
+
 std::expected<std::string, std::string> latestSubmittedCl(const Config& config) {
     std::vector<std::string> args{"changes", "-m1", "-s", "submitted"};
     for (const auto& mapping : config.mappings) {

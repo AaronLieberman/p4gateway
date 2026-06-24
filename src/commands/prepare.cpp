@@ -95,12 +95,12 @@ std::expected<std::string, std::string> stageBlob(const std::string& root,
 //      an unexpected mirror/depot mismatch and gets a loud warning.
 // gw never submits; review the CL and submit it from P4V.
 int cmdPrepare(const Args& args) {
-    bool verify = true;
+    bool fullVerify = false;
     bool dryRun = false;
     std::string messageOverride;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--no-verify") {
-            verify = false;
+        if (args[i] == "--verify") {
+            fullVerify = true;
         } else if (args[i] == "--dry-run") {
             dryRun = true;
         } else if (args[i] == "--message" && i + 1 < args.size()) {
@@ -109,7 +109,7 @@ int cmdPrepare(const Args& args) {
             std::fprintf(stderr, "gw prepare: unknown option '%s'\n",
                          args[i].c_str());
             std::fprintf(stderr,
-                         "usage: gw prepare [--message <text>] [--no-verify] "
+                         "usage: gw prepare [--message <text>] [--verify] "
                          "[--dry-run]\n");
             return 1;
         }
@@ -397,30 +397,53 @@ int cmdPrepare(const Args& args) {
 
     printPlannedOps();
 
-    if (verify) {
-        // `p4 reconcile -n` scans the whole subtree to catch anything the diff
-        // didn't account for (a stray edit, a sync that landed mid-prepare), so
-        // it scales with subtree size, not the size of this change - on a big
-        // subtree it can take a while. Announce it (flushed) so the wait does
-        // not look like a hang.
-        std::printf("Verifying with p4 reconcile -n (scans the whole subtree; "
-                    "--no-verify to skip)...\n");
+    // Warns about anything p4 reconcile would still open beyond what we staged.
+    auto reportPreview =
+        [&](const std::expected<std::string, std::string>& preview) {
+            if (!preview) {
+                std::fprintf(stderr, "gw prepare: verify failed: %s\n",
+                             preview.error().c_str());
+            } else if (!preview->empty()) {
+                std::printf(
+                    "\nWARNING: the mirror does not fully match this branch.\n"
+                    "p4 reconcile would additionally open:\n%s"
+                    "This usually means the mirror was modified outside gw or a "
+                    "sync landed\nmid-prepare. Inspect before submitting.\n",
+                    preview->c_str());
+            }
+        };
+
+    if (fullVerify) {
+        // The full canary: `p4 reconcile -n` over the whole subtree also catches
+        // strays we never touched. It scans every mirror file, so its cost
+        // scales with subtree size, not this change - announce it (flushed) so
+        // the wait does not look like a hang.
+        std::printf("Verifying with p4 reconcile -n over the whole subtree "
+                    "(scales with subtree size)...\n");
         std::fflush(stdout);
         auto preview = p4::reconcilePreview(*config);
-        if (!preview) {
-            std::fprintf(stderr, "gw prepare: verify failed: %s\n",
-                         preview.error().c_str());
-        } else if (!preview->empty()) {
-            std::printf(
-                "\nWARNING: the mirror does not fully match this branch.\n"
-                "p4 reconcile would additionally open:\n%s"
-                "This usually means the mirror was modified outside gw or a "
-                "sync landed\nmid-prepare. Inspect before submitting. "
-                "(--no-verify skips this check.)\n",
-                preview->c_str());
-        } else {
+        reportPreview(preview);
+        if (preview && preview->empty()) {
             std::printf("Verified: mirror matches the branch exactly.\n");
         }
+    } else {
+        // Default: the fast scoped check - reconcile only the files we opened.
+        // Confirms this change landed cleanly without scanning the whole subtree.
+        std::vector<std::string> touched;
+        for (const auto& s : edits) touched.push_back(s.mirrorPath);
+        for (const auto& s : adds) touched.push_back(s.mirrorPath);
+        for (const auto& d : deletes) touched.push_back(d);
+        for (const auto& m : moves) {
+            touched.push_back(m.fromMirror);
+            touched.push_back(m.toMirror);
+        }
+        auto preview = p4::reconcilePreviewFiles(*config, touched);
+        reportPreview(preview);
+        if (preview && preview->empty()) {
+            std::printf("Verified the changed files match the mirror.\n");
+        }
+        std::printf("(For a full check that also catches unexpected changes "
+                    "elsewhere in the subtree, rerun with --verify.)\n");
     }
 
     std::printf("\nChangelist %s is ready - review and submit it from P4V "

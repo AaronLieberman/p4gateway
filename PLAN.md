@@ -67,8 +67,9 @@ worst external failure (the remap line vanishing from the client spec) is a
       fast-forward / `--rebase` the current branch and the convenience branch
 - [x] `gw prepare`: ancestor preflight, CL from commit messages
       (`--message` override), explicit `p4 delete/edit/move/add` against the
-      mirror in dependency order, `p4 reconcile -n` verification
-      (`--no-verify` to skip), prints "submit from P4V" — no submit path
+      mirror in dependency order, scoped `p4 reconcile -n` verification by
+      default (`--verify` for the full-subtree scan), prints "submit from
+      P4V" — no submit path
 - [x] `gw doctor`: client-view consistency (depot path → mirror, nothing
       mapped into the repo dir, unrelated mappings ignored), LineEnd vs
       core.autocrlf, opened files under the depot path
