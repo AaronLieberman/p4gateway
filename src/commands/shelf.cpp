@@ -288,15 +288,38 @@ std::string firstLine(const std::string& desc) {
     return line;
 }
 
+void listUsage() {
+    std::fprintf(stderr,
+                 "usage: gw shelf list [--all] [--user <name>]\n");
+}
+
 // `gw shelf list`: the caller's pending and shelved changelists under the
 // configured subtree, newest first, so a CL number is easy to pick for
-// `gw shelf import`.
+// `gw shelf import`. By default only the current workspace's changelists are
+// shown; `--all` widens to every workspace the user owns, and `--user <name>`
+// lists another user's changelists (implying `--all`, since their shelves live
+// in their own workspaces).
 int shelfList(const Args& args) {
-    if (!args.empty()) {
-        std::fprintf(stderr, "gw shelf list: unexpected argument '%s'\n",
-                     args.front().c_str());
-        std::fprintf(stderr, "usage: gw shelf list\n");
-        return 1;
+    bool all = false;
+    std::string userOverride;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--all") {
+            all = true;
+        } else if (args[i] == "--user") {
+            if (i + 1 >= args.size()) {
+                std::fprintf(stderr,
+                             "gw shelf list: --user requires a username\n");
+                listUsage();
+                return 1;
+            }
+            userOverride = args[++i];
+            all = true;  // another user's shelves span their own workspaces
+        } else {
+            std::fprintf(stderr, "gw shelf list: unexpected argument '%s'\n",
+                         args[i].c_str());
+            listUsage();
+            return 1;
+        }
     }
 
     std::string root;
@@ -306,17 +329,40 @@ int shelfList(const Args& args) {
         return 1;
     }
 
-    auto user = p4::currentUser(*config);
-    if (!user) {
-        std::fprintf(stderr, "gw shelf list: %s\n", user.error().c_str());
-        return 1;
+    std::string user = userOverride;
+    if (user.empty()) {
+        auto current = p4::currentUser(*config);
+        if (!current) {
+            std::fprintf(stderr, "gw shelf list: %s\n", current.error().c_str());
+            return 1;
+        }
+        user = *current;
     }
-    auto pending = p4::changes(*config, "pending", *user);
+
+    // Default scope is the current workspace; `--all`/`--user` clears it to
+    // list across every workspace. The config may name the client explicitly
+    // or rely on the ambient P4CLIENT (queried via `p4 info`).
+    std::string client;
+    if (!all) {
+        if (!config->client.empty()) {
+            client = config->client;
+        } else {
+            auto current = p4::currentClient(*config);
+            if (!current) {
+                std::fprintf(stderr, "gw shelf list: %s\n",
+                             current.error().c_str());
+                return 1;
+            }
+            client = *current;
+        }
+    }
+
+    auto pending = p4::changes(*config, "pending", user, client);
     if (!pending) {
         std::fprintf(stderr, "gw shelf list: %s\n", pending.error().c_str());
         return 1;
     }
-    auto shelved = p4::changes(*config, "shelved", *user);
+    auto shelved = p4::changes(*config, "shelved", user, client);
     if (!shelved) {
         std::fprintf(stderr, "gw shelf list: %s\n", shelved.error().c_str());
         return 1;
@@ -335,14 +381,27 @@ int shelfList(const Args& args) {
         entry.shelved = true;
     }
 
+    // Describe the scope so it is clear whether the list is the current
+    // workspace, every workspace, or another user's changelists.
+    std::string scope;
+    if (!userOverride.empty()) {
+        scope = "for user '" + user + "' across all workspaces";
+    } else if (all) {
+        scope = "across all your workspaces";
+    } else {
+        scope = "in workspace '" + client + "'";
+    }
+
     if (byCl.empty()) {
         std::printf("No pending or shelved changelists under the configured "
-                    "mappings.\n");
+                    "mappings %s.\n",
+                    scope.c_str());
         return 0;
     }
 
     std::printf("Pending and shelved changelists under the configured "
-                "mappings:\n\n");
+                "mappings %s:\n\n",
+                scope.c_str());
     for (auto it = byCl.rbegin(); it != byCl.rend(); ++it) {
         const ChangeListing& c = it->second;
         std::printf("  %-8s %-9s %s\n", c.change.c_str(),
@@ -358,7 +417,7 @@ int shelfList(const Args& args) {
 // changelists; `import` brings a shelf into Git as a branch.
 int cmdShelf(const Args& args) {
     auto usage = [] {
-        std::fprintf(stderr, "usage: gw shelf list\n"
+        std::fprintf(stderr, "usage: gw shelf list [--all] [--user <name>]\n"
                              "       gw shelf import <changelist> "
                              "[--branch <name>]\n");
     };

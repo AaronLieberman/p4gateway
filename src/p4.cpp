@@ -532,13 +532,30 @@ std::expected<std::string, std::string> currentUser(const Config& config) {
     return user;
 }
 
+std::expected<std::string, std::string> currentClient(const Config& config) {
+    auto info = run(config, {"info"});
+    if (!info) {
+        return std::unexpected(info.error());
+    }
+    std::string client = specField(*info, "Client name");
+    if (client.empty()) {
+        return std::unexpected("p4 info output has no 'Client name' field");
+    }
+    return client;
+}
+
 std::expected<std::string, std::string> changes(const Config& config,
                                                 const std::string& status,
-                                                const std::string& user) {
+                                                const std::string& user,
+                                                const std::string& client) {
     std::vector<std::string> args{"-ztag", "changes", "-s", status};
     if (!user.empty()) {
         args.push_back("-u");
         args.push_back(user);
+    }
+    if (!client.empty()) {
+        args.push_back("-c");
+        args.push_back(client);
     }
     for (const auto& mapping : config.mappings) {
         args.push_back(mapping.depotPath);

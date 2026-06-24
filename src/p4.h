@@ -145,13 +145,20 @@ std::expected<std::string, std::string> openedFiles(const Config& config);
 // `gw shelf list` to the caller's own changelists.
 std::expected<std::string, std::string> currentUser(const Config& config);
 
-// `p4 -ztag changes -s <status> [-u <user>] <depot_path>`: pending or shelved
-// changelists under the configured subtree (status is "pending" or
-// "shelved"). When `user` is non-empty, limits to that user's changelists.
-// Returns raw -ztag output for shelf.h's parseChanges.
+// Current P4 client (workspace) name, from `p4 info` ("Client name:"). Used to
+// scope `gw shelf list` to the current workspace when the config does not name
+// a client explicitly (it relies on the ambient P4CLIENT).
+std::expected<std::string, std::string> currentClient(const Config& config);
+
+// `p4 -ztag changes -s <status> [-u <user>] [-c <client>] <depot_path>`:
+// pending or shelved changelists under the configured subtree (status is
+// "pending" or "shelved"). When `user` is non-empty, limits to that user's
+// changelists; when `client` is non-empty, limits to that workspace's
+// changelists. Returns raw -ztag output for shelf.h's parseChanges.
 std::expected<std::string, std::string> changes(const Config& config,
                                                 const std::string& status,
-                                                const std::string& user);
+                                                const std::string& user,
+                                                const std::string& client);
 
 // `p4 -ztag describe -S <cl>`: the shelved-file listing for a changelist.
 // Returns raw -ztag output for shelf.h's parseShelveDescribe.
