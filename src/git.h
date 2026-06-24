@@ -125,8 +125,10 @@ std::expected<std::string, std::string> commit(const std::string& message,
 std::expected<std::string, std::string> rebase(const std::string& onto,
                                                const std::string& cwd = {});
 
-// True when git-branchless is initialized in this repo (its main-branch config
-// key is set). Branchless tracks commit visibility in its own event log and
+// True when git-branchless is initialized in *this* repo - its main-branch
+// config key is set in the repository's local config. Read local-only so a
+// global git-branchless setup doesn't make every repo look branchless.
+// Branchless tracks commit visibility in its own event log and
 // works detached with implicit branches, so gw restacks via `git branchless
 // sync` rather than a single-branch `git rebase` and moves HEAD by commit.
 std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
@@ -152,9 +154,12 @@ std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
                                                       const std::string& destFile,
                                                       const std::string& cwd = {});
 
-// Value of a `git config` key, or empty string if the key is unset.
+// Value of a `git config` key, or empty string if the key is unset. With
+// `localOnly`, reads the repository's local config scope only (`--local`),
+// ignoring global/system config.
 std::expected<std::string, std::string> configValue(const std::string& key,
-                                                    const std::string& cwd = {});
+                                                    const std::string& cwd = {},
+                                                    bool localOnly = false);
 
 // File-level changes from `fromRef` to `toRef`, with rename detection.
 std::expected<std::vector<FileChange>, std::string> diffNameStatus(

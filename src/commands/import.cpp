@@ -25,9 +25,9 @@ namespace p4gw {
 //     commits are replayed on top. Without --rebase, divergent local commits
 //     are left exactly where they are (never stomped) and you are told to
 //     rebase.
-//   * The like-named local branch (e.g. p4-main) is a convenience pointer kept
+//   * The like-named local branch (e.g. main) is a convenience pointer kept
 //     fast-forwarded to the hidden ref whenever it has no local commits, so the
-//     feature-branch workflow (`git rebase p4-main`, prepare against it) keeps
+//     feature-branch workflow (`git rebase main`, prepare against it) keeps
 //     working.
 int cmdImport(const Args& args) {
     bool rebase = false;
@@ -184,9 +184,21 @@ int cmdImport(const Args& args) {
     const bool firstImport = oldDepot.empty();
     if (firstImport) {
         if (hasCommits) {
-            // Existing history, no baseline yet: start it as an orphan.
-            auto switched = git::switchOrphanBranch(baseline, root);
-            if (!switched) return fail(switched.error());
+            // The baseline branch may already exist: gw init creates it (with
+            // the committed .gitignore) on a fresh repo. `git switch --orphan`
+            // fails on an existing branch, so when it exists just switch to it
+            // and commit the first snapshot on top of the .gitignore. Only when
+            // the history lives on some *other* branch and no baseline exists
+            // yet do we start the baseline as a clean orphan root.
+            auto baselineExists = git::branchExists(baseline, root);
+            if (!baselineExists) return fail(baselineExists.error());
+            if (*baselineExists) {
+                auto switched = git::switchBranch(baseline, root);
+                if (!switched) return fail(switched.error());
+            } else {
+                auto switched = git::switchOrphanBranch(baseline, root);
+                if (!switched) return fail(switched.error());
+            }
         } else {
             // Unborn branch: make sure the first commit lands on the baseline.
             auto unborn = git::run({"symbolic-ref", "--short", "HEAD"}, root);

@@ -218,9 +218,11 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
 }
 
 std::expected<bool, std::string> isBranchless(const std::string& cwd) {
-    // `git branchless init` sets this key; its presence is our signal that the
-    // repo is managed by branchless (and tells us its main-branch name).
-    auto value = configValue("branchless.core.mainBranch", cwd);
+    // `git branchless init` writes this key into the repo's *local* config; its
+    // presence is our signal that the repo is managed by branchless. Read local
+    // scope only - a global git-branchless setup (likely if you use it on other
+    // repos) must not make every repo gw touches look branchless.
+    auto value = configValue("branchless.core.mainBranch", cwd, /*localOnly=*/true);
     if (!value) return std::unexpected(value.error());
     return !value->empty();
 }
@@ -259,8 +261,12 @@ std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
 }
 
 std::expected<std::string, std::string> configValue(const std::string& key,
-                                                    const std::string& cwd) {
-    auto result = p4gw::run("git", {"config", "--get", key}, cwd);
+                                                    const std::string& cwd,
+                                                    bool localOnly) {
+    std::vector<std::string> args{"config"};
+    if (localOnly) args.push_back("--local");
+    args.insert(args.end(), {"--get", key});
+    auto result = p4gw::run("git", args, cwd);
     if (!result) {
         return std::unexpected(result.error());
     }
