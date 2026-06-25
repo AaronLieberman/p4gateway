@@ -33,7 +33,8 @@ void printUsage() {
         "global options:\n"
         "  --verbose  Echo every git/p4 command as it runs\n"
         "  --help     Show this help\n"
-        "  --version  Show version\n",
+        "  --version  Show version\n"
+        "\n",
         kVersion);
 }
 

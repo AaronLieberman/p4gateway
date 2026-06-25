@@ -85,7 +85,8 @@ constexpr const char* kPrepareUsage =
     "      --verify          After staging, run a full 'p4 reconcile -n' over the\n"
     "                        whole subtree to catch unexpected mirror changes\n"
     "                        (scales with subtree size, not this change)\n"
-    "  -h, --help            Show this help\n";
+    "  -h, --help            Show this help\n"
+    "\n";
 
 // Stages the content of `commit:repoRel` into the mirror file at `dest`
 // (creating directories, clearing a read-only bit left by p4).

@@ -946,7 +946,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                      "under the current directory except p4.ini/.p4config.\n"
                      "Refuses unless the server is a throwaway (ServerID '%s',\n"
                      "security 0). Needs p4 and a live server; see "
-                     "README-integtest.md.\n",
+                     "README-integtest.md.\n"
+                     "\n",
                      kThrowawayServerId);
     };
     auto usage = [&] {

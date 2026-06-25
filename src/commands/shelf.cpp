@@ -30,7 +30,8 @@ constexpr const char* kShelfImportUsage =
     "\n"
     "options:\n"
     "  -b, --branch <name>   Name the new branch <name> (default: shelf-<cl>)\n"
-    "  -h, --help            Show this help\n";
+    "  -h, --help            Show this help\n"
+    "\n";
 
 void importUsage() {
     std::fprintf(stderr, "%s", kShelfImportUsage);
@@ -317,7 +318,8 @@ constexpr const char* kShelfListUsage =
     "  -a, --all          List across every workspace you own, not just this one\n"
     "  -u, --user <name>  List another user's changelists (implies --all, since\n"
     "                     their shelves live in their own workspaces)\n"
-    "  -h, --help         Show this help\n";
+    "  -h, --help         Show this help\n"
+    "\n";
 
 void listUsage() {
     std::fprintf(stderr, "%s", kShelfListUsage);
@@ -461,7 +463,8 @@ int cmdShelf(const Args& args) {
         "Run 'gw shelf <subcommand> --help' for that subcommand's options.\n"
         "\n"
         "options:\n"
-        "  -h, --help  Show this help\n";
+        "  -h, --help  Show this help\n"
+        "\n";
     auto usage = [] { std::fprintf(stderr, "%s", kShelfUsage); };
     if (args.empty()) {
         std::fprintf(stderr, "gw shelf: missing subcommand\n");

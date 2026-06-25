@@ -24,7 +24,8 @@ constexpr const char* kDoctorUsage =
     "FAIL per check and exits non-zero if any check failed.\n"
     "\n"
     "options:\n"
-    "  -h, --help  Show this help\n";
+    "  -h, --help  Show this help\n"
+    "\n";
 
 }  // namespace
 

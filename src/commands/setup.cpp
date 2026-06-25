@@ -25,7 +25,8 @@ constexpr const char* kSetupUsage =
     "  --mirror-path <dir>                 Mirror directory (default: .p4gw)\n"
     "  --client <name>                     Pre-fill the P4 client name\n"
     "  --force                             Overwrite an existing p4gw.cfg here\n"
-    "  -h, --help                          Show this help\n";
+    "  -h, --help                          Show this help\n"
+    "\n";
 
 }  // namespace
 

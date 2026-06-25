@@ -63,7 +63,8 @@ constexpr const char* kInitUsage =
     "  --force-git-init  Remove any existing .git and start the Git repo over\n"
     "  --allow-in-repo   Permit the overlay root to sit inside an outer Git repo\n"
     "                    (creates its own isolated .git there)\n"
-    "  -h, --help        Show this help\n";
+    "  -h, --help        Show this help\n"
+    "\n";
 
 }  // namespace
 

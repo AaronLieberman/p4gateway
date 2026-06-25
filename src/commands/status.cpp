@@ -33,7 +33,8 @@ constexpr const char* kStatusUsage =
     "be reached, so status never hard-fails on a down connection.\n"
     "\n"
     "options:\n"
-    "  -h, --help  Show this help\n";
+    "  -h, --help  Show this help\n"
+    "\n";
 
 }  // namespace
 

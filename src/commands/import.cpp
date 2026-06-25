@@ -28,7 +28,8 @@ constexpr const char* kImportUsage =
     "options:\n"
     "  -r, --rebase  Replay your local commits on top of the new depot state\n"
     "                (otherwise divergent branches are left as-is)\n"
-    "  -h, --help    Show this help\n";
+    "  -h, --help    Show this help\n"
+    "\n";
 
 }  // namespace
 
