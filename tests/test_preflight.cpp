@@ -67,6 +67,47 @@ TEST(parse_tagged_opened_empty_is_empty) {
     CHECK(p4gw::p4::parseTaggedOpened("").empty());
 }
 
+TEST(filter_excluded_opens_drops_files_under_an_exclude) {
+    // The reported case: vendored libs/pdbs the user edits directly in P4 are
+    // open under src/lib (an excluded subtree). gw ships nothing through the
+    // excludes, so those opens must not block prepare; only the open under the
+    // mirrored part of the subtree (src/core) survives.
+    const std::vector<p4gw::p4::OpenedFile> opened = {
+        {"//depot/project/main/src/lib/public/win64/vc14/render_lib.lib", "edit"},
+        {"//depot/project/main/src/lib/public/win64/vc14/render_lib.pdb", "edit"},
+        {"//depot/project/main/src/thirdparty/zlib/zlib.h", "edit"},
+        {"//depot/project/main/src/core/main.cpp", "edit"},
+    };
+    const std::vector<std::string> excludes = {
+        "//depot/project/main/src/lib/...",
+        "//depot/project/main/src/thirdparty/...",
+        "//depot/project/main/src/devtools/...",
+    };
+    const auto kept = p4gw::p4::filterExcludedOpens(opened, excludes);
+    CHECK(kept.size() == 1);
+    if (kept.size() == 1) {
+        CHECK(kept[0].depotFile == "//depot/project/main/src/core/main.cpp");
+    }
+}
+
+TEST(filter_excluded_opens_with_no_excludes_keeps_all) {
+    const std::vector<p4gw::p4::OpenedFile> opened = {
+        {"//depot/project/main/src/lib/x.lib", "edit"},
+        {"//depot/project/main/src/core/y.cpp", "edit"},
+    };
+    CHECK(p4gw::p4::filterExcludedOpens(opened, {}).size() == 2);
+}
+
+TEST(filter_excluded_opens_anchors_at_path_boundary) {
+    // src/libutil shares a name prefix with src/lib but is not under it.
+    const std::vector<p4gw::p4::OpenedFile> opened = {
+        {"//depot/project/main/src/libutil/x.cpp", "edit"},
+    };
+    const auto kept = p4gw::p4::filterExcludedOpens(
+        opened, {"//depot/project/main/src/lib/..."});
+    CHECK(kept.size() == 1);
+}
+
 TEST(parse_tagged_depot_files_reads_have_listing) {
     const std::string out =
         "... depotFile //depot/project/src/a.cpp\n"

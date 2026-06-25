@@ -501,23 +501,19 @@ std::expected<std::string, std::string> latestSubmittedCl(const Config& config) 
 }
 
 std::expected<std::string, std::string> openedFiles(const Config& config) {
-    std::vector<std::string> args = clientArgs(config);
-    args.push_back("opened");
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath);
+    // Delegate to the tagged query so excluded-subtree opens are filtered out
+    // the same way prepare/import see them - otherwise status would over-count a
+    // "pending CL" and doctor would warn on the user's own (excluded) P4 edits.
+    // One line per kept file.
+    auto tagged = openedFilesTagged(config);
+    if (!tagged) {
+        return std::unexpected(tagged.error());
     }
-    auto result = p4gw::run("p4", args);
-    if (!result) {
-        return std::unexpected(result.error());
+    std::string out;
+    for (const auto& file : *tagged) {
+        out += file.depotFile + " - " + file.action + "\n";
     }
-    if (result->output.find("not opened") != std::string::npos) {
-        return std::string{};
-    }
-    if (result->exitCode != 0) {
-        return std::unexpected(commandLine(args) + " failed:\n" +
-                               result->output);
-    }
-    return result->output;
+    return out;
 }
 
 std::expected<std::string, std::string> currentUser(const Config& config) {
@@ -632,6 +628,25 @@ bool isAddAction(const std::string& action) {
     return action == "add" || action == "move/add" || action == "branch";
 }
 
+std::vector<OpenedFile> filterExcludedOpens(
+    const std::vector<OpenedFile>& opened,
+    const std::vector<std::string>& excludedDepotPaths) {
+    std::vector<OpenedFile> kept;
+    for (const auto& file : opened) {
+        bool excluded = false;
+        for (const auto& ex : excludedDepotPaths) {
+            // stripWildcard keeps the trailing '/', anchoring the prefix at a
+            // path boundary (".../lib/" must not match ".../libutil/...").
+            if (file.depotFile.starts_with(stripWildcard(ex))) {
+                excluded = true;
+                break;
+            }
+        }
+        if (!excluded) kept.push_back(file);
+    }
+    return kept;
+}
+
 std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     const Config& config) {
     std::vector<std::string> args = clientArgs(config);
@@ -650,7 +665,17 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
         return std::unexpected(commandLine(args) + " failed:\n" +
                                result->output);
     }
-    return parseTaggedOpened(result->output);
+    // `p4 opened` is scoped to the depot path, so it includes files open under
+    // excluded subtrees (vendored libs the user edits directly in P4). Those
+    // are not part of any gw changelist, so drop them - otherwise prepare's
+    // opened-files preflight would refuse to run on account of the user's own
+    // unrelated P4 work.
+    std::vector<std::string> excludes;
+    for (const auto& mapping : config.mappings) {
+        excludes.insert(excludes.end(), mapping.excludedDepotPaths.begin(),
+                        mapping.excludedDepotPaths.end());
+    }
+    return filterExcludedOpens(parseTaggedOpened(result->output), excludes);
 }
 
 std::expected<std::vector<std::string>, std::string> haveFiles(

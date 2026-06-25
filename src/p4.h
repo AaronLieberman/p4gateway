@@ -183,6 +183,15 @@ struct OpenedFile {
 // Parses `p4 -ztag opened` output into per-file records (pure; unit-tested).
 std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput);
 
+// Drops opened files that lie under an excluded depot subtree (an `exclude`
+// line): those are gitignored / synced in place, so gw mirrors and ships
+// nothing through them and must ignore P4 opens under them - they belong to the
+// user's own P4 work, not a gw changelist. Each `excludedDepotPaths` entry ends
+// in "/...". Pure; unit-tested.
+std::vector<OpenedFile> filterExcludedOpens(
+    const std::vector<OpenedFile>& opened,
+    const std::vector<std::string>& excludedDepotPaths);
+
 // Repo-relative path (forward slashes) of `depotFile` within the `depotPath`
 // subtree ("//.../..."), or empty if it is not under it (pure).
 std::string depotRelativePath(const std::string& depotPath,
@@ -192,8 +201,8 @@ std::string depotRelativePath(const std::string& depotPath,
 // this depot path (add, move/add, branch); `gw import` omits these (pure).
 bool isAddAction(const std::string& action);
 
-// Structured `p4 -ztag opened` scoped to the configured depot path; empty if
-// nothing is open.
+// Structured `p4 -ztag opened` scoped to the configured depot path, with files
+// under an `exclude`d subtree removed; empty if nothing relevant is open.
 std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     const Config& config);
 
