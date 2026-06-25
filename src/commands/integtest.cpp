@@ -923,8 +923,8 @@ std::string resolveGwExe(const std::string& argv0) {
 }  // namespace
 
 int cmdIntegtest(const std::string& gwExe, const Args& args) {
-    auto usage = [] {
-        std::fprintf(stderr,
+    auto printUsage = [](std::FILE* out) {
+        std::fprintf(out,
                      "usage: gw integtest <command> [options]\n"
                      "\n"
                      "commands:\n"
@@ -948,8 +948,18 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                      "security 0). Needs p4 and a live server; see "
                      "README-integtest.md.\n",
                      kThrowawayServerId);
+    };
+    auto usage = [&] {
+        printUsage(stderr);
         return 1;
     };
+
+    for (const auto& arg : args) {
+        if (arg == "--help" || arg == "-h") {
+            printUsage(stdout);
+            return 0;
+        }
+    }
 
     ItContext it;
     it.gw = resolveGwExe(gwExe);

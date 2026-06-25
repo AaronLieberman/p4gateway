@@ -65,6 +65,28 @@ std::string mirrorFilePath(const ResolvedMapping& route,
         .string();
 }
 
+constexpr const char* kPrepareUsage =
+    "usage: gw prepare [<commit>] [options]\n"
+    "\n"
+    "Turn the current branch's commits (everything since the depot baseline)\n"
+    "into a new pending P4 changelist: stage the branch's file state into the\n"
+    "mirror with explicit p4 edit/add/delete/move, then build the CL. gw never\n"
+    "submits - review and submit it from P4V.\n"
+    "\n"
+    "arguments:\n"
+    "  <commit>              Prepare only the slice of the stack up to <commit>\n"
+    "                        (default: HEAD), so you can ship part of a branch\n"
+    "\n"
+    "options:\n"
+    "  -m, --message <text>  Describe the changelist with <text> instead of the\n"
+    "                        branch's commit messages\n"
+    "  -n, --dry-run         Show the p4 operations a real run would perform and\n"
+    "                        exit, touching neither P4 nor the mirror\n"
+    "      --verify          After staging, run a full 'p4 reconcile -n' over the\n"
+    "                        whole subtree to catch unexpected mirror changes\n"
+    "                        (scales with subtree size, not this change)\n"
+    "  -h, --help            Show this help\n";
+
 // Stages the content of `commit:repoRel` into the mirror file at `dest`
 // (creating directories, clearing a read-only bit left by p4).
 std::expected<std::string, std::string> stageBlob(const std::string& root,
@@ -105,11 +127,15 @@ int cmdPrepare(const Args& args) {
     std::string target = "HEAD";
     bool targetSet = false;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--verify") {
+        if (args[i] == "--help" || args[i] == "-h") {
+            std::printf("%s", kPrepareUsage);
+            return 0;
+        } else if (args[i] == "--verify") {
             fullVerify = true;
-        } else if (args[i] == "--dry-run") {
+        } else if (args[i] == "--dry-run" || args[i] == "-n") {
             dryRun = true;
-        } else if (args[i] == "--message" && i + 1 < args.size()) {
+        } else if ((args[i] == "--message" || args[i] == "-m") &&
+                   i + 1 < args.size()) {
             messageOverride = args[++i];
         } else if (!args[i].empty() && args[i][0] != '-' && !targetSet) {
             target = args[i];
@@ -117,9 +143,7 @@ int cmdPrepare(const Args& args) {
         } else {
             std::fprintf(stderr, "gw prepare: unknown option '%s'\n",
                          args[i].c_str());
-            std::fprintf(stderr,
-                         "usage: gw prepare [<commit>] [--message <text>] "
-                         "[--verify] [--dry-run]\n");
+            std::fprintf(stderr, "%s", kPrepareUsage);
             return 1;
         }
     }

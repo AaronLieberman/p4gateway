@@ -9,6 +9,26 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
+namespace {
+
+constexpr const char* kSetupUsage =
+    "usage: gw setup [options]\n"
+    "\n"
+    "Write the p4gw.cfg config template in the current directory, with\n"
+    "placeholders and comments for everything you still have to fill in. Makes\n"
+    "no p4 or git calls (the offline half of getting started); 'gw init' then\n"
+    "verifies the client view against this file and sets up the Git repo.\n"
+    "\n"
+    "options:\n"
+    "  --depot-path <//depot/.../src/...>  Pre-fill the include's depot path\n"
+    "                                      (must end with '/...')\n"
+    "  --mirror-path <dir>                 Mirror directory (default: .p4gw)\n"
+    "  --client <name>                     Pre-fill the P4 client name\n"
+    "  --force                             Overwrite an existing p4gw.cfg here\n"
+    "  --help                              Show this help\n";
+
+}  // namespace
+
 // The offline half of getting started: writes the p4gw.cfg config template in
 // the current directory, with placeholders and comments for everything the
 // user still has to fill in. Makes no p4 or git calls. 'gw init' then
@@ -19,7 +39,10 @@ int cmdSetup(const Args& args) {
     std::string client;
     bool force = false;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--depot-path" && i + 1 < args.size()) {
+        if (args[i] == "--help") {
+            std::printf("%s", kSetupUsage);
+            return 0;
+        } else if (args[i] == "--depot-path" && i + 1 < args.size()) {
             depotPath = args[++i];
         } else if (args[i] == "--mirror-path" && i + 1 < args.size()) {
             mirrorPath = args[++i];
@@ -30,9 +53,7 @@ int cmdSetup(const Args& args) {
         } else {
             std::fprintf(stderr, "gw setup: unknown option '%s'\n",
                          args[i].c_str());
-            std::fprintf(stderr,
-                         "usage: gw setup [--depot-path //depot/.../src/...] "
-                         "[--mirror-path <dir>] [--client <name>] [--force]\n");
+            std::fprintf(stderr, "%s", kSetupUsage);
             return 1;
         }
     }

@@ -23,6 +23,18 @@ int countLines(const std::string& text) {
     return n;
 }
 
+constexpr const char* kStatusUsage =
+    "usage: gw status\n"
+    "\n"
+    "Show where Git and P4 stand at a glance: the current branch and how it\n"
+    "relates to the depot baseline, working-tree cleanliness, the last imported\n"
+    "changelist, any pending changelist, and the single most useful next step.\n"
+    "The Git side works offline; the P4 line degrades to a note when P4 can't\n"
+    "be reached, so status never hard-fails on a down connection.\n"
+    "\n"
+    "options:\n"
+    "  -h, --help  Show this help\n";
+
 }  // namespace
 
 // A one-screen read on where Git and P4 stand, written for someone still
@@ -33,10 +45,14 @@ int countLines(const std::string& text) {
 // to a note when P4 can't be reached, so `gw status` never hard-fails on a
 // down connection.
 int cmdStatus(const Args& args) {
-    if (!args.empty()) {
+    for (const auto& arg : args) {
+        if (arg == "--help" || arg == "-h") {
+            std::printf("%s", kStatusUsage);
+            return 0;
+        }
         std::fprintf(stderr, "gw status: unexpected argument '%s'\n",
-                     args.front().c_str());
-        std::fprintf(stderr, "usage: gw status\n");
+                     arg.c_str());
+        std::fprintf(stderr, "%s", kStatusUsage);
         return 1;
     }
 

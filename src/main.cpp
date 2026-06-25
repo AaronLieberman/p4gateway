@@ -28,6 +28,8 @@ void printUsage() {
         "  integtest  Live-P4 integration tests: run|clean "
         "(see README-integtest.md)\n"
         "\n"
+        "Run 'gw <command> --help' for a command's details and options.\n"
+        "\n"
         "global options:\n"
         "  --verbose  Echo every git/p4 command as it runs\n"
         "  --help     Show this help\n"

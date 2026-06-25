@@ -14,6 +14,24 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
+namespace {
+
+constexpr const char* kImportUsage =
+    "usage: gw import [options]\n"
+    "\n"
+    "Commit the mirror's current state - whatever you last synced, with any\n"
+    "tool - to the depot baseline (the hidden refs/p4gw/<baseline> ref), then\n"
+    "bring your branch up to it. Like 'git fetch' / 'git pull --rebase'.\n"
+    "A branch with no local commits fast-forwards; divergent commits are left\n"
+    "untouched unless you pass --rebase.\n"
+    "\n"
+    "options:\n"
+    "  -r, --rebase  Replay your local commits on top of the new depot state\n"
+    "                (otherwise divergent branches are left as-is)\n"
+    "  -h, --help    Show this help\n";
+
+}  // namespace
+
 // Absorbs the mirror's current state - whatever p4 last synced into it, by any
 // tool - into Git, modelled on `git fetch` / `git pull --rebase`:
 //
@@ -33,11 +51,14 @@ namespace p4gw {
 int cmdImport(const Args& args) {
     bool rebase = false;
     for (const auto& arg : args) {
-        if (arg == "--rebase") {
+        if (arg == "--help" || arg == "-h") {
+            std::printf("%s", kImportUsage);
+            return 0;
+        } else if (arg == "--rebase" || arg == "-r") {
             rebase = true;
         } else {
             std::fprintf(stderr, "gw import: unknown option '%s'\n", arg.c_str());
-            std::fprintf(stderr, "usage: gw import [--rebase]\n");
+            std::fprintf(stderr, "%s", kImportUsage);
             return 1;
         }
     }

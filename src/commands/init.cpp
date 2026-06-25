@@ -49,6 +49,22 @@ void defaultLocalIdentity(const std::string& root) {
     }
 }
 
+constexpr const char* kInitUsage =
+    "usage: gw init [options]\n"
+    "\n"
+    "The verifying half of getting started ('gw setup' writes the config):\n"
+    "load p4gw.cfg, ask p4 for the client spec and verify the view maps every\n"
+    "include into the mirror (and nothing into the repo outside it - a hard\n"
+    "failure if not), then git init if needed and write/commit a starter\n"
+    ".gitignore allowlist. Idempotent: re-running re-verifies and reuses what\n"
+    "exists.\n"
+    "\n"
+    "options:\n"
+    "  --force-git-init  Remove any existing .git and start the Git repo over\n"
+    "  --allow-in-repo   Permit the overlay root to sit inside an outer Git repo\n"
+    "                    (creates its own isolated .git there)\n"
+    "  --help            Show this help\n";
+
 }  // namespace
 
 // The verifying half of getting started ('gw setup' writes the config):
@@ -63,15 +79,17 @@ int cmdInit(const Args& args) {
     bool forceGitInit = false;
     bool allowInRepo = false;
     for (const auto& arg : args) {
-        if (arg == "--force-git-init") {
+        if (arg == "--help") {
+            std::printf("%s", kInitUsage);
+            return 0;
+        } else if (arg == "--force-git-init") {
             forceGitInit = true;
         } else if (arg == "--allow-in-repo") {
             allowInRepo = true;
         } else {
             std::fprintf(stderr, "gw init: unknown option '%s'\n",
                          arg.c_str());
-            std::fprintf(stderr,
-                         "usage: gw init [--force-git-init] [--allow-in-repo]\n");
+            std::fprintf(stderr, "%s", kInitUsage);
             return 1;
         }
     }

@@ -17,9 +17,23 @@ namespace p4gw {
 
 namespace {
 
+constexpr const char* kShelfImportUsage =
+    "usage: gw shelf import <changelist> [options]\n"
+    "\n"
+    "Bring a P4 shelf into Git as a new branch off the baseline: branch at the\n"
+    "latest imported depot state, then replay the shelf's delta on top with a\n"
+    "git 3-way merge (conflicts surface as normal git markers). Reads everything\n"
+    "with 'p4 print' - the mirror is never touched and no P4 file is opened.\n"
+    "\n"
+    "arguments:\n"
+    "  <changelist>          The pending/shelved CL number to import\n"
+    "\n"
+    "options:\n"
+    "  -b, --branch <name>   Name the new branch <name> (default: shelf-<cl>)\n"
+    "  -h, --help            Show this help\n";
+
 void importUsage() {
-    std::fprintf(stderr,
-                 "usage: gw shelf import <changelist> [--branch <name>]\n");
+    std::fprintf(stderr, "%s", kShelfImportUsage);
 }
 
 // Writes the shelved content of `depotFile` (the @=cl revision) into the
@@ -50,7 +64,11 @@ int shelfImport(const Args& args) {
     std::string cl;
     std::string branchOverride;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--branch" && i + 1 < args.size()) {
+        if (args[i] == "--help" || args[i] == "-h") {
+            std::printf("%s", kShelfImportUsage);
+            return 0;
+        } else if ((args[i] == "--branch" || args[i] == "-b") &&
+                   i + 1 < args.size()) {
             branchOverride = args[++i];
         } else if (!args[i].empty() && args[i][0] == '-') {
             std::fprintf(stderr, "gw shelf import: unknown option '%s'\n",
@@ -288,9 +306,21 @@ std::string firstLine(const std::string& desc) {
     return line;
 }
 
+constexpr const char* kShelfListUsage =
+    "usage: gw shelf list [options]\n"
+    "\n"
+    "List your pending and shelved changelists under the configured subtree,\n"
+    "newest first, so a CL number is easy to pick for 'gw shelf import'. By\n"
+    "default only the current workspace's changelists are shown.\n"
+    "\n"
+    "options:\n"
+    "  -a, --all          List across every workspace you own, not just this one\n"
+    "  -u, --user <name>  List another user's changelists (implies --all, since\n"
+    "                     their shelves live in their own workspaces)\n"
+    "  -h, --help         Show this help\n";
+
 void listUsage() {
-    std::fprintf(stderr,
-                 "usage: gw shelf list [--all] [--user <name>]\n");
+    std::fprintf(stderr, "%s", kShelfListUsage);
 }
 
 // `gw shelf list`: the caller's pending and shelved changelists under the
@@ -303,9 +333,12 @@ int shelfList(const Args& args) {
     bool all = false;
     std::string userOverride;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--all") {
+        if (args[i] == "--help" || args[i] == "-h") {
+            std::printf("%s", kShelfListUsage);
+            return 0;
+        } else if (args[i] == "--all" || args[i] == "-a") {
             all = true;
-        } else if (args[i] == "--user") {
+        } else if (args[i] == "--user" || args[i] == "-u") {
             if (i + 1 >= args.size()) {
                 std::fprintf(stderr,
                              "gw shelf list: --user requires a username\n");
@@ -416,17 +449,30 @@ int shelfList(const Args& args) {
 // `gw shelf <subcommand>`: work with P4 shelves. `list` shows pending/shelved
 // changelists; `import` brings a shelf into Git as a branch.
 int cmdShelf(const Args& args) {
-    auto usage = [] {
-        std::fprintf(stderr, "usage: gw shelf list [--all] [--user <name>]\n"
-                             "       gw shelf import <changelist> "
-                             "[--branch <name>]\n");
-    };
+    static constexpr const char* kShelfUsage =
+        "usage: gw shelf <subcommand> [options]\n"
+        "\n"
+        "Work with P4 shelves from Git.\n"
+        "\n"
+        "subcommands:\n"
+        "  list    Show your pending and shelved changelists, newest first\n"
+        "  import  Bring a shelved changelist into Git as a new branch\n"
+        "\n"
+        "Run 'gw shelf <subcommand> --help' for that subcommand's options.\n"
+        "\n"
+        "options:\n"
+        "  -h, --help  Show this help\n";
+    auto usage = [] { std::fprintf(stderr, "%s", kShelfUsage); };
     if (args.empty()) {
         std::fprintf(stderr, "gw shelf: missing subcommand\n");
         usage();
         return 1;
     }
     const std::string sub = args.front();
+    if (sub == "--help" || sub == "-h") {
+        std::printf("%s", kShelfUsage);
+        return 0;
+    }
     const Args rest(args.begin() + 1, args.end());
     if (sub == "list") return shelfList(rest);
     if (sub == "import") return shelfImport(rest);

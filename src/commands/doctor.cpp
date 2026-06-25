@@ -12,12 +12,37 @@ namespace fs = std::filesystem;
 
 namespace p4gw {
 
+namespace {
+
+constexpr const char* kDoctorUsage =
+    "usage: gw doctor\n"
+    "\n"
+    "Check that the environment is sane for the mirror workflow: git and p4 on\n"
+    "PATH, a readable p4gw.cfg, the P4 connection, repo-directory ownership, and\n"
+    "- the central check - that the client view maps each configured depot path\n"
+    "into the mirror and nothing into the Git repo outside it. Reports ok/WARN/\n"
+    "FAIL per check and exits non-zero if any check failed.\n"
+    "\n"
+    "options:\n"
+    "  -h, --help  Show this help\n";
+
+}  // namespace
+
 // Checks that the environment is sane for the mirror workflow. The central
 // check is the client view: the configured depot path must map into the
 // mirror, and nothing may map into the Git repo directory - if the spec
 // ever loses the remap line, this is where it gets caught.
 int cmdDoctor(const Args& args) {
-    (void)args;
+    for (const auto& arg : args) {
+        if (arg == "--help" || arg == "-h") {
+            std::printf("%s", kDoctorUsage);
+            return 0;
+        }
+        std::fprintf(stderr, "gw doctor: unexpected argument '%s'\n",
+                     arg.c_str());
+        std::fprintf(stderr, "%s", kDoctorUsage);
+        return 1;
+    }
 
     int failures = 0;
     int warnings = 0;
