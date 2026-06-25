@@ -428,6 +428,13 @@ std::expected<std::string, std::string> moveFile(const Config& config,
     return run(config, {"move", "-c", cl, from, to});
 }
 
+bool reconcileReportsClean(const std::string& output) {
+    std::string lower = output;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return lower.find("no file(s) to reconcile") != std::string::npos;
+}
+
 std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     std::vector<std::string> args = clientArgs(config);
     args.insert(args.end(), {"reconcile", "-n"});
@@ -440,7 +447,7 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     }
     // With nothing to do, p4 prints "... - no file(s) to reconcile." and may
     // exit non-zero; that's the clean case, not an error.
-    if (result->output.find("no file(s) to reconcile") != std::string::npos) {
+    if (reconcileReportsClean(result->output)) {
         return std::string{};
     }
     if (result->exitCode != 0) {
@@ -463,11 +470,10 @@ std::expected<std::string, std::string> reconcilePreviewFiles(
         if (!result) {
             return std::unexpected(result.error());
         }
-        // A clean chunk reports "no file(s) to reconcile" (possibly non-zero
-        // exit); skip it. Anything else is either real preview output or a
-        // failure.
-        if (result->output.find("no file(s) to reconcile") !=
-            std::string::npos) {
+        // A clean chunk reports "No file(s) to reconcile." (capitalized for an
+        // explicit file list, and possibly with a non-zero exit); skip it.
+        // Anything else is either real preview output or a failure.
+        if (reconcileReportsClean(result->output)) {
             continue;
         }
         if (result->exitCode != 0) {
@@ -776,8 +782,7 @@ std::expected<std::string, std::string> reconcileToCl(const Config& config,
                                                       const std::string& cl,
                                                       const std::string& pathSpec) {
     auto result = run(config, {"reconcile", "-c", cl, pathSpec});
-    if (!result &&
-        result.error().find("no file(s) to reconcile") != std::string::npos) {
+    if (!result && reconcileReportsClean(result.error())) {
         return std::string{};
     }
     return result;

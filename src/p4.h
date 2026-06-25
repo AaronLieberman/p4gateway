@@ -134,6 +134,12 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config);
 std::expected<std::string, std::string> reconcilePreviewFiles(
     const Config& config, const std::vector<std::string>& files);
 
+// True when `p4 reconcile` output means "nothing to reconcile". Matched
+// case-insensitively: p4 says "No file(s) to reconcile." for an explicit file
+// list but "<path> - no file(s) to reconcile." for a directory, and the
+// difference must not read as a spurious mismatch. Pure; unit-tested.
+bool reconcileReportsClean(const std::string& output);
+
 // Highest submitted changelist among the synced revisions of the subtree
 // (`p4 changes -m1 -s submitted <depot_path>#have`); empty if none.
 std::expected<std::string, std::string> latestSubmittedCl(const Config& config);

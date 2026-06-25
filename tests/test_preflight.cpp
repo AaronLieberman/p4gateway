@@ -108,6 +108,18 @@ TEST(filter_excluded_opens_anchors_at_path_boundary) {
     CHECK(kept.size() == 1);
 }
 
+TEST(reconcile_reports_clean_handles_both_casings) {
+    // p4 capitalizes it for an explicit file list and lowercases it (with a
+    // path) for a directory; both must read as "nothing to reconcile".
+    CHECK(p4gw::p4::reconcileReportsClean("No file(s) to reconcile.\n"));
+    CHECK(p4gw::p4::reconcileReportsClean(
+        "//depot/project/main/src/... - no file(s) to reconcile.\n"));
+    // Real reconcile output (work to do) must not read as clean.
+    CHECK(!p4gw::p4::reconcileReportsClean(
+        "//depot/project/main/src/foo.cpp#1 - opened for edit\n"));
+    CHECK(!p4gw::p4::reconcileReportsClean(""));
+}
+
 TEST(parse_tagged_depot_files_reads_have_listing) {
     const std::string out =
         "... depotFile //depot/project/src/a.cpp\n"
