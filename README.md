@@ -86,10 +86,11 @@ If the repo is managed by [git-branchless](https://github.com/arxanas/git-branch
 gw works with it instead of around it. It detects branchless automatically (its
 `branchless.core.mainBranch` config key) and adapts:
 
-- `gw init` points branchless's main branch at the gw baseline (`main`), so
-  the depot state is your trunk and the smartlog hides import commits.
+- gw never modifies branchless's config — it just warns if branchless's main
+  branch isn't your gw baseline (`main` by default), since that's the trunk
+  `gw import --rebase` restacks onto.
 - `gw import` accepts a **detached HEAD** — no need to mint a throwaway branch
-  to absorb the depot.
+  to absorb the depot (this works with or without branchless).
 - `gw import --rebase` restacks **every visible stack** onto the new depot
   state via `git branchless sync`, not just the commit you happen to be on, and
   records the rewrites so the pre-import commits go obsolete (hidden from the

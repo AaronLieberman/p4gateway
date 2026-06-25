@@ -331,25 +331,23 @@ int cmdInit(const Args& args) {
                     "and carved-out dirs\"\n");
     }
 
-    // If the repo is managed by git-branchless, point its main branch at the
-    // gw baseline so `gw import --rebase` (which delegates to `git branchless
-    // sync`) restacks stacks onto the depot state. We never initialize
-    // branchless for the user - that is their choice - but when it is present
-    // this keeps the two tools' idea of "trunk" aligned.
+    // If the repo is managed by git-branchless, its main branch is the trunk
+    // `gw import --rebase` restacks onto (via `git branchless sync`), so it
+    // should be the gw baseline. We don't modify branchless's config - that is
+    // the user's tool to manage - we just flag a mismatch so the restack does
+    // not land on the wrong trunk.
     if (git::isBranchless(root).value_or(false)) {
         auto mainBranch = git::configValue("branchless.core.mainBranch", root);
-        if (mainBranch && *mainBranch != config->baselineBranch) {
-            auto set = git::setConfig("branchless.core.mainBranch",
-                                      config->baselineBranch, root);
-            if (set) {
-                std::printf("Pointed branchless's main branch at '%s'\n",
-                            config->baselineBranch.c_str());
-            } else {
-                std::printf("note: could not set branchless.core.mainBranch "
-                            "(%s); set it to '%s' by hand\n",
-                            set.error().c_str(),
-                            config->baselineBranch.c_str());
-            }
+        if (mainBranch && !mainBranch->empty() &&
+            *mainBranch != config->baselineBranch) {
+            std::printf("note  git-branchless's main branch is '%s', not the gw "
+                        "baseline '%s';\n      'gw import --rebase' restacks "
+                        "onto branchless's main branch, so align them - set\n"
+                        "      baseline_branch in p4gw.cfg, or repoint "
+                        "branchless: git config --worktree\n"
+                        "      branchless.core.mainBranch %s\n",
+                        mainBranch->c_str(), config->baselineBranch.c_str(),
+                        config->baselineBranch.c_str());
         }
     }
 

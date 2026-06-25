@@ -108,18 +108,18 @@ int cmdImport(const Args& args) {
     // rebasing only the branch the user happens to be on.
     const bool branchless = git::isBranchless(root).value_or(false);
     if (branchless) {
-        // `git branchless sync` restacks onto *its* main branch, so it must be
-        // the gw baseline or the restack would land on the wrong trunk.
+        // `git branchless sync` restacks onto *its* main branch, so a mismatch
+        // with the gw baseline would land the restack on the wrong trunk. We do
+        // not modify branchless's config (the user's tool to manage) - just warn.
         auto mainBranch = git::configValue("branchless.core.mainBranch", root);
-        if (mainBranch && *mainBranch != baseline) {
-            auto set =
-                git::setConfig("branchless.core.mainBranch", baseline, root);
-            if (!set) {
-                std::fprintf(stderr, "gw import: %s\n", set.error().c_str());
-                return 1;
-            }
-            std::printf("note  pointed branchless's main branch at '%s'\n",
-                        baseline.c_str());
+        if (mainBranch && !mainBranch->empty() && *mainBranch != baseline) {
+            std::printf("note  git-branchless's main branch is '%s', not the "
+                        "baseline '%s';\n      --rebase restacks onto "
+                        "branchless's main branch. Align them to avoid "
+                        "restacking\n      onto the wrong trunk (set "
+                        "baseline_branch, or 'git config --worktree "
+                        "branchless.core.mainBranch %s').\n",
+                        mainBranch->c_str(), baseline.c_str(), baseline.c_str());
         }
     }
 
