@@ -63,7 +63,7 @@ constexpr const char* kInitUsage =
     "  --force-git-init  Remove any existing .git and start the Git repo over\n"
     "  --allow-in-repo   Permit the overlay root to sit inside an outer Git repo\n"
     "                    (creates its own isolated .git there)\n"
-    "  --help            Show this help\n";
+    "  -h, --help        Show this help\n";
 
 }  // namespace
 
@@ -79,7 +79,7 @@ int cmdInit(const Args& args) {
     bool forceGitInit = false;
     bool allowInRepo = false;
     for (const auto& arg : args) {
-        if (arg == "--help") {
+        if (arg == "--help" || arg == "-h") {
             std::printf("%s", kInitUsage);
             return 0;
         } else if (arg == "--force-git-init") {

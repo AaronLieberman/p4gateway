@@ -25,7 +25,7 @@ constexpr const char* kSetupUsage =
     "  --mirror-path <dir>                 Mirror directory (default: .p4gw)\n"
     "  --client <name>                     Pre-fill the P4 client name\n"
     "  --force                             Overwrite an existing p4gw.cfg here\n"
-    "  --help                              Show this help\n";
+    "  -h, --help                          Show this help\n";
 
 }  // namespace
 
@@ -39,7 +39,7 @@ int cmdSetup(const Args& args) {
     std::string client;
     bool force = false;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--help") {
+        if (args[i] == "--help" || args[i] == "-h") {
             std::printf("%s", kSetupUsage);
             return 0;
         } else if (args[i] == "--depot-path" && i + 1 < args.size()) {

@@ -48,7 +48,7 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 | `gw shelf import <cl>` | Brings a P4 shelf into Git as a new branch off `main`: replays the shelf's changes on top of the latest imported depot state with a git 3-way merge (conflicts surface as normal git markers to resolve). Reads everything with `p4 print` — it never touches the mirror or opens a P4 file. `--branch <name>` (`-b`) overrides the default `shelf-<cl>`. |
 | `gw doctor` | Checks the environment, and above all the client view: the depot path must map into the mirror and nothing may map into the Git repo. Run it whenever something smells off. |
 
-Every command takes `--help` (and `-h` on the common ones) for a description and its full list of options. The global `--verbose` flag (usable before or after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4` command to stderr as it runs — handy for seeing exactly what gw does against your depot.
+Every command takes `--help` (or `-h`) for a description and its full list of options. The global `--verbose` flag (usable before or after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4` command to stderr as it runs — handy for seeing exactly what gw does against your depot.
 
 Day to day:
 
