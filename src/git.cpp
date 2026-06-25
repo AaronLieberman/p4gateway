@@ -218,13 +218,25 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
 }
 
 std::expected<bool, std::string> isBranchless(const std::string& cwd) {
-    // `git branchless init` writes this key into the repo's *local* config; its
-    // presence is our signal that the repo is managed by branchless. Read local
-    // scope only - a global git-branchless setup (likely if you use it on other
-    // repos) must not make every repo gw touches look branchless.
-    auto value = configValue("branchless.core.mainBranch", cwd, /*localOnly=*/true);
-    if (!value) return std::unexpected(value.error());
-    return !value->empty();
+    // `git branchless init` enables extensions.worktreeConfig and writes
+    // branchless.core.mainBranch into the per-worktree config
+    // (.git/config.worktree), which `git config --local` does NOT read. So check
+    // the worktree scope first, then local - but never global/system, so a
+    // global git-branchless setup (likely if you use it on other repos) doesn't
+    // make every repo gw touches look branchless. `--worktree` falls back to
+    // local when the extension is off, and errors (non-zero, handled as "unset")
+    // only with multiple worktrees and the extension off - then --local covers
+    // it.
+    for (const char* scope : {"--worktree", "--local"}) {
+        auto result = p4gw::run(
+            "git", {"config", scope, "--get", "branchless.core.mainBranch"},
+            cwd);
+        if (!result) return std::unexpected(result.error());
+        if (result->exitCode == 0 && !trimTrailing(result->output).empty()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {

@@ -126,9 +126,10 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
                                                const std::string& cwd = {});
 
 // True when git-branchless is initialized in *this* repo - its main-branch
-// config key is set in the repository's local config. Read local-only so a
-// global git-branchless setup doesn't make every repo look branchless.
-// Branchless tracks commit visibility in its own event log and
+// config key is set in the repository's worktree or local config (branchless
+// writes it to the per-worktree config). Read those scopes only, never
+// global/system, so a global git-branchless setup doesn't make every repo look
+// branchless. Branchless tracks commit visibility in its own event log and
 // works detached with implicit branches, so gw restacks via `git branchless
 // sync` rather than a single-branch `git rebase` and moves HEAD by commit.
 std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
