@@ -65,9 +65,10 @@ std::string mirrorFilePath(const ResolvedMapping& route,
         .string();
 }
 
-// Stages the content of `HEAD:repoRel` into the mirror file at `dest`
+// Stages the content of `commit:repoRel` into the mirror file at `dest`
 // (creating directories, clearing a read-only bit left by p4).
 std::expected<std::string, std::string> stageBlob(const std::string& root,
+                                                  const std::string& commit,
                                                   const std::string& repoRel,
                                                   const std::string& dest) {
     std::error_code ec;
@@ -80,24 +81,29 @@ std::expected<std::string, std::string> stageBlob(const std::string& root,
     if (fs::exists(dest, ec)) {
         fs::permissions(dest, fs::perms::owner_write, fs::perm_options::add, ec);
     }
-    return git::catBlobToFile("HEAD", repoRel, dest, root);
+    return git::catBlobToFile(commit, repoRel, dest, root);
 }
 
 }  // namespace
 
-// Turns the commits on the current branch (relative to the baseline branch)
-// into a pending P4 changelist, without touching the user's working tree:
-//   1. Preflight: baseline is an ancestor of HEAD with commits on top.
+// Turns the commits from the depot baseline through a target commit (HEAD by
+// default) into a pending P4 changelist, without touching the user's working
+// tree:
+//   1. Preflight: baseline is an ancestor of the target with commits on top.
 //   2. Create a numbered pending CL described by the commit messages.
-//   3. Stage the branch's file state into the mirror with explicit
+//   3. Stage the target's file state into the mirror with explicit
 //      p4 edit/add/delete/move - we know exactly what changed from Git.
 //   4. Verify with a scoped `p4 reconcile -n`: anything it still finds is
 //      an unexpected mirror/depot mismatch and gets a loud warning.
+// An optional <commit> argument prepares only the slice of a stack up to that
+// commit, so you can ship part of a branch without checking the commit out.
 // gw never submits; review the CL and submit it from P4V.
 int cmdPrepare(const Args& args) {
     bool fullVerify = false;
     bool dryRun = false;
     std::string messageOverride;
+    std::string target = "HEAD";
+    bool targetSet = false;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--verify") {
             fullVerify = true;
@@ -105,12 +111,15 @@ int cmdPrepare(const Args& args) {
             dryRun = true;
         } else if (args[i] == "--message" && i + 1 < args.size()) {
             messageOverride = args[++i];
+        } else if (!args[i].empty() && args[i][0] != '-' && !targetSet) {
+            target = args[i];
+            targetSet = true;
         } else {
             std::fprintf(stderr, "gw prepare: unknown option '%s'\n",
                          args[i].c_str());
             std::fprintf(stderr,
-                         "usage: gw prepare [--message <text>] [--verify] "
-                         "[--dry-run]\n");
+                         "usage: gw prepare [<commit>] [--message <text>] "
+                         "[--verify] [--dry-run]\n");
             return 1;
         }
     }
@@ -144,19 +153,25 @@ int cmdPrepare(const Args& args) {
                      "first\n");
         return 1;
     }
-    auto ancestor = git::isAncestor(depotRef, "HEAD", root);
+    if (targetSet && !git::revParse(target, root)) {
+        std::fprintf(stderr,
+                     "gw prepare: '%s' is not a valid commit\n", target.c_str());
+        return 1;
+    }
+    auto ancestor = git::isAncestor(depotRef, target, root);
     if (!ancestor) {
         std::fprintf(stderr, "gw prepare: %s\n", ancestor.error().c_str());
         return 1;
     }
     if (!*ancestor) {
         std::fprintf(stderr,
-                     "gw prepare: HEAD is not based on the latest depot state - "
-                     "run 'gw import --rebase' to rebase onto it first\n");
+                     "gw prepare: %s is not based on the latest depot state - "
+                     "run 'gw import --rebase' to rebase onto it first\n",
+                     targetSet ? target.c_str() : "HEAD");
         return 1;
     }
 
-    auto changes = git::diffNameStatus(depotRef, "HEAD", root);
+    auto changes = git::diffNameStatus(depotRef, target, root);
     if (!changes) {
         std::fprintf(stderr, "gw prepare: %s\n", changes.error().c_str());
         return 1;
@@ -168,7 +183,8 @@ int cmdPrepare(const Args& args) {
     }
     if (ops->empty()) {
         std::printf("Nothing to prepare: no file changes between the depot "
-                    "baseline and HEAD.\n");
+                    "baseline and %s.\n",
+                    targetSet ? target.c_str() : "HEAD");
         return 0;
     }
 
@@ -176,13 +192,13 @@ int cmdPrepare(const Args& args) {
     // mapping (pure-Git directories like bin/ or content/) are not shipped to
     // P4; collect them for an informational note.
     struct Staged {
-        std::string repoRel;     // HEAD:repoRel is the source content
+        std::string repoRel;     // target:repoRel is the source content
         std::string mirrorPath;  // local mirror file to stage/open
     };
     struct MoveOp {
         std::string fromMirror;
         std::string toMirror;
-        std::string repoTo;      // HEAD:repoTo content for the destination
+        std::string repoTo;      // target:repoTo content for the destination
     };
     std::vector<Staged> edits;
     std::vector<Staged> adds;
@@ -294,7 +310,7 @@ int cmdPrepare(const Args& args) {
 
     std::string description = messageOverride;
     if (description.empty()) {
-        auto messages = git::commitMessages(depotRef, "HEAD", root);
+        auto messages = git::commitMessages(depotRef, target, root);
         if (!messages) {
             std::fprintf(stderr, "gw prepare: %s\n", messages.error().c_str());
             return 1;
@@ -373,7 +389,7 @@ int cmdPrepare(const Args& args) {
         auto result = p4::editFiles(*config, *cl, mirrorPathsOf(edits));
         if (!result) return fail(result.error());
         for (const auto& s : edits) {
-            auto staged = stageBlob(root, s.repoRel, s.mirrorPath);
+            auto staged = stageBlob(root, target, s.repoRel, s.mirrorPath);
             if (!staged) return fail(staged.error());
         }
     }
@@ -383,12 +399,12 @@ int cmdPrepare(const Args& args) {
         auto moved =
             p4::moveFile(*config, *cl, move.fromMirror, move.toMirror);
         if (!moved) return fail(moved.error());
-        auto staged = stageBlob(root, move.repoTo, move.toMirror);
+        auto staged = stageBlob(root, target, move.repoTo, move.toMirror);
         if (!staged) return fail(staged.error());
     }
     if (!adds.empty()) {
         for (const auto& s : adds) {
-            auto staged = stageBlob(root, s.repoRel, s.mirrorPath);
+            auto staged = stageBlob(root, target, s.repoRel, s.mirrorPath);
             if (!staged) return fail(staged.error());
         }
         auto result = p4::addFiles(*config, *cl, mirrorPathsOf(adds));
