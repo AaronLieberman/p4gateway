@@ -431,7 +431,9 @@ std::expected<std::string, std::string> moveFile(const Config& config,
 bool reconcileReportsClean(const std::string& output) {
     std::string lower = output;
     std::transform(lower.begin(), lower.end(), lower.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
     return lower.find("no file(s) to reconcile") != std::string::npos;
 }
 
