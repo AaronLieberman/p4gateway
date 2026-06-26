@@ -537,7 +537,7 @@ std::expected<void, std::string> itFeatureBranch(ItContext& it) {
 }
 
 std::expected<void, std::string> itPrepare(ItContext& it) {
-    auto out = runGw(it, it.repoDir, {"prepare"});
+    auto out = runGw(it, it.repoDir, {"prepare", "--verify"});
     if (!out) return std::unexpected(out.error());
 
     const std::string marker = "Created pending changelist ";
