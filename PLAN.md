@@ -132,6 +132,13 @@ conflict/abort) on Linux.
       matches the mirror, so opening them would ship a no-op edit. The target
       blob is compared byte-for-byte against the current mirror copy and equal
       ones are dropped before any file is opened.
+- [x] `gw prepare --shelf`: build a P4 shelf instead of a pending changelist.
+      Stages exactly as a normal prepare, runs `p4 shelve -c <CL>`, then
+      `p4 revert -w -c <CL>` to drop the opens (the `-w` deletes added files so
+      the mirror is fully restored), leaving only the shelf and an untouched
+      mirror. `gw integtest run` covers it (shelf has the branch's files, no
+      opens remain, the mirror is back at the depot head). **Needs a
+      real-workspace check** on a live server.
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
       rebase instead of creating a new one
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to

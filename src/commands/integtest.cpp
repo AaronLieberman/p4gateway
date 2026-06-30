@@ -536,6 +536,85 @@ std::expected<void, std::string> itFeatureBranch(ItContext& it) {
     return {};
 }
 
+// `gw prepare --shelf` on the feature branch must produce a shelf, leave no
+// files open, and restore the mirror to the depot head (added file gone, rename
+// undone). It runs before itPrepare on the same branch, so it cleans up the
+// shelf and its changelist afterwards to leave a clean slate.
+std::expected<void, std::string> itPrepareShelf(ItContext& it) {
+    auto out = runGw(it, it.repoDir, {"prepare", "--shelf"});
+    if (!out) return std::unexpected(out.error());
+
+    // The shelf lives on a changelist; grab its number.
+    const std::string marker = "Created pending changelist ";
+    const auto markerPos = out->find(marker);
+    if (markerPos == std::string::npos) {
+        return std::unexpected("prepare --shelf output has no changelist "
+                               "number:\n" + *out);
+    }
+    auto numberStart = markerPos + marker.size();
+    auto numberEnd = numberStart;
+    while (numberEnd < out->size() && std::isdigit((*out)[numberEnd])) {
+        ++numberEnd;
+    }
+    const std::string cl = out->substr(numberStart, numberEnd - numberStart);
+    if (cl.empty()) {
+        return std::unexpected("prepare --shelf output has no changelist "
+                               "number:\n" + *out);
+    }
+    if (out->find("Shelved changelist " + cl + " is ready") ==
+        std::string::npos) {
+        return std::unexpected("prepare --shelf did not report a shelved "
+                               "changelist:\n" + *out);
+    }
+
+    // The opens must be gone: --shelf reverts them after shelving.
+    auto opened = p4::openedFilesTagged(it.p4);
+    if (!opened) return std::unexpected(opened.error());
+    if (!opened->empty()) {
+        std::string message = "prepare --shelf left files open:\n";
+        for (const auto& o : *opened) {
+            message += "  " + o.action + " " + o.depotFile + "\n";
+        }
+        return std::unexpected(message);
+    }
+
+    // The shelf carries the branch's five changes (edit/add/delete/move pair).
+    auto described = trace(it, "p4 describe -S " + cl,
+                           p4::describeShelved(it.p4, cl));
+    if (!described) return std::unexpected(described.error());
+    auto shelf = parseShelveDescribe(*described);
+    if (!shelf) return std::unexpected(shelf.error());
+    if (shelf->files.size() != 5) {
+        return std::unexpected("expected 5 shelved files, got " +
+                               std::to_string(shelf->files.size()));
+    }
+
+    // The mirror is back at the depot head: the added file is gone, the rename
+    // is undone (util.h present, utils.h absent).
+    if (fs::exists(fs::path(it.mirrorDir) / "newfile.cpp")) {
+        return std::unexpected("prepare --shelf left the added newfile.cpp in "
+                               "the mirror");
+    }
+    if (!fs::exists(fs::path(it.mirrorDir) / "util.h")) {
+        return std::unexpected("prepare --shelf did not restore util.h in the "
+                               "mirror");
+    }
+    if (fs::exists(fs::path(it.mirrorDir) / "utils.h")) {
+        return std::unexpected("prepare --shelf left the renamed utils.h in the "
+                               "mirror");
+    }
+
+    // Discard the shelf and its now-empty changelist; itPrepare re-prepares the
+    // same branch as a normal pending CL next.
+    auto discarded = trace(it, "p4 shelve -d -c " + cl,
+                           p4::deleteShelve(it.p4, cl));
+    if (!discarded) return std::unexpected(discarded.error());
+    auto deleted = trace(it, "p4 change -d " + cl,
+                         p4::deleteChangelist(it.p4, cl));
+    if (!deleted) return std::unexpected(deleted.error());
+    return {};
+}
+
 std::expected<void, std::string> itPrepare(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"prepare", "--verify"});
     if (!out) return std::unexpected(out.error());
@@ -1028,6 +1107,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itFirstImport(it); });
         steps.emplace_back("feature branch: edit/add then delete/rename",
                            [&] { return itFeatureBranch(it); });
+        steps.emplace_back("gw prepare --shelf shelves and leaves no opens",
+                           [&] { return itPrepareShelf(it); });
         steps.emplace_back("gw prepare opens the exact expected files",
                            [&] { return itPrepare(it); });
         steps.emplace_back("submit, then gw import --rebase melts the branch",

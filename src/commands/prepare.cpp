@@ -85,6 +85,9 @@ constexpr const char* kPrepareUsage =
     "                        branch's commit messages\n"
     "  -n, --dry-run         Show the p4 operations a real run would perform and\n"
     "                        exit, touching neither P4 nor the mirror\n"
+    "      --shelf           Build a P4 shelf instead of a pending changelist:\n"
+    "                        stage, shelve, then revert the opens so only the\n"
+    "                        shelf remains and the mirror is left untouched\n"
     "      --verify          After staging, run a full 'p4 reconcile -n' over the\n"
     "                        whole subtree to catch unexpected mirror changes\n"
     "                        (scales with subtree size, not this change)\n"
@@ -170,10 +173,13 @@ std::expected<bool, std::string> stagedMatchesMirror(const std::string& root,
 //      an unexpected mirror/depot mismatch and gets a loud warning.
 // An optional <commit> argument prepares only the slice of a stack up to that
 // commit, so you can ship part of a branch without checking the commit out.
-// gw never submits; review the CL and submit it from P4V.
+// gw never submits; review the CL and submit it from P4V. With --shelf the same
+// staging produces a P4 shelf instead: gw shelves the staged content and then
+// reverts the opens, so only the shelf remains and the mirror is left untouched.
 int cmdPrepare(const Args& args) {
     bool fullVerify = false;
     bool dryRun = false;
+    bool shelf = false;
     std::string messageOverride;
     std::string target = "HEAD";
     bool targetSet = false;
@@ -183,6 +189,8 @@ int cmdPrepare(const Args& args) {
             return 0;
         } else if (args[i] == "--verify") {
             fullVerify = true;
+        } else if (args[i] == "--shelf") {
+            shelf = true;
         } else if (args[i] == "--dry-run" || args[i] == "-n") {
             dryRun = true;
         } else if ((args[i] == "--message" || args[i] == "-m") &&
@@ -468,10 +476,17 @@ int cmdPrepare(const Args& args) {
     // planning, the opened-files guard). Show exactly which p4 operations a
     // real run would open, and touch neither P4 nor the mirror.
     if (dryRun) {
-        std::printf("[dry-run] would create a pending changelist and open:\n");
+        if (shelf) {
+            std::printf("[dry-run] would create a shelf from (open, shelve, then "
+                        "revert):\n");
+        } else {
+            std::printf("[dry-run] would create a pending changelist and "
+                        "open:\n");
+        }
         printPlannedOps();
         std::printf("\n[dry-run] no changes made. Rerun without --dry-run to "
-                    "create the changelist and open these files.\n");
+                    "create the %s.\n",
+                    shelf ? "shelf" : "changelist and open these files");
         return 0;
     }
 
@@ -580,6 +595,36 @@ int cmdPrepare(const Args& args) {
         }
         std::printf("(For a full check that also catches unexpected changes "
                     "elsewhere in the subtree, rerun with --verify.)\n");
+    }
+
+    if (shelf) {
+        // Shelve the staged content, then revert the opens so the workspace is
+        // left clean: the mirror returns to the depot head and the changelist
+        // keeps only the shelf (no open files). Staging had to touch the mirror
+        // to give p4 something to shelve, but the revert undoes it, so the net
+        // effect on the working tree is nothing.
+        auto shelved = p4::shelve(*config, *cl);
+        if (!shelved) return fail(shelved.error());
+        auto reverted = p4::revertChangelist(*config, *cl);
+        if (!reverted) {
+            std::fprintf(stderr,
+                         "gw prepare: shelved changelist %s, but reverting the "
+                         "opened files failed: %s\n",
+                         cl->c_str(), reverted.error().c_str());
+            std::fprintf(stderr,
+                         "The shelf exists, but the mirror still holds the "
+                         "staged content and the files remain open. Run "
+                         "'p4 revert -c %s <depot_path>' to restore the "
+                         "mirror.\n",
+                         cl->c_str());
+            return 1;
+        }
+        std::printf("\nShelved changelist %s is ready - unshelve or review it "
+                    "from P4V (or: p4 unshelve -s %s).\nThe mirror and working "
+                    "tree are unchanged. Reconstruct it in Git any time with "
+                    "'gw shelf import %s'.\n",
+                    cl->c_str(), cl->c_str(), cl->c_str());
+        return 0;
     }
 
     std::printf("\nChangelist %s is ready - review and submit it from P4V "

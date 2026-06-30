@@ -254,6 +254,15 @@ std::expected<std::string, std::string> syncForce(const Config& config,
 std::expected<std::string, std::string> revert(const Config& config,
                                                const std::string& pathSpec);
 
+// `p4 revert -w -c <cl> <depot_path>...` scoped to the configured mappings:
+// reverts exactly the files this CL opened under the subtree, restoring the
+// mirror to the depot head and clearing the open state (`-w` also deletes files
+// that were opened for add, which a plain revert would leave behind). Used by
+// `gw prepare --shelf` to leave only the shelf behind. Nothing opened is
+// success.
+std::expected<std::string, std::string> revertChangelist(const Config& config,
+                                                         const std::string& cl);
+
 // `p4 reconcile -c <cl> <pathSpec>` - the real thing, unlike
 // reconcilePreview; nothing to reconcile is success with empty output.
 std::expected<std::string, std::string> reconcileToCl(const Config& config,

@@ -780,6 +780,23 @@ std::expected<std::string, std::string> revert(const Config& config,
     return result;
 }
 
+std::expected<std::string, std::string> revertChangelist(const Config& config,
+                                                         const std::string& cl) {
+    // -w so files opened for add are deleted from the mirror on revert (a plain
+    // revert leaves them behind as strays); edits and deletes are restored from
+    // the depot head. Scope to the configured depot paths so we revert only this
+    // CL's files under the mirror, never an unscoped sweep of the workspace.
+    std::vector<std::string> args{"revert", "-w", "-c", cl};
+    for (const auto& mapping : config.mappings) {
+        args.push_back(mapping.depotPath);
+    }
+    auto result = run(config, args);
+    if (!result && result.error().find("not opened") != std::string::npos) {
+        return std::string{};
+    }
+    return result;
+}
+
 std::expected<std::string, std::string> reconcileToCl(const Config& config,
                                                       const std::string& cl,
                                                       const std::string& pathSpec) {
