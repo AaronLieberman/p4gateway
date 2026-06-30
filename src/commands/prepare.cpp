@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <expected>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,6 +108,53 @@ std::expected<std::string, std::string> stageBlob(const std::string& root,
         fs::permissions(dest, fs::perms::owner_write, fs::perm_options::add, ec);
     }
     return git::catBlobToFile(commit, repoRel, dest, root);
+}
+
+// Byte-for-byte comparison of two files. A side that cannot be opened (e.g. a
+// missing mirror file) compares unequal - the safe answer, since it keeps the
+// edit rather than silently dropping a real change.
+bool fileBytesEqual(const fs::path& a, const fs::path& b) {
+    std::ifstream fa(a, std::ios::binary);
+    std::ifstream fb(b, std::ios::binary);
+    if (!fa || !fb) return false;
+    char bufA[8192];
+    char bufB[8192];
+    while (true) {
+        fa.read(bufA, sizeof bufA);
+        fb.read(bufB, sizeof bufB);
+        const std::streamsize na = fa.gcount();
+        const std::streamsize nb = fb.gcount();
+        if (na != nb) return false;
+        if (na == 0) break;
+        if (std::memcmp(bufA, bufB, static_cast<size_t>(na)) != 0) return false;
+    }
+    return true;
+}
+
+// True when the content of `commit:repoRel` is byte-identical to the file
+// already in the mirror at `mirrorPath` - i.e. opening it for edit would put a
+// no-op into the changelist. This happens when a file is changed early in the
+// branch and reverted back to the depot content later: the endpoint git diff
+// still lists it (its blob differs from the baseline's), yet the staged content
+// matches what P4 already has, so the edit ships nothing. Such edits are dropped
+// so they never enter the CL. The target blob is written to a temp file (the
+// byte-exact path, since captured stdout is not binary-safe on Windows) and
+// compared against the current mirror copy.
+std::expected<bool, std::string> stagedMatchesMirror(const std::string& root,
+                                                     const std::string& commit,
+                                                     const std::string& repoRel,
+                                                     const std::string& mirrorPath) {
+    std::error_code ec;
+    if (!fs::exists(mirrorPath, ec)) return false;  // no counterpart: a real edit
+    const fs::path tmp = fs::temp_directory_path() / "p4gw_prepare_cmp.tmp";
+    auto blob = git::catBlobToFile(commit, repoRel, tmp.string(), root);
+    if (!blob) {
+        fs::remove(tmp, ec);
+        return std::unexpected(blob.error());
+    }
+    const bool equal = fileBytesEqual(tmp, mirrorPath);
+    fs::remove(tmp, ec);
+    return equal;
 }
 
 }  // namespace
@@ -292,21 +342,57 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
 
+    // Drop edits whose staged content already matches the mirror: a file
+    // changed and then reverted within the branch still shows up in the
+    // endpoint git diff, but opening it would put a no-op into the changelist.
+    // Reading the mirror and writing the comparison blob to a temp file is
+    // read-only with respect to P4 and the mirror, so this is safe before the
+    // --dry-run cutoff below.
+    std::vector<std::string> unchanged;
+    {
+        std::vector<Staged> realEdits;
+        realEdits.reserve(edits.size());
+        for (auto& e : edits) {
+            auto same = stagedMatchesMirror(root, target, e.repoRel, e.mirrorPath);
+            if (!same) {
+                std::fprintf(stderr, "gw prepare: %s\n", same.error().c_str());
+                return 1;
+            }
+            if (*same) {
+                unchanged.push_back(e.repoRel);
+            } else {
+                realEdits.push_back(std::move(e));
+            }
+        }
+        edits = std::move(realEdits);
+    }
+
     if (edits.empty() && adds.empty() && deletes.empty() && moves.empty()) {
-        std::printf("Nothing to prepare: the changed files are all outside the "
-                    "configured p4 mappings (pure Git).\n");
+        if (!unchanged.empty()) {
+            std::printf("Nothing to prepare: the changed files match the depot "
+                        "already (changed then reverted within the branch).\n");
+        } else {
+            std::printf("Nothing to prepare: the changed files are all outside "
+                        "the configured p4 mappings (pure Git).\n");
+        }
         return 0;
     }
 
     // Prints the p4 operations this prepare maps to (and the pure-Git files it
     // skips). Shared by the --dry-run preview and the post-apply confirmation,
     // so both read identically.
+    auto isUnchanged = [&](const std::string& path) {
+        return std::find(unchanged.begin(), unchanged.end(), path) !=
+               unchanged.end();
+    };
     auto printPlannedOps = [&]() {
         for (const auto& op : *ops) {
             const bool srcMapped = routeFor(resolved, op.path) != nullptr;
             switch (op.kind) {
             case P4Op::Kind::Edit:
-                if (srcMapped) std::printf("  edit    %s\n", op.path.c_str());
+                if (srcMapped && !isUnchanged(op.path)) {
+                    std::printf("  edit    %s\n", op.path.c_str());
+                }
                 break;
             case P4Op::Kind::Add:
                 if (srcMapped) std::printf("  add     %s\n", op.path.c_str());
@@ -329,6 +415,15 @@ int cmdPrepare(const Args& args) {
                         unmapped.size());
             for (const auto& path : unmapped) {
                 std::printf("  skip    %s\n", path.c_str());
+            }
+        }
+        if (!unchanged.empty()) {
+            std::printf("\n%zu changed file(s) already match the depot (changed "
+                        "then reverted within the branch) and were NOT added to "
+                        "the changelist:\n",
+                        unchanged.size());
+            for (const auto& path : unchanged) {
+                std::printf("  same    %s\n", path.c_str());
             }
         }
     };

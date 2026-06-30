@@ -126,6 +126,12 @@ conflict/abort) on Linux.
       first with shelved ones flagged, to pick one for `shelf import`.
       `parseChanges` is pure/unit-tested; `gw integtest run` asserts a freshly
       shelved CL shows up flagged.
+- [x] `gw prepare` skips files that were changed earlier in the branch and
+      reverted back to the depot content: the endpoint git diff still lists
+      them (their blob differs from the baseline's), but the staged content
+      matches the mirror, so opening them would ship a no-op edit. The target
+      blob is compared byte-for-byte against the current mirror copy and equal
+      ones are dropped before any file is opened.
 - [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
       rebase instead of creating a new one
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to
