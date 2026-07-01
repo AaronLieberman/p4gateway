@@ -6,53 +6,44 @@
 
 namespace p4gw {
 
-// One depot subtree this Git repo overlays, and where its files live on both
-// sides of the mirror boundary. A repo can declare several of these (one per
-// `include` line) so a single Git tree can ship more than one depot subtree -
-// e.g. `src/` and `config/`. The starter `.gitignore` is an allowlist that
-// tracks only the mapped subtrees; unmapped directories (`bin/`, `content/`,
-// other depot content synced in place) stay out of Git unless re-included by
-// hand (`!/dir/`). See buildGitignore.
-struct Mapping {
+// One line of the p4gw.cfg view - an `include` that maps a depot subtree into
+// the mirror, or an `exclude` that carves one back out. The list mirrors a p4
+// client view: rules are kept in declaration order and resolved *later-wins*
+// per path (see effectiveRuleFor*), so an `include` after an `exclude` can map
+// a deeper subtree back in (the win64/linux re-include pattern) exactly the way
+// a later p4 view line overrides an earlier one.
+struct ViewRule {
+    // false = `include` (maps depotPath into the mirror); true = `exclude`
+    // (carves depotPath out - the client view drops it or syncs it in place,
+    // and gw gitignores it and ships nothing through it).
+    bool exclude = false;
+
     // Depot path of the subtree, e.g. "//depot/yourproject/src/...". Ends with
-    // "/...". Used to scope every p4 operation so we never touch (or crawl)
-    // the rest of the workspace.
+    // "/...". Every p4 operation is scoped to the include rules' depot paths so
+    // we never touch (or crawl) the rest of the workspace.
     std::string depotPath;
 
     // Directory the client view remaps `depotPath` into - p4's staging area,
     // which p4 syncs and gw reads/writes. Always lives under the repo's single
     // `.p4gw` container; relative values resolve against the directory holding
-    // the p4gw.cfg file. Example: ".p4gw/src".
+    // the p4gw.cfg file. Example: ".p4gw/src". Empty for an `exclude`.
     std::string mirrorPath;
 
-    // Working-tree directory the mirror feeds, derived from `mirrorPath` by
-    // dropping its leading `.p4gw` container component: ".p4gw/src" -> "src",
-    // ".p4gw" -> "" (the whole repo). Forward slashes; no trailing slash.
+    // Working-tree directory this rule governs (forward slashes, no trailing
+    // slash). For an include it is `mirrorPath` with its leading `.p4gw`
+    // container component dropped (".p4gw/src" -> "src", ".p4gw" -> "" i.e. the
+    // whole repo). For an exclude it is the carved-out subtree relative to the
+    // enclosing include (an exclude of "//d/src/lib/..." under a "src" include
+    // -> "src/lib").
     std::string repoSubtree;
-
-    // Depot subtrees *under* this mapping that are deliberately carved out of
-    // the mirror: the client view either drops them (a `-` line) or syncs them
-    // in place into the repo working tree, the same as unmapped depot content
-    // (`bin/`, `content/`). gw gitignores them and never ships them through the
-    // mirror. Each ends with "/..." and lies strictly under `depotPath`. Source
-    // of an `exclude` line in p4gw.cfg. Example: a `src` mapping that excludes
-    // "//depot/yourproject/src/thirdparty/...".
-    std::vector<std::string> excludedDepotPaths;
-
-    // The same carve-outs as repo-relative working-tree subtrees (forward
-    // slashes, no trailing slash), derived from `excludedDepotPaths`:
-    // "//depot/yourproject/src/thirdparty/..." under repoSubtree "src" ->
-    // "src/thirdparty". buildGitignore re-excludes these even though they live
-    // under a tracked mapped subtree.
-    std::vector<std::string> excludedSubtrees;
 };
 
 // Project configuration, loaded from a `p4gw.cfg` file at the root of the Git
 // overlay repo. Simple `key = value` lines; `#` starts a comment.
 struct Config {
-    // The depot subtrees this repo overlays, in declaration order. At least
-    // one is required (a config with none fails to load).
-    std::vector<Mapping> mappings;
+    // The view rules (include/exclude), in declaration order. At least one
+    // `include` is required (a config with none fails to load).
+    std::vector<ViewRule> rules;
 
     // P4 client (workspace) name. Empty means use the ambient P4CLIENT.
     std::string client;
@@ -69,6 +60,32 @@ struct Config {
     // and any carve-out re-exclusions.
     std::vector<std::string> ignorePatterns;
 };
+
+// The `include` rules of `rules`, in declaration order. Most consumers only
+// need the mapped subtrees (per-mirror sync, p4 scoping); this hands them just
+// those, skipping the `exclude` carve-outs. Pure; unit-tested.
+std::vector<const ViewRule*> includeRules(const std::vector<ViewRule>& rules);
+
+// The depot paths of the `exclude` rules of `rules`, in declaration order (each
+// ends "/..."). Used to exempt intentional in-place / dropped view lines from
+// the view check. Pure; unit-tested.
+std::vector<std::string> excludeDepotPaths(const std::vector<ViewRule>& rules);
+
+// The rule that governs a depot file, resolved later-wins: the *last* rule (in
+// declaration order, not longest-prefix) whose depot path is a prefix of
+// `depotFile`. nullptr if no rule covers it. An include result means the file
+// maps to the mirror; an exclude result means it is carved out. Pure;
+// unit-tested.
+const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
+                                      const std::string& depotFile);
+
+// The rule that governs a repo-relative working-tree path, resolved later-wins:
+// the *last* rule whose `repoSubtree` is a prefix of `repoRel` (an empty
+// subtree, i.e. a whole-repo include, matches everything). nullptr if none.
+// "Tracked / shipped through the mirror" iff the result is an include. Pure;
+// unit-tested.
+const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
+                                     const std::string& repoRel);
 
 // Loads configuration from `path`. Unknown keys are an error so typos
 // surface immediately.
@@ -94,9 +111,9 @@ std::string resolveMirrorPath(const std::string& mirrorPath,
 // Forward slashes, no trailing slash. Pure; unit-tested.
 std::string mirrorRepoSubtree(const std::string& mirrorPath);
 
-// Repo-relative working-tree subtree of a depot path carved out of a mapping:
+// Repo-relative working-tree subtree of a depot path carved out of an include:
 // the part of `excludeDepotPath` below `mappingDepotPath`, prefixed by the
-// mapping's `repoSubtree`. ("//d/src/...", "src", "//d/src/lib/...") -> "src/lib";
+// include's `repoSubtree`. ("//d/src/...", "src", "//d/src/lib/...") -> "src/lib";
 // ("//d/...", "", "//d/lib/...") -> "lib". Empty when `excludeDepotPath` is not
 // strictly under `mappingDepotPath`. Forward slashes, no trailing slash. Pure;
 // unit-tested.
@@ -109,15 +126,15 @@ std::string excludedRepoSubtree(const std::string& mappingDepotPath,
 // unmapped P4 content synced in place, the `.p4gw` mirror, and gw's own
 // personal config - stays out of Git. The result is an allowlist: ignore
 // everything at the root, then re-include exactly each mapped working-tree
-// subtree (and `.gitignore` itself). A whole-repo mapping (empty repoSubtree)
-// has nothing unmapped to hide, so it falls back to a plain denylist of just
-// the gw-managed paths. Any `excludedSubtrees` are re-excluded afterwards
-// (`/src/thirdparty/`) so a carved-out directory under a tracked subtree stays
-// out of Git, the same as unmapped depot content. Any `ignorePatterns` (from
-// `ignore` lines in p4gw.cfg) are appended last, verbatim, so they ignore files
-// P4 skips that would otherwise be tracked under a mapped subtree. Pure;
-// unit-tested.
-std::string buildGitignore(const std::vector<Mapping>& mappings,
+// subtree (and `.gitignore` itself), applying the ordered include/exclude rules
+// later-wins so an `exclude` carves a directory back out (`/src/lib/`) and a
+// deeper re-`include` maps part of it back in (`!/src/lib/public/win64/`). A
+// whole-repo include (empty repoSubtree) has nothing unmapped to hide, so it
+// falls back to a plain denylist of just the gw-managed paths, still honoring
+// any `exclude` carve-outs. Any `ignorePatterns` (from `ignore` lines in
+// p4gw.cfg) are appended last, verbatim, so they ignore files P4 skips that
+// would otherwise be tracked under a mapped subtree. Pure; unit-tested.
+std::string buildGitignore(const std::vector<ViewRule>& rules,
                            const std::vector<std::string>& ignorePatterns = {});
 
 // The hidden Git ref that tracks pristine depot state - the `origin/main`

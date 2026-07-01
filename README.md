@@ -184,13 +184,17 @@ to check.
 include = //depot/yourproject/src/...     .p4gw/src
 include = //depot/yourproject/config/...  .p4gw/config
 
-# Optional 'exclude' lines carve a depot subtree out of the 'include' above
-# them. The client view either drops it (a '-' line) or syncs it in place,
-# and gw keeps it out of the mirror and gitignores it - exactly like unmapped
-# depot content (bin/, content/), even though it lives under a mapped subtree.
-# Each must end in '/...' and lie under its include's depot path.
+# 'include' and 'exclude' lines form an ordered view, resolved later-wins per
+# path - just like a p4 client view. An 'exclude' carves a depot subtree out of
+# an earlier 'include': the client view drops it (a '-' line) or syncs it in
+# place, and gw keeps it out of the mirror and gitignores it - exactly like
+# unmapped depot content (bin/, content/), even though it lives under a mapped
+# subtree. Intermix them freely, and a later 'include' deeper than an 'exclude'
+# maps that part back into the mirror (the win64-yes-linux-no pattern). Each
+# path ends in '/...'; each exclude must fall under a preceding include.
 exclude = //depot/yourproject/src/thirdparty/...
-exclude = //depot/yourproject/src/devtools/...
+exclude = //depot/yourproject/src/lib/...
+include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win64
 
 # Optional 'ignore' lines add extra .gitignore patterns (verbatim gitignore
 # syntax), one per line. The allowlist tracks a whole mapped subtree, but P4
@@ -212,9 +216,12 @@ baseline_branch = main
 `p4gw.cfg` is personal (it names your client); the starter `.gitignore` is an
 allowlist — `/*` then a `!/src/` line per include — so Git tracks only the
 mapped subtrees and everything else (the `.p4gw/` mirror, `p4gw.cfg` itself,
-and any unmapped depot content that synced in place) stays out of Git. Each
-`exclude` line adds a matching re-exclusion (e.g. `/src/thirdparty/`) so a
-carved-out directory under a mapped subtree stays out of Git too. Each `ignore`
+and any unmapped depot content that synced in place) stays out of Git. The
+include/exclude rules are applied to the allowlist in order, later-wins: each
+`exclude` adds a matching re-exclusion (e.g. `/src/thirdparty/`) so a carved-out
+directory stays out of Git, and a deeper re-`include` opens part of it back up
+(`!/src/lib/public/win64/`) — the same nesting Git itself understands. Each
+`ignore`
 line appends its pattern verbatim after the allowlist, so files P4 skips (build
 output, IDE state) that would otherwise be tracked under a mapped subtree stay
 out of Git. To keep a directory that is Git-only (never in P4), add a
@@ -240,3 +247,10 @@ A subtree need not sync as one solid block. Two patterns are supported:
   directory. (This holds even when the repo sits at the client root, where a
   generic "maps into the repo" check can't fire because everything syncs under
   the root.)
+- **Re-including part of an excluded directory.** When you *do* want a slice of
+  a carved-out subtree back — keep `src/lib/public/win64/` while the rest of
+  `src/lib/` stays out — follow the `exclude` with a deeper `include` that maps
+  it into a nested mirror (`.p4gw/src/lib/public/win64`). Because the rules are
+  ordered and resolved later-wins, exactly like the p4 view they parallel, the
+  deeper include overrides the exclude for just that subtree; gw tracks it,
+  ships it, and the surrounding `src/lib/` stays carved out.

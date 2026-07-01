@@ -138,20 +138,20 @@ int shelfImport(const Args& args) {
         return 1;
     }
 
-    // Map a shelved depot file to its working-tree path through whichever
-    // mapping owns it; returns false for files under no mapping.
+    // Map a shelved depot file to its working-tree path through the include
+    // that effectively owns it (later-wins over the ordered rules, so a
+    // re-included subtree resolves to its own include). Returns false for files
+    // under no include or under an `exclude` carve-out.
     auto locate = [&](const std::string& depotFile,
                       std::string& repoRel) -> bool {
-        for (const auto& mapping : config->mappings) {
-            const std::string rel =
-                p4::depotRelativePath(mapping.depotPath, depotFile);
-            if (rel.empty()) continue;
-            repoRel = mapping.repoSubtree.empty()
-                          ? rel
-                          : mapping.repoSubtree + "/" + rel;
-            return true;
-        }
-        return false;
+        const ViewRule* rule = effectiveRuleForDepot(config->rules, depotFile);
+        if (rule == nullptr || rule->exclude) return false;
+        const std::string rel =
+            p4::depotRelativePath(rule->depotPath, depotFile);
+        if (rel.empty()) return false;
+        repoRel = rule->repoSubtree.empty() ? rel
+                                            : rule->repoSubtree + "/" + rel;
+        return true;
     };
 
     const std::string branch =

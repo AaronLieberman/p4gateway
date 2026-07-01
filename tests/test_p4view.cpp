@@ -442,6 +442,63 @@ TEST(view_check_passes_when_remap_is_not_last_but_unshadowed) {
     CHECK(problems.empty());
 }
 
+TEST(view_check_reinclude_mirror_exempts_parent_mirror_line) {
+    // Checking a re-include whose mirror nests inside the parent's mirror: the
+    // parent's broad remap lands in the parent mirror, which is under the repo
+    // prefix. Passing the parent mirror's client prefix exempts it, so it is
+    // not mistaken for a repo leak while checking the nested include.
+    const std::string win64Mirror = "//c/project/src/.p4gw/lib/public/win64/...";
+    const std::string repoPrefix = "//c/project/src/";
+    const std::vector<p4gw::p4::ViewLine> view = {
+        {"//depot/project/src/...", "//c/project/src/.p4gw/...", false, false},
+        {"//depot/project/src/lib/...", "//c/project/src/.p4gw/lib/...", true,
+         false},
+        {"//depot/project/src/lib/public/win64/...",
+         "//c/project/src/.p4gw/lib/public/win64/...", false, false},
+    };
+    const std::vector<std::string> parentMirror{"//c/project/src/.p4gw/"};
+    const auto problems = p4gw::p4::checkViewMapping(
+        view, "//depot/project/src/lib/public/win64/...", win64Mirror,
+        repoPrefix, {}, parentMirror);
+    for (const auto& problem : problems) {
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
+    }
+    CHECK(problems.empty());
+
+    // Without the parent-mirror exemption the parent's remap line trips the
+    // "maps into the repo" rule.
+    const auto flagged = p4gw::p4::checkViewMapping(
+        view, "//depot/project/src/lib/public/win64/...", win64Mirror,
+        repoPrefix);
+    CHECK(!flagged.empty());
+}
+
+TEST(check_spec_mapping_exempts_sibling_mirrors) {
+    // A repo that maps two subtrees into one shared .p4gw container, with the
+    // repo a sub-directory of the client root (so the repo prefix is active).
+    // Checking one include must not flag the other's mirror line.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/src/... //c/project/.p4gw/src/...\n"
+        "\t//depot/project/config/... //c/project/.p4gw/config/...\n";
+    const std::vector<std::string> otherMirrors{"/work/project/.p4gw/config"};
+    const auto good = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work/project",
+        "/work/project/.p4gw/src", {}, otherMirrors);
+    for (const auto& problem : good) {
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
+    }
+    CHECK(good.empty());
+
+    // Without naming the sibling mirror, its line looks like a repo leak.
+    const auto flagged = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work/project",
+        "/work/project/.p4gw/src");
+    CHECK(!flagged.empty());
+}
+
 TEST(check_spec_mapping_requires_client_and_root) {
     const auto problems = p4gw::p4::checkSpecMapping(
         "View:\n\t//a/... //c/a/...\n", "//a/...", "/r", "/m");

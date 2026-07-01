@@ -49,6 +49,13 @@ std::vector<std::string> tokenize(const std::string& value) {
     return tokens;
 }
 
+// "//depot/x/..." -> "//depot/x/" so a prefix test is anchored at a path
+// boundary ("//d/src/" must not match "//d/srclib/").
+std::string stripDepotWildcard(const std::string& path) {
+    if (path.ends_with("...")) return path.substr(0, path.size() - 3);
+    return path;
+}
+
 }  // namespace
 
 std::string mirrorRepoSubtree(const std::string& mirrorPath) {
@@ -67,19 +74,52 @@ std::string mirrorRepoSubtree(const std::string& mirrorPath) {
 std::string excludedRepoSubtree(const std::string& mappingDepotPath,
                                 const std::string& repoSubtree,
                                 const std::string& excludeDepotPath) {
-    // Drop the trailing "..." but keep the slash so prefix tests are anchored
-    // at a path boundary (".../src/" must not match ".../srclib/").
-    auto stripWildcard = [](std::string p) {
-        if (p.ends_with("...")) p.resize(p.size() - 3);
-        return p;
-    };
-    const std::string base = stripWildcard(mappingDepotPath);   // //d/src/
-    const std::string excl = stripWildcard(excludeDepotPath);   // //d/src/lib/
+    const std::string base = stripDepotWildcard(mappingDepotPath);  // //d/src/
+    const std::string excl = stripDepotWildcard(excludeDepotPath);  // //d/src/lib/
     if (excl.size() <= base.size() || !excl.starts_with(base)) return {};
     std::string rel = excl.substr(base.size());                 // lib/  or  a/b/
     while (!rel.empty() && rel.back() == '/') rel.pop_back();    // lib   or  a/b
     if (rel.empty()) return repoSubtree;
     return repoSubtree.empty() ? rel : repoSubtree + "/" + rel;
+}
+
+std::vector<const ViewRule*> includeRules(const std::vector<ViewRule>& rules) {
+    std::vector<const ViewRule*> includes;
+    for (const auto& rule : rules) {
+        if (!rule.exclude) includes.push_back(&rule);
+    }
+    return includes;
+}
+
+std::vector<std::string> excludeDepotPaths(const std::vector<ViewRule>& rules) {
+    std::vector<std::string> paths;
+    for (const auto& rule : rules) {
+        if (rule.exclude) paths.push_back(rule.depotPath);
+    }
+    return paths;
+}
+
+const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
+                                      const std::string& depotFile) {
+    const ViewRule* effective = nullptr;
+    for (const auto& rule : rules) {
+        if (depotFile.starts_with(stripDepotWildcard(rule.depotPath))) {
+            effective = &rule;  // later declaration wins
+        }
+    }
+    return effective;
+}
+
+const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
+                                     const std::string& repoRel) {
+    const ViewRule* effective = nullptr;
+    for (const auto& rule : rules) {
+        const std::string& sub = rule.repoSubtree;
+        const bool matches =
+            sub.empty() || repoRel == sub || repoRel.starts_with(sub + "/");
+        if (matches) effective = &rule;  // later declaration wins
+    }
+    return effective;
 }
 
 namespace {
@@ -102,6 +142,12 @@ std::vector<std::string> pathComponents(const std::string& p) {
     return parts;
 }
 
+bool isStrictAncestor(const std::vector<std::string>& anc,
+                      const std::vector<std::string>& desc) {
+    if (anc.size() >= desc.size()) return false;
+    return std::equal(anc.begin(), anc.end(), desc.begin());
+}
+
 const std::string kGwDenylist =
     "# gw's local config - personal, never goes to Git or P4\n"
     "p4gw.cfg\n"
@@ -111,52 +157,65 @@ const std::string kGwDenylist =
     "\n# gw's mirror directory - P4-managed, not for Git\n"
     ".p4gw/\n";
 
+// A working-tree subtree named in the config and whether it is (last-wins)
+// tracked (an include) or carved out (an exclude).
+struct Boundary {
+    std::string subtree;             // forward slashes, no trailing slash
+    std::vector<std::string> comps;  // subtree split into components
+    bool tracked;                    // include (true) vs exclude (false)
+};
+
 }  // namespace
 
-std::string buildGitignore(const std::vector<Mapping>& mappings,
+std::string buildGitignore(const std::vector<ViewRule>& rules,
                            const std::vector<std::string>& ignorePatterns) {
-    // Distinct mapped working-tree subtrees, in declaration order. An empty
-    // subtree means a mapping covers the whole repo.
-    std::vector<std::string> subtrees;
+    // Collapse the ordered rules to one decision per distinct working-tree
+    // subtree, resolved later-wins: the last rule naming a subtree decides
+    // whether it is tracked (include) or carved out (exclude). First-seen order
+    // is kept for deterministic emission. An empty subtree is a whole-repo
+    // include, handled separately below.
+    std::vector<Boundary> boundaries;
     bool wholeRepoMapped = false;
-    for (const auto& m : mappings) {
-        if (m.repoSubtree.empty()) {
-            wholeRepoMapped = true;
+    for (const auto& rule : rules) {
+        if (rule.repoSubtree.empty()) {
+            if (!rule.exclude) wholeRepoMapped = true;
             continue;
         }
-        if (std::find(subtrees.begin(), subtrees.end(), m.repoSubtree) ==
-            subtrees.end()) {
-            subtrees.push_back(m.repoSubtree);
+        auto it = std::find_if(boundaries.begin(), boundaries.end(),
+                               [&](const Boundary& b) {
+                                   return b.subtree == rule.repoSubtree;
+                               });
+        if (it == boundaries.end()) {
+            boundaries.push_back({rule.repoSubtree,
+                                  pathComponents(rule.repoSubtree),
+                                  !rule.exclude});
+        } else {
+            it->tracked = !rule.exclude;  // later rule wins
         }
     }
 
-    // Distinct carved-out subtrees across all mappings, in declaration order.
-    // These are directories under a mapped subtree that the user excluded from
-    // the mirror (an `exclude` line); they sync in place / are unsynced and
-    // must stay out of Git, so they get re-excluded after the allowlist below.
-    std::vector<std::string> excludedSubtrees;
-    for (const auto& m : mappings) {
-        for (const auto& ex : m.excludedSubtrees) {
-            if (ex.empty()) continue;
-            if (std::find(excludedSubtrees.begin(), excludedSubtrees.end(),
-                          ex) == excludedSubtrees.end()) {
-                excludedSubtrees.push_back(ex);
-            }
-        }
-    }
-
-    // Re-excludes the carved-out subtrees, e.g. "/src/thirdparty/". Appended to
-    // whichever body is built below: in the allowlist they re-exclude a tracked
-    // subtree's children; in the denylist they ignore an otherwise-tracked dir.
+    // Re-excludes the plain carved-out subtrees (an `exclude` with no deeper
+    // re-include), e.g. "/src/thirdparty/". A carve-out that *does* have a
+    // re-included descendant is emitted as an intermediate in the allowlist
+    // body instead (see below), so it is skipped here.
     auto appendExclusions = [&](std::string& out) {
-        if (excludedSubtrees.empty()) return;
+        std::vector<std::string> plain;
+        for (const auto& b : boundaries) {
+            if (b.tracked) continue;
+            const bool hasReinclude =
+                std::any_of(boundaries.begin(), boundaries.end(),
+                            [&](const Boundary& o) {
+                                return o.tracked &&
+                                       isStrictAncestor(b.comps, o.comps);
+                            });
+            if (!hasReinclude) plain.push_back(b.subtree);
+        }
+        if (plain.empty()) return;
         out += "\n# Directories under a mapped subtree that are carved out of "
                "the mirror\n# (an 'exclude' line): they sync in place / are "
                "unsynced, like unmapped\n# depot content, so Git ignores "
                "them.\n";
-        for (const auto& ex : excludedSubtrees) {
-            out += "/" + ex + "/\n";
-        }
+        for (const auto& sub : plain) out += "/" + sub + "/\n";
     };
 
     // Extra ignore patterns from p4gw.cfg `ignore` lines, appended verbatim.
@@ -171,41 +230,46 @@ std::string buildGitignore(const std::vector<Mapping>& mappings,
         for (const auto& p : ignorePatterns) out += p + "\n";
     };
 
-    // A whole-repo mapping leaves nothing unmapped to hide, so an allowlist
+    // A whole-repo include leaves nothing unmapped to hide, so an allowlist
     // would only ignore the repo's own content. Fall back to a plain denylist
     // of the gw-managed paths (personal config + the mirror container), plus
     // any carved-out directories.
-    if (wholeRepoMapped || subtrees.empty()) {
+    const bool anyTracked =
+        std::any_of(boundaries.begin(), boundaries.end(),
+                    [](const Boundary& b) { return b.tracked; });
+    if (wholeRepoMapped || !anyTracked) {
         std::string out = kGwDenylist;
         appendExclusions(out);
         appendExtra(out);
         return out;
     }
 
-    // The mapped subtrees as component vectors. Drop any nested under another
-    // mapped subtree: the ancestor's re-include already exposes it, and a
-    // redundant child line would be re-excluded by the ancestor's `/dir/*`.
-    std::vector<std::vector<std::string>> leaves;
-    for (const auto& s : subtrees) leaves.push_back(pathComponents(s));
-    auto isAncestor = [](const std::vector<std::string>& anc,
-                         const std::vector<std::string>& desc) {
-        if (anc.size() >= desc.size()) return false;
-        return std::equal(anc.begin(), anc.end(), desc.begin());
-    };
-    std::vector<std::vector<std::string>> kept;
-    for (const auto& leaf : leaves) {
-        bool nested = false;
-        for (const auto& other : leaves) {
-            if (&other != &leaf && isAncestor(other, leaf)) {
-                nested = true;
-                break;
+    // Keep each tracked subtree unless a *tracked* boundary already contains it
+    // (its ancestor tracks it whole, so a redundant child line would only force
+    // a `/dir/*` that re-excludes the rest). A tracked subtree whose nearest
+    // enclosing boundary is an *exclude* is a genuine re-include and is kept, so
+    // its ancestor chain re-opens a path back into a carved-out directory.
+    auto nearestBoundary = [&](const std::vector<std::string>& comps)
+        -> const Boundary* {
+        const Boundary* best = nullptr;
+        for (const auto& b : boundaries) {
+            if (!isStrictAncestor(b.comps, comps)) continue;
+            if (best == nullptr || b.comps.size() > best->comps.size()) {
+                best = &b;
             }
         }
-        if (!nested) kept.push_back(leaf);
+        return best;
+    };
+    std::vector<std::vector<std::string>> kept;
+    for (const auto& b : boundaries) {
+        if (!b.tracked) continue;
+        const Boundary* anc = nearestBoundary(b.comps);
+        if (anc != nullptr && anc->tracked) continue;  // already covered
+        kept.push_back(b.comps);
     }
 
     // Every directory that must appear in the file: each kept subtree plus all
-    // of its ancestors. A directory is a "leaf" when it is exactly a mapped
+    // of its ancestors. A directory is a "leaf" when it is exactly a tracked
     // subtree (tracked whole); ancestors are intermediate (we re-include the
     // dir but re-exclude its other children). Recorded in first-seen order so
     // emission is deterministic.
@@ -251,7 +315,9 @@ std::string buildGitignore(const std::vector<Mapping>& mappings,
 
     // Emit by depth: at each level re-include the needed directories, then
     // re-exclude the children of any intermediate one, so the next (deeper)
-    // level's re-includes show only the mapped descendants through.
+    // level's re-includes show only the mapped descendants through. An
+    // intermediate is either an ancestor of a tracked leaf or a carved-out
+    // directory that has a re-included descendant; both need `/dir/*`.
     size_t maxDepth = 0;
     for (const auto& d : dirs) maxDepth = std::max(maxDepth, d.components.size());
     for (size_t depth = 1; depth <= maxDepth; ++depth) {
@@ -263,8 +329,8 @@ std::string buildGitignore(const std::vector<Mapping>& mappings,
                 out += join(d.components) + "/*\n";
     }
     // The allowlist re-includes each mapped subtree whole (`!/src/`); a later
-    // `/src/thirdparty/` line then carves the excluded directories back out.
-    // Git applies the patterns in order, so these must come last.
+    // `/src/thirdparty/` line then carves the (plain) excluded directories back
+    // out. Git applies the patterns in order, so these must come last.
     appendExclusions(out);
     appendExtra(out);
     return out;
@@ -300,37 +366,37 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                     where + ": 'include' takes two values: "
                     "<depot_path> <mirror_path>");
             }
-            Mapping mapping;
-            mapping.depotPath = tokens[0];
-            mapping.mirrorPath = tokens[1];
-            mapping.repoSubtree = mirrorRepoSubtree(tokens[1]);
-            if (!mapping.depotPath.ends_with("/...")) {
+            ViewRule rule;
+            rule.exclude = false;
+            rule.depotPath = tokens[0];
+            rule.mirrorPath = tokens[1];
+            rule.repoSubtree = mirrorRepoSubtree(tokens[1]);
+            if (!rule.depotPath.ends_with("/...")) {
                 return std::unexpected(
-                    where + ": depot path '" + mapping.depotPath +
+                    where + ": depot path '" + rule.depotPath +
                     "' must end with '/...'");
             }
-            for (const auto& existing : config.mappings) {
-                if (existing.depotPath == mapping.depotPath) {
+            for (const auto& existing : config.rules) {
+                if (existing.exclude) continue;
+                if (existing.depotPath == rule.depotPath) {
                     return std::unexpected(where + ": depot path '" +
-                                           mapping.depotPath +
+                                           rule.depotPath +
                                            "' is mapped twice");
                 }
-                if (existing.mirrorPath == mapping.mirrorPath) {
+                if (existing.mirrorPath == rule.mirrorPath) {
                     return std::unexpected(where + ": mirror path '" +
-                                           mapping.mirrorPath +
-                                           "' is used by two mappings");
+                                           rule.mirrorPath +
+                                           "' is used by two includes");
                 }
             }
-            config.mappings.push_back(std::move(mapping));
+            config.rules.push_back(std::move(rule));
         } else if (key == "exclude") {
-            // An `exclude` carves a depot subtree out of the most recently
-            // declared mapping: the client view drops it or syncs it in place,
-            // and gw gitignores it rather than mirroring it.
-            if (config.mappings.empty()) {
-                return std::unexpected(
-                    where + ": 'exclude' must follow the 'include' it carves "
-                    "out of");
-            }
+            // An `exclude` carves a depot subtree out of an earlier `include`.
+            // Rules are ordered and resolved later-wins (like a p4 view), so an
+            // exclude may appear in any position and binds to the *enclosing*
+            // include - the last prior include whose depot path strictly
+            // contains it. gw gitignores the carve-out and ships nothing
+            // through it (the client view drops it or syncs it in place).
             const auto tokens = tokenize(value);
             if (tokens.size() != 1) {
                 return std::unexpected(
@@ -341,23 +407,31 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                 return std::unexpected(where + ": exclude path '" + excludePath +
                                        "' must end with '/...'");
             }
-            Mapping& owner = config.mappings.back();
-            const std::string subtree = excludedRepoSubtree(
-                owner.depotPath, owner.repoSubtree, excludePath);
+            std::string subtree;
+            for (auto it = config.rules.rbegin(); it != config.rules.rend();
+                 ++it) {
+                if (it->exclude) continue;
+                subtree = excludedRepoSubtree(it->depotPath, it->repoSubtree,
+                                              excludePath);
+                if (!subtree.empty()) break;
+            }
             if (subtree.empty()) {
                 return std::unexpected(
                     where + ": exclude path '" + excludePath +
-                    "' is not strictly under its mapping's depot path '" +
-                    owner.depotPath + "'");
+                    "' is not strictly under any preceding 'include' depot "
+                    "path");
             }
-            if (std::find(owner.excludedDepotPaths.begin(),
-                          owner.excludedDepotPaths.end(),
-                          excludePath) != owner.excludedDepotPaths.end()) {
-                return std::unexpected(where + ": exclude path '" + excludePath +
-                                       "' is listed twice");
+            for (const auto& existing : config.rules) {
+                if (existing.exclude && existing.depotPath == excludePath) {
+                    return std::unexpected(where + ": exclude path '" +
+                                           excludePath + "' is listed twice");
+                }
             }
-            owner.excludedDepotPaths.push_back(excludePath);
-            owner.excludedSubtrees.push_back(subtree);
+            ViewRule rule;
+            rule.exclude = true;
+            rule.depotPath = excludePath;
+            rule.repoSubtree = subtree;
+            config.rules.push_back(std::move(rule));
         } else if (key == "client") {
             config.client = value;
         } else if (key == "baseline_branch") {
@@ -380,7 +454,7 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
         }
     }
 
-    if (config.mappings.empty()) {
+    if (includeRules(config.rules).empty()) {
         return std::unexpected(path + ": no 'include' lines - add at least one "
                                "('gw setup' writes the template). Format: "
                                "include = //depot/yourproject/src/... .p4gw/src");

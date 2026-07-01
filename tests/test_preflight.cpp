@@ -67,6 +67,19 @@ TEST(parse_tagged_opened_empty_is_empty) {
     CHECK(p4gw::p4::parseTaggedOpened("").empty());
 }
 
+namespace {
+
+// A rule for the filter tests - only exclude/depotPath drive the effective
+// resolution filterExcludedOpens uses.
+p4gw::ViewRule rule(bool exclude, const std::string& depot) {
+    p4gw::ViewRule r;
+    r.exclude = exclude;
+    r.depotPath = depot;
+    return r;
+}
+
+}  // namespace
+
 TEST(filter_excluded_opens_drops_files_under_an_exclude) {
     // The reported case: vendored libs/pdbs the user edits directly in P4 are
     // open under src/lib (an excluded subtree). gw ships nothing through the
@@ -78,15 +91,36 @@ TEST(filter_excluded_opens_drops_files_under_an_exclude) {
         {"//depot/project/main/src/thirdparty/zlib/zlib.h", "edit"},
         {"//depot/project/main/src/core/main.cpp", "edit"},
     };
-    const std::vector<std::string> excludes = {
-        "//depot/project/main/src/lib/...",
-        "//depot/project/main/src/thirdparty/...",
-        "//depot/project/main/src/devtools/...",
+    const std::vector<p4gw::ViewRule> rules = {
+        rule(false, "//depot/project/main/src/..."),
+        rule(true, "//depot/project/main/src/lib/..."),
+        rule(true, "//depot/project/main/src/thirdparty/..."),
+        rule(true, "//depot/project/main/src/devtools/..."),
     };
-    const auto kept = p4gw::p4::filterExcludedOpens(opened, excludes);
+    const auto kept = p4gw::p4::filterExcludedOpens(opened, rules);
     CHECK(kept.size() == 1);
     if (kept.size() == 1) {
         CHECK(kept[0].depotFile == "//depot/project/main/src/core/main.cpp");
+    }
+}
+
+TEST(filter_excluded_opens_keeps_reincluded_subtree_under_an_exclude) {
+    // win64 is re-included beneath the excluded lib: later-wins keeps its opens
+    // shippable, while the rest of lib stays dropped.
+    const std::vector<p4gw::p4::OpenedFile> opened = {
+        {"//depot/project/main/src/lib/other/a.cpp", "edit"},
+        {"//depot/project/main/src/lib/public/win64/keep.cpp", "edit"},
+    };
+    const std::vector<p4gw::ViewRule> rules = {
+        rule(false, "//depot/project/main/src/..."),
+        rule(true, "//depot/project/main/src/lib/..."),
+        rule(false, "//depot/project/main/src/lib/public/win64/..."),
+    };
+    const auto kept = p4gw::p4::filterExcludedOpens(opened, rules);
+    CHECK(kept.size() == 1);
+    if (kept.size() == 1) {
+        CHECK(kept[0].depotFile ==
+              "//depot/project/main/src/lib/public/win64/keep.cpp");
     }
 }
 
@@ -95,7 +129,10 @@ TEST(filter_excluded_opens_with_no_excludes_keeps_all) {
         {"//depot/project/main/src/lib/x.lib", "edit"},
         {"//depot/project/main/src/core/y.cpp", "edit"},
     };
-    CHECK(p4gw::p4::filterExcludedOpens(opened, {}).size() == 2);
+    const std::vector<p4gw::ViewRule> rules = {
+        rule(false, "//depot/project/main/src/..."),
+    };
+    CHECK(p4gw::p4::filterExcludedOpens(opened, rules).size() == 2);
 }
 
 TEST(filter_excluded_opens_anchors_at_path_boundary) {
@@ -103,8 +140,11 @@ TEST(filter_excluded_opens_anchors_at_path_boundary) {
     const std::vector<p4gw::p4::OpenedFile> opened = {
         {"//depot/project/main/src/libutil/x.cpp", "edit"},
     };
-    const auto kept = p4gw::p4::filterExcludedOpens(
-        opened, {"//depot/project/main/src/lib/..."});
+    const std::vector<p4gw::ViewRule> rules = {
+        rule(false, "//depot/project/main/src/..."),
+        rule(true, "//depot/project/main/src/lib/..."),
+    };
+    const auto kept = p4gw::p4::filterExcludedOpens(opened, rules);
     CHECK(kept.size() == 1);
 }
 

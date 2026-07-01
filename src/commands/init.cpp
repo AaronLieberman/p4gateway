@@ -113,12 +113,20 @@ int cmdInit(const Args& args) {
         return 1;
     }
     std::vector<p4::ViewProblem> problems;
-    for (const auto& mapping : config->mappings) {
+    const auto includes = includeRules(config->rules);
+    const auto allExcludes = excludeDepotPaths(config->rules);
+    for (const auto* rule : includes) {
         const std::string mirrorDir =
-            resolveMirrorPath(mapping.mirrorPath, root);
+            resolveMirrorPath(rule->mirrorPath, root);
+        std::vector<std::string> otherMirrors;
+        for (const auto* other : includes) {
+            if (other != rule) {
+                otherMirrors.push_back(
+                    resolveMirrorPath(other->mirrorPath, root));
+            }
+        }
         const auto mappingProblems = p4::checkSpecMapping(
-            *spec, mapping.depotPath, root, mirrorDir,
-            mapping.excludedDepotPaths);
+            *spec, rule->depotPath, root, mirrorDir, allExcludes, otherMirrors);
         problems.insert(problems.end(), mappingProblems.begin(),
                         mappingProblems.end());
     }
@@ -160,7 +168,7 @@ int cmdInit(const Args& args) {
         return 1;
     }
     std::printf("ok    client view maps all %zu include(s) into the mirror\n",
-                config->mappings.size());
+                includes.size());
 
     const fs::path gitDir = fs::path(root) / ".git";
     if (forceGitInit && fs::exists(gitDir)) {
@@ -242,9 +250,9 @@ int cmdInit(const Args& args) {
     // out `.p4gw` subtree p4 syncs into). Mappings share one container, so
     // dedupe to a single entry in the common case.
     std::vector<std::string> mirrorEntries;
-    for (const auto& mapping : config->mappings) {
+    for (const auto* rule : includes) {
         const std::string mirrorDir =
-            resolveMirrorPath(mapping.mirrorPath, root);
+            resolveMirrorPath(rule->mirrorPath, root);
         std::error_code ec;
         const fs::path rel = fs::relative(mirrorDir, root, ec);
         if (ec || rel.empty() || rel.begin()->string() == "..") continue;
@@ -260,14 +268,23 @@ int cmdInit(const Args& args) {
     // as `/src/thirdparty/`. buildGitignore writes these for a fresh allowlist;
     // for an existing .gitignore we append any that are missing below.
     std::vector<std::string> excludeEntries;
-    for (const auto& mapping : config->mappings) {
-        for (const auto& sub : mapping.excludedSubtrees) {
-            if (sub.empty()) continue;
-            const std::string entry = "/" + sub + "/";
-            if (std::find(excludeEntries.begin(), excludeEntries.end(),
-                          entry) == excludeEntries.end()) {
-                excludeEntries.push_back(entry);
-            }
+    for (const auto& rule : config->rules) {
+        if (!rule.exclude || rule.repoSubtree.empty()) continue;
+        // A carve-out with a deeper re-`include` is not a plain re-exclusion
+        // (that would hide the re-included subtree); buildGitignore handles it
+        // as a nested allowlist. Only append the plain carve-outs here.
+        const bool hasReinclude =
+            std::any_of(config->rules.begin(), config->rules.end(),
+                        [&](const ViewRule& o) {
+                            return !o.exclude &&
+                                   o.repoSubtree.starts_with(
+                                       rule.repoSubtree + "/");
+                        });
+        if (hasReinclude) continue;
+        const std::string entry = "/" + rule.repoSubtree + "/";
+        if (std::find(excludeEntries.begin(), excludeEntries.end(), entry) ==
+            excludeEntries.end()) {
+            excludeEntries.push_back(entry);
         }
     }
 
@@ -277,7 +294,7 @@ int cmdInit(const Args& args) {
         {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
-            file << buildGitignore(config->mappings, config->ignorePatterns);
+            file << buildGitignore(config->rules, config->ignorePatterns);
         }
         std::printf("Wrote starter .gitignore\n");
         wroteGitignore = true;
@@ -359,9 +376,9 @@ int cmdInit(const Args& args) {
         }
     }
 
-    for (const auto& mapping : config->mappings) {
+    for (const auto* rule : includes) {
         const std::string mirrorDir =
-            resolveMirrorPath(mapping.mirrorPath, root);
+            resolveMirrorPath(rule->mirrorPath, root);
         if (fs::exists(mirrorDir)) {
             std::printf("Mirror directory exists: %s\n", mirrorDir.c_str());
         } else {

@@ -20,48 +20,36 @@ namespace p4gw {
 
 namespace {
 
-// A mapping with its mirror directory resolved to an absolute path.
+// An include rule with its mirror directory resolved to an absolute path.
 struct ResolvedMapping {
-    const Mapping* mapping;
+    const ViewRule* rule;
     std::string mirrorDir;
 };
 
-// The mapping that owns a repo-relative path: the one whose repoSubtree is the
-// longest matching prefix (an empty subtree, i.e. the whole repo, is the
-// catch-all). Returns nullptr for paths under no mapping (pure Git files like
-// bin/ or content/) and for paths under a mapping's carved-out `exclude`
-// subtree (those sync in place / are unsynced and never ship through gw).
+// The include that owns a repo-relative path, resolved later-wins over the
+// ordered rules: the effective rule for the path must be an include, and it is
+// routed to that include's mirror. Returns nullptr for paths under no rule
+// (pure Git files like bin/ or content/) and for paths whose effective rule is
+// an `exclude` carve-out (those sync in place / are unsynced and never ship
+// through gw) - including a directory re-included under an excluded parent,
+// which resolves back to its own include.
 const ResolvedMapping* routeFor(const std::vector<ResolvedMapping>& resolved,
+                                const std::vector<ViewRule>& rules,
                                 const std::string& repoRel) {
-    const ResolvedMapping* best = nullptr;
-    size_t bestLen = 0;
+    const ViewRule* eff = effectiveRuleForRepo(rules, repoRel);
+    if (eff == nullptr || eff->exclude) return nullptr;
     for (const auto& r : resolved) {
-        const std::string& sub = r.mapping->repoSubtree;
-        const bool matches =
-            sub.empty() || repoRel.starts_with(sub + "/");
-        if (!matches) continue;
-        // Prefer the most specific subtree; an empty subtree wins only when
-        // nothing more specific matches.
-        const size_t len = sub.empty() ? 0 : sub.size() + 1;
-        if (best == nullptr || len > bestLen) {
-            best = &r;
-            bestLen = len;
-        }
+        if (r.rule == eff) return &r;
     }
-    if (best != nullptr) {
-        for (const auto& ex : best->mapping->excludedSubtrees) {
-            if (repoRel == ex || repoRel.starts_with(ex + "/")) return nullptr;
-        }
-    }
-    return best;
+    return nullptr;
 }
 
-// Local path of a repo-relative file inside its mapping's mirror, for p4
-// commands: the path with the mapping's subtree prefix stripped, rooted at the
+// Local path of a repo-relative file inside its include's mirror, for p4
+// commands: the path with the include's subtree prefix stripped, rooted at the
 // mirror directory.
 std::string mirrorFilePath(const ResolvedMapping& route,
                            const std::string& repoRel) {
-    const std::string& sub = route.mapping->repoSubtree;
+    const std::string& sub = route.rule->repoSubtree;
     const std::string within =
         sub.empty() ? repoRel : repoRel.substr(sub.size() + 1);
     return (fs::path(route.mirrorDir) / fs::path(within)).make_preferred()
@@ -214,8 +202,8 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
     std::vector<ResolvedMapping> resolved;
-    for (const auto& mapping : config->mappings) {
-        const std::string mirrorDir = resolveMirrorPath(mapping.mirrorPath, root);
+    for (const auto* rule : includeRules(config->rules)) {
+        const std::string mirrorDir = resolveMirrorPath(rule->mirrorPath, root);
         if (!fs::exists(mirrorDir)) {
             std::fprintf(stderr,
                          "gw prepare: mirror directory %s does not exist - "
@@ -223,7 +211,7 @@ int cmdPrepare(const Args& args) {
                          mirrorDir.c_str());
             return 1;
         }
-        resolved.push_back({&mapping, mirrorDir});
+        resolved.push_back({rule, mirrorDir});
     }
 
     // Everything ships relative to the pristine depot baseline - the hidden
@@ -293,27 +281,27 @@ int cmdPrepare(const Args& args) {
     for (const auto& op : *ops) {
         switch (op.kind) {
         case P4Op::Kind::Edit: {
-            const auto* route = routeFor(resolved, op.path);
+            const auto* route = routeFor(resolved, config->rules, op.path);
             if (route) edits.push_back({op.path, mirrorFilePath(*route, op.path)});
             else unmapped.push_back(op.path);
             break;
         }
         case P4Op::Kind::Add: {
-            const auto* route = routeFor(resolved, op.path);
+            const auto* route = routeFor(resolved, config->rules, op.path);
             if (route) adds.push_back({op.path, mirrorFilePath(*route, op.path)});
             else unmapped.push_back(op.path);
             break;
         }
         case P4Op::Kind::Delete: {
-            const auto* route = routeFor(resolved, op.path);
+            const auto* route = routeFor(resolved, config->rules, op.path);
             if (route) deletes.push_back(mirrorFilePath(*route, op.path));
             else unmapped.push_back(op.path);
             break;
         }
         case P4Op::Kind::Move: {
-            const auto* from = routeFor(resolved, op.path);
-            const auto* to = routeFor(resolved, op.newPath);
-            if (from && to && from->mapping == to->mapping) {
+            const auto* from = routeFor(resolved, config->rules, op.path);
+            const auto* to = routeFor(resolved, config->rules, op.newPath);
+            if (from && to && from->rule == to->rule) {
                 moves.push_back({mirrorFilePath(*from, op.path),
                                  mirrorFilePath(*to, op.newPath), op.newPath});
             } else if (!from && !to) {
@@ -395,7 +383,7 @@ int cmdPrepare(const Args& args) {
     };
     auto printPlannedOps = [&]() {
         for (const auto& op : *ops) {
-            const bool srcMapped = routeFor(resolved, op.path) != nullptr;
+            const bool srcMapped = routeFor(resolved, config->rules, op.path) != nullptr;
             switch (op.kind) {
             case P4Op::Kind::Edit:
                 if (srcMapped && !isUnchanged(op.path)) {
@@ -409,7 +397,7 @@ int cmdPrepare(const Args& args) {
                 if (srcMapped) std::printf("  delete  %s\n", op.path.c_str());
                 break;
             case P4Op::Kind::Move:
-                if (srcMapped || routeFor(resolved, op.newPath)) {
+                if (srcMapped || routeFor(resolved, config->rules, op.newPath)) {
                     std::printf("  move    %s -> %s\n", op.path.c_str(),
                                 op.newPath.c_str());
                 }

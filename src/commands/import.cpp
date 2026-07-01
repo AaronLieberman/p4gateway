@@ -74,8 +74,8 @@ int cmdImport(const Args& args) {
         std::fprintf(stderr, "gw import: %s\n", config.error().c_str());
         return 1;
     }
-    for (const auto& mapping : config->mappings) {
-        const std::string mirrorDir = resolveMirrorPath(mapping.mirrorPath, root);
+    for (const auto* rule : includeRules(config->rules)) {
+        const std::string mirrorDir = resolveMirrorPath(rule->mirrorPath, root);
         if (!fs::exists(mirrorDir)) {
             std::fprintf(stderr,
                          "gw import: mirror directory %s does not exist.\n"
@@ -269,16 +269,16 @@ int cmdImport(const Args& args) {
     // and tally for the summary.
     size_t copiedFiles = 0;
     size_t deletedFiles = 0;
-    for (const auto& mapping : config->mappings) {
+    for (const auto* rule : includeRules(config->rules)) {
         const std::string mirrorDir =
-            resolveMirrorPath(mapping.mirrorPath, root);
+            resolveMirrorPath(rule->mirrorPath, root);
         const std::string subtreePrefix =
-            mapping.repoSubtree.empty() ? std::string{}
-                                        : mapping.repoSubtree + "/";
+            rule->repoSubtree.empty() ? std::string{}
+                                      : rule->repoSubtree + "/";
         const std::string worktreeDir =
-            mapping.repoSubtree.empty()
+            rule->repoSubtree.empty()
                 ? root
-                : (fs::path(root) / mapping.repoSubtree).string();
+                : (fs::path(root) / rule->repoSubtree).string();
 
         progress("Listing mirror files under " + mirrorDir + "...");
         auto mirrorFiles = mirror::listFiles(mirrorDir);
@@ -290,13 +290,13 @@ int cmdImport(const Args& args) {
         // synced; strays are ignored so they never land in the baseline. A
         // failed `p4 have` is an error (don't mistake it for "everything is a
         // stray"); an empty result is legitimately nothing synced.
-        progress("Querying p4 have for " + mapping.depotPath + "...");
-        auto haveDepot = p4::haveFiles(*config, mapping.depotPath);
+        progress("Querying p4 have for " + rule->depotPath + "...");
+        auto haveDepot = p4::haveFiles(*config, rule->depotPath);
         if (!haveDepot) return fail(haveDepot.error());
         std::unordered_set<std::string> haveRel;
         for (const auto& depotFile : *haveDepot) {
             std::string rel =
-                p4::depotRelativePath(mapping.depotPath, depotFile);
+                p4::depotRelativePath(rule->depotPath, depotFile);
             if (!rel.empty()) haveRel.insert(std::move(rel));
         }
         std::vector<std::string> mirrorTracked;
@@ -321,7 +321,7 @@ int cmdImport(const Args& args) {
         std::vector<mirror::OpenedMirrorFile> openedMirror;
         for (const auto& o : *opened) {
             std::string rel =
-                p4::depotRelativePath(mapping.depotPath, o.depotFile);
+                p4::depotRelativePath(rule->depotPath, o.depotFile);
             if (rel.empty()) continue;  // belongs to a different mapping
             openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
         }
@@ -335,7 +335,7 @@ int cmdImport(const Args& args) {
         const size_t toScan = plan.actions.copies.size();
         const size_t toDelete = plan.actions.deletes.size();
         if (toScan != 0 || toDelete != 0 || !plan.depotReads.empty()) {
-            progress("Importing " + mapping.depotPath + " (" +
+            progress("Importing " + rule->depotPath + " (" +
                      std::to_string(toScan) + " mirror file(s) to scan, " +
                      std::to_string(toDelete) + " to delete)...");
         }
@@ -347,7 +347,7 @@ int cmdImport(const Args& args) {
 
         // Restore depot-head content for files open in the mirror.
         if (!plan.depotReads.empty()) {
-            std::string depotBase = mapping.depotPath;
+            std::string depotBase = rule->depotPath;
             if (depotBase.ends_with("...")) {
                 depotBase.resize(depotBase.size() - 3);
             }

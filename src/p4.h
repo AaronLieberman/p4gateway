@@ -55,12 +55,17 @@ std::vector<ViewLine> parseClientView(const std::string& spec);
 // the repo is the client root); and any other line whose client side falls
 // under `repoClientPrefix` (the Git repo's location, e.g. "//client/src/"; pass
 // empty to skip) but not under the mirror. Either way P4 must never write into
-// a Git-tracked path. Returns the problems found; empty means consistent.
+// a Git-tracked path. `extraMirrorPrefixes` are the client-side prefixes of the
+// config's *other* mirrors (a repo can map several subtrees, and a re-`include`
+// nests one mirror inside another): a line landing in any of them is a mirror
+// mapping, not a repo leak, so it is exempt too. Returns the problems found;
+// empty means consistent.
 std::vector<ViewProblem> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
     const std::string& repoClientPrefix,
-    const std::vector<std::string>& excludedDepotPaths = {});
+    const std::vector<std::string>& excludedDepotPaths = {},
+    const std::vector<std::string>& extraMirrorPrefixes = {});
 
 // The minimal set of depot paths that cover all of `excludePaths`: duplicates
 // removed and any path strictly under another in the set dropped (excluding the
@@ -82,12 +87,16 @@ std::string clientViewPath(const std::string& clientName,
 // must map into the mirror directory and nothing may map into the repo
 // directory. `excludedDepotPaths` are subtrees the config carves out of the
 // mirror (synced in place / gitignored), whose in-place view lines are exempt
-// from the repo-mapping rule. Returns the problems found; empty means
-// consistent.
+// from the repo-mapping rule. `otherMirrorDirs` are the config's *other* mirror
+// directories (from other includes / re-includes); their client-side prefixes
+// are exempted too, so a repo that maps several subtrees - or nests one mirror
+// inside another via a re-include - does not flag its sibling mirrors as repo
+// leaks. Returns the problems found; empty means consistent.
 std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
     const std::string& repoDir, const std::string& mirrorDir,
-    const std::vector<std::string>& excludedDepotPaths = {});
+    const std::vector<std::string>& excludedDepotPaths = {},
+    const std::vector<std::string>& otherMirrorDirs = {});
 
 // ---- wrappers over the p4 CLI ----
 
@@ -189,14 +198,16 @@ struct OpenedFile {
 // Parses `p4 -ztag opened` output into per-file records (pure; unit-tested).
 std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput);
 
-// Drops opened files that lie under an excluded depot subtree (an `exclude`
-// line): those are gitignored / synced in place, so gw mirrors and ships
-// nothing through them and must ignore P4 opens under them - they belong to the
-// user's own P4 work, not a gw changelist. Each `excludedDepotPaths` entry ends
-// in "/...". Pure; unit-tested.
+// Keeps only opened files whose effective (later-wins) rule is an `include`.
+// A file whose governing rule is an `exclude` - or that no rule covers - is
+// gitignored / synced in place, so gw mirrors and ships nothing through it and
+// must ignore P4 opens on it: those belong to the user's own P4 work, not a gw
+// changelist. Resolving through the ordered rules (not a flat exclude list) is
+// what keeps a re-`include`d subtree under an excluded parent (win64 under an
+// excluded lib) correctly shippable. Pure; unit-tested.
 std::vector<OpenedFile> filterExcludedOpens(
     const std::vector<OpenedFile>& opened,
-    const std::vector<std::string>& excludedDepotPaths);
+    const std::vector<ViewRule>& rules);
 
 // Repo-relative path (forward slashes) of `depotFile` within the `depotPath`
 // subtree ("//.../..."), or empty if it is not under it (pure).

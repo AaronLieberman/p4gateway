@@ -178,7 +178,8 @@ std::vector<ViewProblem> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
     const std::string& repoClientPrefix,
-    const std::vector<std::string>& excludedDepotPaths) {
+    const std::vector<std::string>& excludedDepotPaths,
+    const std::vector<std::string>& extraMirrorPrefixes) {
     std::vector<ViewProblem> problems;
 
     // The mirror typically lives inside the repo (the recommended `.p4gw`),
@@ -187,6 +188,19 @@ std::vector<ViewProblem> checkViewMapping(
     // repo" check below while still catching every other line.
     const std::string mirrorPrefix = stripWildcard(expectedClientPath);
     const std::string depotBase = stripWildcard(depotPath);  // ends with '/'
+
+    // A client path that lands in this include's mirror or any sibling mirror
+    // (another mapped subtree, or a re-include whose mirror nests inside this
+    // one) is a mirror mapping, not a repo leak.
+    auto intoAnyMirror = [&](const std::string& clientBase) {
+        if (!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix)) {
+            return true;
+        }
+        for (const auto& prefix : extraMirrorPrefixes) {
+            if (!prefix.empty() && clientBase.starts_with(prefix)) return true;
+        }
+        return false;
+    };
 
     // A depot path lies under one of the carved-out exclude subtrees, so its
     // in-place client mapping is intentional (the config gitignores it).
@@ -211,9 +225,8 @@ std::vector<ViewProblem> checkViewMapping(
         // A `-` line removes content (never writes into the repo), a line into
         // the mirror is the whole point, and a declared exclude is intentional:
         // none of these need flagging.
-        const bool intoMirror =
-            !mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix);
-        if (line.exclude || intoMirror || underExclude(lineBase)) continue;
+        if (line.exclude || intoAnyMirror(clientBase) || underExclude(lineBase))
+            continue;
 
         // A line strictly under the mapped subtree that lands anywhere but the
         // mirror diverts part of depotPath out of it - typically an in-place
@@ -308,7 +321,8 @@ std::string clientViewPath(const std::string& clientName,
 std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
     const std::string& repoDir, const std::string& mirrorDir,
-    const std::vector<std::string>& excludedDepotPaths) {
+    const std::vector<std::string>& excludedDepotPaths,
+    const std::vector<std::string>& otherMirrorDirs) {
     const std::string clientName = specField(spec, "Client");
     const std::string clientRoot = specField(spec, "Root");
     if (clientName.empty() || clientRoot.empty()) {
@@ -323,8 +337,18 @@ std::vector<ViewProblem> checkSpecMapping(
     }
     const std::string repoPrefix =
         clientViewPath(clientName, clientRoot, repoDir, "/");
+    // Client-side prefixes of the config's other mirrors, so sibling and nested
+    // (re-include) mirrors are not mistaken for repo leaks. A mirror outside the
+    // client root has no client path; skip it.
+    std::vector<std::string> extraMirrorPrefixes;
+    for (const auto& other : otherMirrorDirs) {
+        const std::string prefix =
+            clientViewPath(clientName, clientRoot, other, "/");
+        if (!prefix.empty()) extraMirrorPrefixes.push_back(prefix);
+    }
     return checkViewMapping(parseClientView(spec), depotPath,
-                            expectedClientPath, repoPrefix, excludedDepotPaths);
+                            expectedClientPath, repoPrefix, excludedDepotPaths,
+                            extraMirrorPrefixes);
 }
 
 std::expected<std::string, std::string> info(const Config& config) {
@@ -440,8 +464,8 @@ bool reconcileReportsClean(const std::string& output) {
 std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     std::vector<std::string> args = clientArgs(config);
     args.insert(args.end(), {"reconcile", "-n"});
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath);
+    for (const auto* rule : includeRules(config.rules)) {
+        args.push_back(rule->depotPath);
     }
     auto result = p4gw::run("p4", args);
     if (!result) {
@@ -489,8 +513,8 @@ std::expected<std::string, std::string> reconcilePreviewFiles(
 
 std::expected<std::string, std::string> latestSubmittedCl(const Config& config) {
     std::vector<std::string> args{"changes", "-m1", "-s", "submitted"};
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath + "#have");
+    for (const auto* rule : includeRules(config.rules)) {
+        args.push_back(rule->depotPath + "#have");
     }
     auto result = run(config, args);
     if (!result) {
@@ -561,8 +585,8 @@ std::expected<std::string, std::string> changes(const Config& config,
         args.push_back("-c");
         args.push_back(client);
     }
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath);
+    for (const auto* rule : includeRules(config.rules)) {
+        args.push_back(rule->depotPath);
     }
     return run(config, args);
 }
@@ -638,19 +662,14 @@ bool isAddAction(const std::string& action) {
 
 std::vector<OpenedFile> filterExcludedOpens(
     const std::vector<OpenedFile>& opened,
-    const std::vector<std::string>& excludedDepotPaths) {
+    const std::vector<ViewRule>& rules) {
     std::vector<OpenedFile> kept;
     for (const auto& file : opened) {
-        bool excluded = false;
-        for (const auto& ex : excludedDepotPaths) {
-            // stripWildcard keeps the trailing '/', anchoring the prefix at a
-            // path boundary (".../lib/" must not match ".../libutil/...").
-            if (file.depotFile.starts_with(stripWildcard(ex))) {
-                excluded = true;
-                break;
-            }
-        }
-        if (!excluded) kept.push_back(file);
+        // The effective rule resolves the ordered include/exclude lines
+        // later-wins, so a re-included subtree under an excluded parent is kept
+        // while the excluded parent itself is dropped.
+        const ViewRule* rule = effectiveRuleForDepot(rules, file.depotFile);
+        if (rule != nullptr && !rule->exclude) kept.push_back(file);
     }
     return kept;
 }
@@ -659,8 +678,8 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     const Config& config) {
     std::vector<std::string> args = clientArgs(config);
     args.insert(args.end(), {"-ztag", "opened"});
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath);
+    for (const auto* rule : includeRules(config.rules)) {
+        args.push_back(rule->depotPath);
     }
     auto result = p4gw::run("p4", args);
     if (!result) {
@@ -673,17 +692,12 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
         return std::unexpected(commandLine(args) + " failed:\n" +
                                result->output);
     }
-    // `p4 opened` is scoped to the depot path, so it includes files open under
-    // excluded subtrees (vendored libs the user edits directly in P4). Those
-    // are not part of any gw changelist, so drop them - otherwise prepare's
-    // opened-files preflight would refuse to run on account of the user's own
-    // unrelated P4 work.
-    std::vector<std::string> excludes;
-    for (const auto& mapping : config.mappings) {
-        excludes.insert(excludes.end(), mapping.excludedDepotPaths.begin(),
-                        mapping.excludedDepotPaths.end());
-    }
-    return filterExcludedOpens(parseTaggedOpened(result->output), excludes);
+    // `p4 opened` is scoped to the include depot paths, so it also reports files
+    // open under excluded subtrees (vendored libs the user edits directly in
+    // P4). Those are not part of any gw changelist, so drop them (via the
+    // ordered rules) - otherwise prepare's opened-files preflight would refuse
+    // to run on account of the user's own unrelated P4 work.
+    return filterExcludedOpens(parseTaggedOpened(result->output), config.rules);
 }
 
 std::expected<std::vector<std::string>, std::string> haveFiles(
@@ -787,8 +801,8 @@ std::expected<std::string, std::string> revertChangelist(const Config& config,
     // the depot head. Scope to the configured depot paths so we revert only this
     // CL's files under the mirror, never an unscoped sweep of the workspace.
     std::vector<std::string> args{"revert", "-w", "-c", cl};
-    for (const auto& mapping : config.mappings) {
-        args.push_back(mapping.depotPath);
+    for (const auto* rule : includeRules(config.rules)) {
+        args.push_back(rule->depotPath);
     }
     auto result = run(config, args);
     if (!result && result.error().find("not opened") != std::string::npos) {

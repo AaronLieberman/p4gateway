@@ -50,6 +50,13 @@ worst external failure (the remap line vanishing from the client spec) is a
 ## M1 — Mirror architecture: `import` and `prepare` ✅
 
 - [x] `p4gw.cfg` gains `mirror_path` (resolved against the config's directory)
+- [x] `p4gw.cfg` becomes an **ordered `include`/`exclude` view, resolved
+      later-wins per path** — the same model as a p4 client view (`ViewRule`
+      list + `effectiveRuleFor*` in `config.cpp`). Rules intermix freely; an
+      `exclude` carves a subtree out of an earlier `include`, and a deeper
+      `include` after it re-includes that subtree into a nested mirror
+      (win64-yes-linux-no). `buildGitignore`, prepare routing, the opened-file
+      filter, and the view check all share the ordered resolvers
 - [x] Process runner: stdin/stdout file redirection (for `p4 change -i` and
       binary-safe blob writes via `git cat-file blob`)
 - [x] `gw setup`: write the `p4gw.cfg` template (placeholders + comments for

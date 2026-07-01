@@ -80,19 +80,20 @@ int cmdDoctor(const Args& args) {
         return failures == 0 ? 0 : 1;
     }
     std::printf("ok    p4gw.cfg found at %s (%zu include(s))\n", root.c_str(),
-                config->mappings.size());
-    for (const auto& mapping : config->mappings) {
-        std::printf("      %s -> %s\n", mapping.depotPath.c_str(),
-                    mapping.mirrorPath.c_str());
-        for (const auto& ex : mapping.excludedDepotPaths) {
-            std::printf("        excluded (in place, gitignored): %s\n",
-                        ex.c_str());
+                includeRules(config->rules).size());
+    for (const auto& rule : config->rules) {
+        if (rule.exclude) {
+            std::printf("        excluded (in place / dropped, gitignored): "
+                        "%s\n", rule.depotPath.c_str());
+        } else {
+            std::printf("      %s -> %s\n", rule.depotPath.c_str(),
+                        rule.mirrorPath.c_str());
         }
     }
 
-    for (const auto& mapping : config->mappings) {
+    for (const auto* rule : includeRules(config->rules)) {
         const std::string mirrorDir =
-            resolveMirrorPath(mapping.mirrorPath, root);
+            resolveMirrorPath(rule->mirrorPath, root);
         if (fs::exists(mirrorDir)) {
             std::printf("ok    mirror directory exists: %s\n",
                         mirrorDir.c_str());
@@ -148,15 +149,24 @@ int cmdDoctor(const Args& args) {
         if (spec) {
             const std::string lineEnd = p4::specField(*spec, "LineEnd");
 
-            for (const auto& mapping : config->mappings) {
+            const auto includes = includeRules(config->rules);
+            const auto allExcludes = excludeDepotPaths(config->rules);
+            for (const auto* rule : includes) {
                 const std::string mirrorDir =
-                    resolveMirrorPath(mapping.mirrorPath, root);
+                    resolveMirrorPath(rule->mirrorPath, root);
+                std::vector<std::string> otherMirrors;
+                for (const auto* other : includes) {
+                    if (other != rule) {
+                        otherMirrors.push_back(
+                            resolveMirrorPath(other->mirrorPath, root));
+                    }
+                }
                 const auto problems = p4::checkSpecMapping(
-                    *spec, mapping.depotPath, root, mirrorDir,
-                    mapping.excludedDepotPaths);
+                    *spec, rule->depotPath, root, mirrorDir, allExcludes,
+                    otherMirrors);
                 if (problems.empty()) {
                     std::printf("ok    client view maps %s to the mirror\n",
-                                mapping.depotPath.c_str());
+                                rule->depotPath.c_str());
                 }
                 for (const auto& problem : problems) {
                     std::printf("FAIL  %s\n", problem.message.c_str());

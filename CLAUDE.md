@@ -10,20 +10,26 @@ Git locally and ship Perforce changelists. The architecture is the **mirror
 workflow**: one client view line per `include` remaps a depot subtree into the
 repo's `.p4gw` mirror container, so every p4 sync lands in the mirror and the
 canonical directory is purely a Git repo. The config is a list of
-`include = <depot_path> <mirror_path>` lines — one repo can ship several
-subtrees (e.g. `src/` and `config/`); the mirror path below `.p4gw` is the
-working-tree subtree it feeds. An `include` may carry `exclude = <depot_subpath>`
-lines that carve directories out of the mirror (vendored `thirdparty/`,
-generated `devtools/`): the client view drops them or syncs them in place, and
-gw gitignores them and ships nothing through them — they behave like the
-top-level unmapped directories even though they live under a mapped subtree.
-The view check tolerates this plus per-platform peer carve-outs (keep `win64/`,
-drop its `linux/` peer); its one hard rule is that nothing may map into the repo
-outside the mirror unless an `exclude` declares it. The starter `.gitignore`
-`gw init` writes is an allowlist (`/*` then `!/src/`…): Git tracks only the
-mapped subtrees, and unmapped depot content that syncs in place stays out of
-Git unless the user re-includes a directory by hand (`!/dir/`); each `exclude`
-adds a matching re-exclusion (`/src/thirdparty/`). `gw import` commits mirror state to the `main`
+`include`/`exclude` lines — an **ordered view, resolved later-wins per path,
+exactly like a p4 client view** (see `effectiveRuleFor*` in `config.cpp`). One
+repo can ship several subtrees (e.g. `src/` and `config/`); the mirror path
+below `.p4gw` is the working-tree subtree an `include` feeds. An `exclude =
+<depot_subpath>` carves a directory back out of an earlier include (vendored
+`thirdparty/`, generated `devtools/`): the client view drops it or syncs it in
+place, and gw gitignores it and ships nothing through it — it behaves like the
+top-level unmapped directories even though it lives under a mapped subtree.
+Rules may be intermixed freely, and a later `include` **deeper** than an
+`exclude` re-includes that subtree back into a nested mirror (the
+win64-yes-linux-no pattern: `exclude src/lib`, then `include
+src/lib/public/win64`). The view check tolerates all of this plus per-platform
+peer carve-outs done purely in the client view (keep `win64/`, drop its
+`linux/` peer); its one hard rule is that nothing may map into the repo outside
+a mirror unless an `exclude` declares it. The starter `.gitignore` `gw init`
+writes is an allowlist (`/*` then `!/src/`…) built from the same ordered rules:
+Git tracks only the mapped subtrees, each `exclude` adds a re-exclusion
+(`/src/thirdparty/`), and a re-`include` opens its slice back up
+(`!/src/lib/public/win64/`); unmapped depot content that syncs in place stays
+out of Git unless the user re-includes a directory by hand (`!/dir/`). `gw import` commits mirror state to the `main`
 baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
