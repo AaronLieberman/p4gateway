@@ -333,27 +333,75 @@ int cmdInit(const Args& args) {
                 wroteGitignore = true;
             }
         }
+        // An allowlist .gitignore (gw's starter: '/*' then re-includes) ignores
+        // loose root files too, so it swallows the .gitattributes written below
+        // - re-include it, the same way the header re-includes .gitignore. Only
+        // for an allowlist; a denylist never ignores it. Detect the '/*' line at
+        // the file start or on its own line.
+        const bool allowlist =
+            content.rfind("/*\n", 0) == 0 ||
+            content.find("\n/*\n") != std::string::npos;
+        if (allowlist &&
+            content.find("!/.gitattributes") == std::string::npos) {
+            out << "\n# gw's line-ending policy - re-included so the root '/*'\n"
+                   "# does not ignore it\n"
+                   "!/.gitattributes\n";
+            std::printf("Added !/.gitattributes to .gitignore\n");
+            wroteGitignore = true;
+        }
     }
-    // Land .gitignore so the first 'gw import' starts from a clean tree. On a
+    // A committed .gitattributes pins line-ending handling so it never depends
+    // on each machine's core.autocrlf (see buildGitattributes). Without it, the
+    // CRLF mirror gets committed as CRLF on one machine and LF-normalized on
+    // another, so commits drift apart and every 'gw import --rebase' conflicts
+    // on line endings. Write a starter when there is none; leave an existing
+    // file alone (a deliberate policy is the user's to keep) but warn when it
+    // does not pin EOL for every path.
+    const fs::path gitattributes = fs::path(root) / ".gitattributes";
+    bool wroteGitattributes = false;
+    if (!fs::exists(gitattributes)) {
+        {
+            // Close (flush) before `git add` sees the file.
+            std::ofstream file(gitattributes);
+            file << buildGitattributes();
+        }
+        std::printf("Wrote starter .gitattributes (pins line endings so imports "
+                    "and rebases never fight over CRLF/LF)\n");
+        wroteGitattributes = true;
+    } else {
+        std::ifstream in(gitattributes);
+        std::string content((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+        in.close();
+        if (!gitattributesPinsEol(content)) {
+            std::printf("WARN  your .gitattributes does not pin line endings "
+                        "for all paths - add '* -text' so 'gw import' and "
+                        "rebases don't conflict on CRLF/LF\n");
+        }
+    }
+
+    // Land gw's metadata so the first 'gw import' starts from a clean tree. On a
     // brand-new (or --force-git-init) repo there is no history to disturb, so
     // commit it as the first commit. On a repo that already has commits we do
     // NOT inject a commit onto the user's current branch (it could be a feature
     // branch, or carry their own staged changes); instead, when gw wrote or
-    // changed the file, point them at committing it themselves.
+    // changed a file, point them at committing it themselves.
     if (!git::revParse("HEAD", root)) {
-        auto added = git::run({"add", ".gitignore"}, root);
+        auto added =
+            git::run({"add", ".gitignore", ".gitattributes"}, root);
         auto committed =
             added ? git::commit("gw init", root) : std::move(added);
         if (!committed) {
-            std::printf("note: could not commit .gitignore (%s); commit it "
-                        "yourself before 'gw import'\n",
+            std::printf("note: could not commit gw metadata (%s); commit "
+                        ".gitignore and .gitattributes yourself before "
+                        "'gw import'\n",
                         committed.error().c_str());
         }
-    } else if (wroteGitignore) {
-        std::printf("Commit the updated .gitignore before 'gw import' (the tree "
+    } else if (wroteGitignore || wroteGitattributes) {
+        std::printf("Commit the new gw metadata before 'gw import' (the tree "
                     "must be clean):\n"
-                    "  git add .gitignore && git commit -m \"gw: ignore mirror "
-                    "and carved-out dirs\"\n");
+                    "  git add .gitignore .gitattributes && git commit -m "
+                    "\"gw: ignore mirror, pin line endings\"\n");
     }
 
     // If the repo is managed by git-branchless, its main branch is the trunk

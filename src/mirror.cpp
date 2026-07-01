@@ -35,7 +35,8 @@ void withRetry(std::error_code& ec, Op&& op) {
 }  // namespace
 
 bool isGwMetadataPath(const std::string& repoRelativePath) {
-    return repoRelativePath == "p4gw.cfg" || repoRelativePath == ".gitignore";
+    return repoRelativePath == "p4gw.cfg" || repoRelativePath == ".gitignore" ||
+           repoRelativePath == ".gitattributes";
 }
 
 SyncActions computeSyncActions(const std::vector<std::string>& mirrorFiles,

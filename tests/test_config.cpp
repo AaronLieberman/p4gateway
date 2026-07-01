@@ -387,6 +387,9 @@ TEST(gitignore_allowlists_a_top_level_subtree) {
     // .gitignore itself. Unmapped content and the mirror are not negated.
     CHECK(contains(out, "/*\n"));
     CHECK(contains(out, "!/.gitignore\n"));
+    // gw's .gitattributes is a loose root file, so the blanket /* would swallow
+    // it without an explicit re-include - just like .gitignore.
+    CHECK(contains(out, "!/.gitattributes\n"));
     CHECK(contains(out, "!/src/\n"));
     CHECK(!contains(out, "!/bin/"));
     CHECK(!contains(out, ".p4gw/\n"));  // covered by the blanket /* ignore
@@ -487,4 +490,32 @@ TEST(gitignore_appends_extra_patterns_under_whole_repo_mapping) {
     const std::string out = p4gw::buildGitignore({inc("")}, {"/build/"});
     CHECK(contains(out, "p4gw.cfg\n"));  // denylist body
     CHECK(contains(out, "/build/\n"));
+}
+
+TEST(gitattributes_pins_eol_for_all_paths) {
+    // The starter gw writes pins EOL verbatim with a catch-all '-text' rule.
+    const std::string out = p4gw::buildGitattributes();
+    CHECK(p4gw::gitattributesPinsEol(out));
+    CHECK(contains(out, "* -text\n"));
+}
+
+TEST(gitattributes_pin_detects_catchall_text_variants) {
+    CHECK(p4gw::gitattributesPinsEol("* -text\n"));
+    CHECK(p4gw::gitattributesPinsEol("*\t-text\n"));
+    CHECK(p4gw::gitattributesPinsEol("* text=auto\n"));
+    CHECK(p4gw::gitattributesPinsEol("* text\n"));
+    CHECK(p4gw::gitattributesPinsEol("* eol=lf\n"));
+    // Comments and blank lines are ignored; the rule can sit anywhere.
+    CHECK(p4gw::gitattributesPinsEol("# header\n\n*   -text\r\n"));
+}
+
+TEST(gitattributes_pin_rejects_non_catchall_or_unrelated) {
+    CHECK(!p4gw::gitattributesPinsEol(""));
+    CHECK(!p4gw::gitattributesPinsEol("# only a comment\n"));
+    // A pattern that is not the catch-all does not pin every path.
+    CHECK(!p4gw::gitattributesPinsEol("*.cpp -text\n"));
+    // A catch-all with only non-EOL attributes is not an EOL pin.
+    CHECK(!p4gw::gitattributesPinsEol("* diff=cpp\n"));
+    // '-text' must be a whole attribute token, not a substring of another.
+    CHECK(!p4gw::gitattributesPinsEol("* mytext\n"));
 }

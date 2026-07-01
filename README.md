@@ -40,7 +40,7 @@ server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
 | Command | What it does |
 |---|---|
 | `gw setup` | Writes the `p4gw.cfg` config template in the current directory — flags prefill it, anything omitted is left as a commented placeholder to edit. Offline: no p4 or git calls. `--force` overwrites. |
-| `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed), defaults its local Git identity to your login account (these commits stay local — P4 only sees filesystem state), and commits a starter `.gitignore`. `--force-git-init` starts the repo over. Never edits your client spec. |
+| `gw init` | Verifies the client view against `p4gw.cfg` via p4 — failing loudly if the mapping line is missing or wrong — then sets up the Git side: creates the repo (if needed), defaults its local Git identity to your login account (these commits stay local — P4 only sees filesystem state), and commits a starter `.gitignore` and `.gitattributes` (which pins line endings so imports and rebases never fight over CRLF/LF). `--force-git-init` starts the repo over. Never edits your client spec. |
 | `gw import` | Commits the mirror's current state — whatever you last synced, with any tool — to the hidden `refs/p4gw/main` ref that tracks pristine depot state (the `origin/main` analog). Your branch is fast-forwarded when it has no local commits; `--rebase` (`-r`) replays local commits on top, and without it divergent commits are left untouched — never stomped. Like `git fetch` / `git pull --rebase`. |
 | `gw prepare` | Turns the current branch into a pending P4 changelist: stages the branch's files into the mirror with explicit `p4 edit/add/delete/move` and fills the CL description from your commit messages. You submit it from P4V. An optional `gw prepare <commit>` argument prepares only from the import point through that commit — so you can ship the bottom slice of a stack without checking it out; it defaults to the current commit (`HEAD`). `--message` (`-m`) overrides the description. A file that was changed earlier in the branch and then reverted back to the depot content is left out of the changelist, so reverted-within-the-branch files never ship as no-op edits. By default it runs a fast `p4 reconcile -n` over just the files it touched; `--verify` adds the full-subtree reconcile that also catches strays (slower on a big subtree). `--dry-run` (`-n`) prints the exact `p4` operations it would open and stops without touching P4 or the mirror. `--shelf` builds a P4 shelf instead of a pending changelist — it stages, runs `p4 shelve`, then reverts the opens, so only the shelf is left behind and the mirror ends up untouched (reconstruct it later with `gw shelf import <cl>`). |
 | `gw status` | One-screen view of where Git and P4 stand: current branch, commits ahead of / behind the baseline, working-tree cleanliness, the last imported changelist, and any pending changelist — plus the single most useful next step. Read-only; degrades gracefully when P4 isn't reachable. |
@@ -226,6 +226,44 @@ line appends its pattern verbatim after the allowlist, so files P4 skips (build
 output, IDE state) that would otherwise be tracked under a mapped subtree stay
 out of Git. To keep a directory that is Git-only (never in P4), add a
 `!/yourdir/` line. gw never opens `p4gw.cfg` or `.gitignore` in a changelist.
+
+`gw init` also commits a starter `.gitattributes` with `* -text`. P4 is the
+source of truth for file contents: gw copies the mirror's bytes into the working
+tree exactly as P4 synced them (your client's `LineEnd` decides — CRLF on
+Windows), and `-text` tells git to store those bytes **verbatim** — no
+text-vs-binary guessing, no CRLF↔LF translation. The blob is byte-for-byte what
+P4 has, so git and P4 never disagree about a file, and because every commit
+stores the same bytes there are no CRLF/LF conflicts. Because `gw init` commits
+`.gitattributes` before the first import, every depot snapshot carries it, so
+the policy is always in effect when import stages — nothing depends on the
+ambient `core.autocrlf`. If you already have a `.gitattributes`, gw keeps it;
+`gw doctor` warns when nothing pins EOL for all paths.
+
+This assumes everyone's P4 client uses the same `LineEnd` — the right choice for
+an all-Windows (CRLF) team. A mixed CRLF/LF team would instead want
+`* text=auto`, which normalizes every blob to LF regardless of client.
+
+A repo whose history predates the `.gitattributes` has blobs committed under
+whatever `core.autocrlf` was at the time, and needs a one-time repair after
+committing the `* -text` policy:
+
+```
+git add --renormalize .    # re-stage every tracked file's exact disk bytes
+git commit -m "Normalize tracked files to P4 bytes"
+git update-ref refs/p4gw/<baseline> HEAD    # make it the depot baseline
+git branch -f <baseline> HEAD
+```
+
+`--renormalize` matters: it re-applies the attribute to every tracked file even
+when git's stat cache says the file is unchanged (a plain `git add -A` trusts
+the cache and re-reads nothing after an attribute change). Files that stay LF
+afterwards are P4 `binary`-typed files whose bytes really are LF — verbatim is
+correct for those. A file `gw prepare` submitted during the LF era can hold
+stale LF bytes in the mirror; a scoped `p4 sync -f <depot_file>` rewrites it
+with the client `LineEnd`, and the next `gw import` picks it up. Then for each
+feature branch, `git diff --ignore-cr-at-eol <baseline> <branch>` — empty means
+it differs only in line endings (its content is already shipped), so delete it;
+otherwise force its files to CRLF and `git rebase <baseline>`.
 
 ### Complex client views
 

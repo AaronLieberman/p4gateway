@@ -78,8 +78,9 @@ worst external failure (the remap line vanishing from the client spec) is a
       default (`--verify` for the full-subtree scan), prints "submit from
       P4V" — no submit path
 - [x] `gw doctor`: client-view consistency (depot path → mirror, nothing
-      mapped into the repo dir, unrelated mappings ignored), LineEnd vs
-      core.autocrlf, opened files under the depot path
+      mapped into the repo dir, unrelated mappings ignored), a `.gitattributes`
+      pinning EOL for all paths (LineEnd vs core.autocrlf only when it does
+      not), opened files under the depot path
 - [x] Unit tests: view-spec parsing/checking, git-diff → p4-ops mapping,
       mirror copy/delete computation, config keys
 
@@ -201,9 +202,22 @@ conflict/abort) on Linux.
   `gw doctor`'s view check is the mitigation; run it when anything smells
   off. The team sync tool is known not to rewrite the spec.
 - **Line endings**: the mirror is written with the client `LineEnd` and
-  committed by git on import, then written back from blobs on prepare. The
-  doctor warning plus the reconcile-preview canary are the mitigations;
-  revisit if a real workspace shows churn.
+  committed by git on import, then written back from blobs on prepare. `gw
+  init` commits a `.gitattributes` (`* -text`) so git stores every blob
+  byte-for-byte as P4 synced it (verbatim, no text/binary guessing or CRLF<->LF
+  translation) regardless of each machine's `core.autocrlf` - P4 is the source
+  of truth, and identical bytes across commits is what keeps two imports (and a
+  rebase across them) from disagreeing. init commits the metadata before the
+  first import, so every depot snapshot carries `.gitattributes` and the policy
+  is always in effect when import stages. A repo whose baseline predates it
+  needs a one-time manual repair - `git add --renormalize .` (bypasses git's
+  stat cache, which a plain `git add -A` trusts even after an attribute
+  change), commit, repoint the depot ref - documented in README; deliberately
+  no fixup code in the tool. `-text` assumes a single client LineEnd (an
+  all-Windows CRLF shop); a mixed team wants `* text=auto`. The doctor check
+  (a `.gitattributes` that pins EOL, else the LineEnd/autocrlf comparison)
+  plus the reconcile-preview canary are the mitigations; revisit if a real
+  workspace shows churn.
 - **Mirror tampering** (builds writing into it, hand edits): `import`
   filters the mirror listing through `p4 have`, so stray files p4 never
   tracked (build output, leftovers from a botched sync) are ignored instead

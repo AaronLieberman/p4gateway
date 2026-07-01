@@ -137,6 +137,22 @@ std::string excludedRepoSubtree(const std::string& mappingDepotPath,
 std::string buildGitignore(const std::vector<ViewRule>& rules,
                            const std::vector<std::string>& ignorePatterns = {});
 
+// The starter `.gitattributes` gw init commits: a committed `* -text` so git
+// stores every file's blob byte-for-byte as P4 synced it into the mirror
+// (verbatim, no text-vs-binary guessing or CRLF<->LF translation), independent
+// of the machine's core.autocrlf. Without it, line-ending handling falls to
+// each machine's core.autocrlf and drifts, so commits made at different times
+// store different endings for the same file and every `gw import --rebase`
+// conflicts on line endings. Assumes a single client LineEnd across the team
+// (an all-Windows CRLF shop); a mixed team wants `* text=auto` instead. Pure.
+std::string buildGitattributes();
+
+// Whether a `.gitattributes` body already pins end-of-line handling for every
+// path - a catch-all `*` rule carrying a text/eol attribute (`-text`, `text`,
+// `text=auto`, `eol=...`). Used by doctor to tell a deterministic setup from
+// one left to core.autocrlf. Pure; unit-tested.
+bool gitattributesPinsEol(const std::string& content);
+
 // The hidden Git ref that tracks pristine depot state - the `origin/main`
 // analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".
 // It lives outside refs/heads/ so it never shows up in `git branch`; `gw

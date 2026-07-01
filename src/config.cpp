@@ -311,7 +311,10 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
         "# mirror, and gw's own p4gw.cfg/p4.ini/.p4config - stays out of Git. To\n"
         "# keep a Git-only directory, add a line like '!/notes/'.\n"
         "/*\n"
-        "!/.gitignore\n";
+        "# gw's own tracked metadata, re-included so the root '/*' does not\n"
+        "# swallow it (.gitattributes pins line endings - see 'gw init').\n"
+        "!/.gitignore\n"
+        "!/.gitattributes\n";
 
     // Emit by depth: at each level re-include the needed directories, then
     // re-exclude the children of any intermediate one, so the next (deeper)
@@ -495,6 +498,52 @@ std::string resolveMirrorPath(const std::string& mirrorPath,
         mirror = fs::path(rootDir) / mirror;
     }
     return mirror.lexically_normal().string();
+}
+
+std::string buildGitattributes() {
+    return
+        "# gw stores line endings verbatim - P4 is the source of truth.\n"
+        "#\n"
+        "# The mirror is a P4-owned subtree; gw copies its bytes into the working\n"
+        "# tree exactly as P4 synced them (the client LineEnd decides - CRLF on\n"
+        "# Windows). '-text' tells git to store those bytes unchanged and never\n"
+        "# guess text-vs-binary or translate CRLF<->LF, so the blob is byte-for-\n"
+        "# byte what P4 has. That keeps git and P4 from ever disagreeing about a\n"
+        "# file's contents, and - because every commit stores the same bytes -\n"
+        "# stops the CRLF/LF conflicts you get when line-ending handling is left\n"
+        "# to each machine's core.autocrlf.\n"
+        "#\n"
+        "# This assumes everyone's P4 client uses the same LineEnd; it is the\n"
+        "# right choice for an all-Windows (CRLF) team. A mixed CRLF/LF team\n"
+        "# would instead want '* text=auto', which normalizes every blob to LF\n"
+        "# regardless of client.\n"
+        "* -text\n";
+}
+
+bool gitattributesPinsEol(const std::string& content) {
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string trimmed = trim(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+
+        // First whitespace-separated token is the path pattern; the rest are
+        // attributes. We only care about a catch-all '*' pattern.
+        std::istringstream tokens(trimmed);
+        std::string pattern;
+        tokens >> pattern;
+        if (pattern != "*") continue;
+
+        std::string attr;
+        while (tokens >> attr) {
+            if (attr == "text" || attr == "-text" ||
+                attr.starts_with("text=") || attr.starts_with("eol=")) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::string depotTrackingRef(const Config& config) {

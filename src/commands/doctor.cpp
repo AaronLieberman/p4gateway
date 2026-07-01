@@ -1,5 +1,7 @@
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include "commands.h"
@@ -127,6 +129,31 @@ int cmdDoctor(const Args& args) {
         std::printf("ok    repo directory is owned by the current user\n");
     }
 
+    // Line-ending policy. A committed .gitattributes that pins EOL for every
+    // path makes git store the mirror's bytes deterministically, independent of
+    // each machine's core.autocrlf - the reliable cure for the "every line
+    // changed / rebase conflicts on CRLF vs LF" footgun. Check it up front; the
+    // LineEnd/autocrlf check below defers to it when it is present.
+    bool eolPinned = false;
+    {
+        const fs::path gitattributes = fs::path(root) / ".gitattributes";
+        if (fs::exists(gitattributes)) {
+            std::ifstream in(gitattributes);
+            std::string content((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+            eolPinned = gitattributesPinsEol(content);
+        }
+        if (eolPinned) {
+            std::printf("ok    .gitattributes pins line endings for all paths\n");
+        } else {
+            std::printf("WARN  no .gitattributes pinning line endings - git "
+                        "will follow core.autocrlf, which can drift between "
+                        "commits and\n      make 'gw import --rebase' conflict "
+                        "on CRLF/LF. Add '* -text' (or rerun 'gw init')\n");
+            ++warnings;
+        }
+    }
+
     if (p4Found) {
         auto info = p4::info(*config);
         if (info) {
@@ -176,12 +203,18 @@ int cmdDoctor(const Args& args) {
 
             // Line endings: the mirror is written with the client LineEnd
             // and committed by git; mismatched translation here is the
-            // classic "every line changed" footgun.
+            // classic "every line changed" footgun. A .gitattributes that pins
+            // EOL overrides core.autocrlf entirely, so when one is present the
+            // autocrlf setting is moot - report that and skip the comparison.
             auto autocrlf = git::configValue("core.autocrlf", root);
             const std::string crlf =
                 autocrlf && !autocrlf->empty() ? *autocrlf : "false";
             const bool winLineEnd = lineEnd == "win" || lineEnd == "local";
-            if (winLineEnd && crlf != "true") {
+            if (eolPinned) {
+                std::printf("ok    line endings pinned by .gitattributes "
+                            "(core.autocrlf=%s is not consulted)\n",
+                            crlf.c_str());
+            } else if (winLineEnd && crlf != "true") {
                 std::printf("WARN  client LineEnd '%s' with core.autocrlf=%s "
                             "- git will commit CRLF; consider autocrlf=true "
                             "or LineEnd unix\n",

@@ -11,7 +11,7 @@ TEST(mirror_sync_copies_everything_and_deletes_vanished) {
 
 TEST(mirror_sync_never_deletes_gw_metadata) {
     const auto actions = p4gw::mirror::computeSyncActions(
-        {"a.cpp"}, {"a.cpp", ".gitignore", "p4gw.cfg"});
+        {"a.cpp"}, {"a.cpp", ".gitignore", ".gitattributes", "p4gw.cfg"});
     CHECK(actions.deletes.empty());
 }
 
@@ -25,6 +25,7 @@ TEST(mirror_sync_handles_fresh_repo) {
 TEST(gw_metadata_paths_are_top_level_only) {
     CHECK(p4gw::mirror::isGwMetadataPath("p4gw.cfg"));
     CHECK(p4gw::mirror::isGwMetadataPath(".gitignore"));
+    CHECK(p4gw::mirror::isGwMetadataPath(".gitattributes"));
     CHECK(!p4gw::mirror::isGwMetadataPath("sub/.gitignore"));
     CHECK(!p4gw::mirror::isGwMetadataPath("main.cpp"));
 }
