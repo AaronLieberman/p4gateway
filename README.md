@@ -192,6 +192,14 @@ include = //depot/yourproject/config/...  .p4gw/config
 exclude = //depot/yourproject/src/thirdparty/...
 exclude = //depot/yourproject/src/devtools/...
 
+# Optional 'ignore' lines add extra .gitignore patterns (verbatim gitignore
+# syntax), one per line. The allowlist tracks a whole mapped subtree, but P4
+# ignores build output and IDE state that would otherwise land in Git - list
+# those here so Git skips them too. Depot-specific, so share them with your team.
+ignore = /src/.vs/
+ignore = /src/**/*.vcxproj
+ignore = /src/**/*.pdb
+
 # P4 client name; omit to use the ambient P4CLIENT.
 client = aaron-dev
 
@@ -206,9 +214,11 @@ allowlist — `/*` then a `!/src/` line per include — so Git tracks only the
 mapped subtrees and everything else (the `.p4gw/` mirror, `p4gw.cfg` itself,
 and any unmapped depot content that synced in place) stays out of Git. Each
 `exclude` line adds a matching re-exclusion (e.g. `/src/thirdparty/`) so a
-carved-out directory under a mapped subtree stays out of Git too. To keep a
-directory that is Git-only (never in P4), add a `!/yourdir/` line. gw never
-opens `p4gw.cfg` or `.gitignore` in a changelist.
+carved-out directory under a mapped subtree stays out of Git too. Each `ignore`
+line appends its pattern verbatim after the allowlist, so files P4 skips (build
+output, IDE state) that would otherwise be tracked under a mapped subtree stay
+out of Git. To keep a directory that is Git-only (never in P4), add a
+`!/yourdir/` line. gw never opens `p4gw.cfg` or `.gitignore` in a changelist.
 
 ### Complex client views
 

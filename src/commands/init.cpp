@@ -277,7 +277,7 @@ int cmdInit(const Args& args) {
         {
             // Close (flush) before `git add` sees the file.
             std::ofstream file(gitignore);
-            file << buildGitignore(config->mappings);
+            file << buildGitignore(config->mappings, config->ignorePatterns);
         }
         std::printf("Wrote starter .gitignore\n");
         wroteGitignore = true;
@@ -305,6 +305,14 @@ int cmdInit(const Args& args) {
                        "place, not for Git\n"
                     << entry << "\n";
                 std::printf("Added %s to .gitignore\n", entry.c_str());
+                wroteGitignore = true;
+            }
+        }
+        for (const auto& pattern : config->ignorePatterns) {
+            if (content.find(pattern) == std::string::npos) {
+                out << "\n# p4gw.cfg 'ignore' - a file P4 ignores, not for Git\n"
+                    << pattern << "\n";
+                std::printf("Added %s to .gitignore\n", pattern.c_str());
                 wroteGitignore = true;
             }
         }

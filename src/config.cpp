@@ -113,7 +113,8 @@ const std::string kGwDenylist =
 
 }  // namespace
 
-std::string buildGitignore(const std::vector<Mapping>& mappings) {
+std::string buildGitignore(const std::vector<Mapping>& mappings,
+                           const std::vector<std::string>& ignorePatterns) {
     // Distinct mapped working-tree subtrees, in declaration order. An empty
     // subtree means a mapping covers the whole repo.
     std::vector<std::string> subtrees;
@@ -158,6 +159,18 @@ std::string buildGitignore(const std::vector<Mapping>& mappings) {
         }
     };
 
+    // Extra ignore patterns from p4gw.cfg `ignore` lines, appended verbatim.
+    // These are files P4 ignores (build output, IDE state) that would otherwise
+    // be tracked under a mapped subtree; they must come after the allowlist's
+    // re-includes to take effect, so they go last.
+    auto appendExtra = [&](std::string& out) {
+        if (ignorePatterns.empty()) return;
+        out += "\n# Extra ignore patterns (p4gw.cfg 'ignore' lines): files P4\n"
+               "# ignores that would otherwise be tracked under a mapped "
+               "subtree.\n";
+        for (const auto& p : ignorePatterns) out += p + "\n";
+    };
+
     // A whole-repo mapping leaves nothing unmapped to hide, so an allowlist
     // would only ignore the repo's own content. Fall back to a plain denylist
     // of the gw-managed paths (personal config + the mirror container), plus
@@ -165,6 +178,7 @@ std::string buildGitignore(const std::vector<Mapping>& mappings) {
     if (wholeRepoMapped || subtrees.empty()) {
         std::string out = kGwDenylist;
         appendExclusions(out);
+        appendExtra(out);
         return out;
     }
 
@@ -252,6 +266,7 @@ std::string buildGitignore(const std::vector<Mapping>& mappings) {
     // `/src/thirdparty/` line then carves the excluded directories back out.
     // Git applies the patterns in order, so these must come last.
     appendExclusions(out);
+    appendExtra(out);
     return out;
 }
 
@@ -347,6 +362,19 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             config.client = value;
         } else if (key == "baseline_branch") {
             config.baselineBranch = value;
+        } else if (key == "ignore") {
+            // A verbatim gitignore pattern, taken as-is (not tokenized) so globs
+            // like "/src/**/*.pdb" survive intact. buildGitignore appends it
+            // after the allowlist. Silently skip exact duplicates.
+            if (value.empty()) {
+                return std::unexpected(where +
+                                       ": 'ignore' takes a gitignore pattern");
+            }
+            if (std::find(config.ignorePatterns.begin(),
+                          config.ignorePatterns.end(),
+                          value) == config.ignorePatterns.end()) {
+                config.ignorePatterns.push_back(value);
+            }
         } else {
             return std::unexpected(where + ": unknown key '" + key + "'");
         }

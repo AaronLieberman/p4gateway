@@ -59,6 +59,15 @@ struct Config {
 
     // Name of the Git branch that tracks pristine P4 state.
     std::string baselineBranch = "main";
+
+    // Extra `.gitignore` patterns (verbatim gitignore syntax), in declaration
+    // order, one per `ignore` line in p4gw.cfg. These cover files that P4
+    // ignores (build artifacts, IDE state) but that would otherwise be tracked
+    // by Git under a mapped subtree, since the allowlist tracks the whole
+    // subtree. Depot-specific knowledge lives here, in the (shareable) config,
+    // not in gw's code. buildGitignore appends them last, after the allowlist
+    // and any carve-out re-exclusions.
+    std::vector<std::string> ignorePatterns;
 };
 
 // Loads configuration from `path`. Unknown keys are an error so typos
@@ -104,8 +113,12 @@ std::string excludedRepoSubtree(const std::string& mappingDepotPath,
 // has nothing unmapped to hide, so it falls back to a plain denylist of just
 // the gw-managed paths. Any `excludedSubtrees` are re-excluded afterwards
 // (`/src/thirdparty/`) so a carved-out directory under a tracked subtree stays
-// out of Git, the same as unmapped depot content. Pure; unit-tested.
-std::string buildGitignore(const std::vector<Mapping>& mappings);
+// out of Git, the same as unmapped depot content. Any `ignorePatterns` (from
+// `ignore` lines in p4gw.cfg) are appended last, verbatim, so they ignore files
+// P4 skips that would otherwise be tracked under a mapped subtree. Pure;
+// unit-tested.
+std::string buildGitignore(const std::vector<Mapping>& mappings,
+                           const std::vector<std::string>& ignorePatterns = {});
 
 // The hidden Git ref that tracks pristine depot state - the `origin/main`
 // analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".

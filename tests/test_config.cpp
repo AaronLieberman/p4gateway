@@ -144,6 +144,52 @@ TEST(config_rejects_duplicate_exclude) {
                .has_value());
 }
 
+TEST(config_parses_ignore_patterns_in_order) {
+    auto config = loadFromString(
+        "include = //depot/x/src/... .p4gw/src\n"
+        "ignore = /src/.vs/\n"
+        "ignore = /src/**/*.vcxproj\n"
+        "ignore = /src/**/*.pdb\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->ignorePatterns.size() == 3);
+        CHECK(config->ignorePatterns[0] == "/src/.vs/");
+        CHECK(config->ignorePatterns[1] == "/src/**/*.vcxproj");
+        CHECK(config->ignorePatterns[2] == "/src/**/*.pdb");
+    }
+}
+
+TEST(config_keeps_ignore_pattern_verbatim) {
+    // Patterns are taken as-is (not tokenized), so globs survive intact.
+    auto config = loadFromString(
+        "include = //depot/x/src/... .p4gw/src\n"
+        "ignore = /src/build_scripts/p4_helpers.pyc\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->ignorePatterns.size() == 1);
+        CHECK(config->ignorePatterns[0] ==
+              "/src/build_scripts/p4_helpers.pyc");
+    }
+}
+
+TEST(config_dedupes_identical_ignore_patterns) {
+    auto config = loadFromString(
+        "include = //depot/x/src/... .p4gw/src\n"
+        "ignore = /src/**/*.pdb\n"
+        "ignore = /src/**/*.pdb\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->ignorePatterns.size() == 1);
+    }
+}
+
+TEST(config_rejects_empty_ignore) {
+    CHECK(!loadFromString(
+              "include = //depot/x/src/... .p4gw/src\n"
+              "ignore =\n")
+               .has_value());
+}
+
 TEST(config_derives_repo_subtree_from_mirror) {
     // The leading `.p4gw` container is dropped; the rest is the working-tree
     // directory the subtree occupies.
@@ -317,4 +363,23 @@ TEST(gitignore_falls_back_to_denylist_for_whole_repo_mapping) {
     CHECK(!contains(out, "/*\n"));
     CHECK(contains(out, "p4gw.cfg\n"));
     CHECK(contains(out, ".p4gw/\n"));
+}
+
+TEST(gitignore_appends_extra_ignore_patterns_last) {
+    // Extra patterns land after the subtree's re-include, so Git actually
+    // ignores those files under the tracked subtree.
+    const std::string out = p4gw::buildGitignore(
+        {mappingWithSubtree("src")}, {"/src/.vs/", "/src/**/*.pdb"});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(contains(out, "/src/.vs/\n"));
+    CHECK(contains(out, "/src/**/*.pdb\n"));
+    CHECK(out.find("!/src/\n") < out.find("/src/.vs/\n"));
+}
+
+TEST(gitignore_appends_extra_patterns_under_whole_repo_mapping) {
+    // The denylist body also gets the extra patterns.
+    const std::string out =
+        p4gw::buildGitignore({mappingWithSubtree("")}, {"/build/"});
+    CHECK(contains(out, "p4gw.cfg\n"));  // denylist body
+    CHECK(contains(out, "/build/\n"));
 }
