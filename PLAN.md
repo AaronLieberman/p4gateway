@@ -156,6 +156,17 @@ conflict/abort) on Linux.
 - [ ] Rename chains (rename onto a freed path, rename + re-add of source):
       detect and fall back to delete+add with a note
 - [ ] Multiple overlay roots in one client (second `p4gw.cfg` elsewhere)
+- [ ] Auto-derive `.gitignore` from P4's own ignore rules (design): today the
+      `ignore` key in `p4gw.cfg` carries per-depot patterns for files P4 skips
+      (build output, IDE state) that the allowlist would otherwise track under a
+      mapped subtree. A more hands-off option is to read P4's ignore rules
+      (`P4IGNORE` / `.p4ignore`) and translate them into the allowlist, scoped
+      per mapped subtree — most architecture-aligned ("Git tracks what P4
+      tracks") and generic across depots. Traps: p4ignore files cascade
+      per-directory and the syntax is close-to-but-not-identical to gitignore;
+      it's p4-dependent so it's harder to unit-test in the p4-less CI; and some
+      teams keep no `.p4ignore` at all (nothing to derive). Layers on top of the
+      `ignore` key rather than replacing it.
 - [x] `import` performance on big subtrees: `applySyncActions` skips a copy
       when the working-tree file already matches the mirror in size and mtime
       (rsync's default heuristic), and stamps the mirror's mtime onto each
