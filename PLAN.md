@@ -159,8 +159,11 @@ by the 2026-07 design review.
       are pure and unit tested. `gw integtest run` covers the happy path
       (edit + add shelved against head, clean merge), which exercises the
       `#rev` base-revision assumption on a live server. **Still needs a
-      real-workspace check** for binary files and the conflict (shelf based on
-      an older depot state) path.
+      real-workspace check** for binary files, the conflict (shelf based on
+      an older depot state) path, and LineEnd effects on `p4 print` content
+      (print skips the client LineEnd translation sync performs, so an LF
+      base/theirs against a CRLF working tree could conflict on every line -
+      the same translation caveat as the have-manifest note in M4).
 - [x] `gw shelf list`: the caller's pending and shelved CLs (`p4 -ztag
       changes -s pending|shelved -u <user>`, scoped to `depot_path`), newest
       first with shelved ones flagged, to pick one for `shelf import`.
@@ -232,9 +235,22 @@ by the 2026-07 design review.
       the "pristine" ref; with the manifest it surfaces at prepare's
       reconcile canary instead) - arguably more faithful, but worth stating.
       Client LineEnd/filetype changes without a rev bump are the `--full`
-      cases. Opened-file handling (depot-head reads) is unchanged. Pairs
-      with the hidden-worktree item in "Next up": together a no-change
-      import is one p4 query, a text diff, and a no-op commit.
+      cases. Opened files keep today's depot-head reads (planImport +
+      printHeadToFile - import already never takes an opened file's mirror
+      bytes), so local changes stay out of the baseline; writable-but-
+      unopened (tampered) files need nothing extra, since the default
+      noclobber makes sync refuse to overwrite them, their have rev never
+      advances, and the manifest diff skips them - the baseline keeps the
+      clean bytes of the earlier import. Caveat on the depot-head reads:
+      `p4 print` does NOT apply the client LineEnd translation the way sync
+      does (text files come back in the server's LF form, and `+k` keyword
+      expansion differs), so printed text files likely need an explicit
+      LF->CRLF translation by filetype (`p4 opened -ztag` carries the type,
+      the spec carries LineEnd; isBinaryType exists). Verify on a real
+      workspace first: `p4 print -q -o` a text file and byte-compare it to
+      the synced mirror copy - identical means no translation step needed.
+      Pairs with the hidden-worktree item in "Next up": together a
+      no-change import is one p4 query, a text diff, and a no-op commit.
 - [ ] `import` from depot instead of mirror (design): read content via
       `p4 print` and fetch only the unique set of files changed in CLs since
       the baseline, rather than reading the mirror filesystem. Would harden
