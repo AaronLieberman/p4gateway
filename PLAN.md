@@ -114,6 +114,8 @@ by the 2026-07 design review.
        A worktree keeps full .gitignore/.gitattributes semantics (the
        `git add -A` flow is unchanged) while the user's checkout is never
        touched — only `--rebase`/fast-forward would need a clean tree.
+       Pairs with the incremental-import-via-have-manifest design note in
+       M4; together a no-change import is one p4 query and a no-op commit.
 4. [ ] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
        POSIX): separate stdout/stderr, no shell quoting risks (cmd.exe still
        expands `%` inside double quotes), real exit codes (POSIX `pclose`
@@ -210,6 +212,29 @@ by the 2026-07 design review.
       copy so unchanged files keep reading as current on the next run. Turns
       a full copy into a stat per file; `git add -A`'s own tree scan is the
       remaining lower bound.
+- [ ] Incremental `import` via a persisted `p4 have` manifest (design):
+      store the per-file `//depot/file#rev` manifest that produced each
+      baseline snapshot (e.g. `.git/p4gw/have-<baseline>`, keyed by the
+      snapshot's commit SHA, written only after the ref advances). The next
+      import diffs a fresh `p4 have` (sub-second even at 40k files) against
+      it: rev changed / file added -> copy that mirror file, gone -> delete,
+      unchanged -> skip with no stat. Content still comes from the mirror,
+      so LineEnd/`+k` byte fidelity is untouched (unlike the p4-print
+      variant below), and the per-file manifest sidesteps that variant's
+      no-single-baseline-CL trap outright. The touched-path list also lets
+      the `git add` be scoped instead of `-A` (import requires a clean tree,
+      so its own copies are the only changes). Strictly a cache with a
+      fallback: a missing or SHA-mismatched manifest (first import, crash
+      before the manifest write, hand-moved ref) falls back to today's full
+      walk, and `--full` forces it - correctness never depends on the cache.
+      Deliberate semantic shift: an in-place mirror edit whose rev did not
+      change is no longer absorbed into the baseline (today it leaks into
+      the "pristine" ref; with the manifest it surfaces at prepare's
+      reconcile canary instead) - arguably more faithful, but worth stating.
+      Client LineEnd/filetype changes without a rev bump are the `--full`
+      cases. Opened-file handling (depot-head reads) is unchanged. Pairs
+      with the hidden-worktree item in "Next up": together a no-change
+      import is one p4 query, a text diff, and a no-op commit.
 - [ ] `import` from depot instead of mirror (design): read content via
       `p4 print` and fetch only the unique set of files changed in CLs since
       the baseline, rather than reading the mirror filesystem. Would harden
@@ -222,6 +247,8 @@ by the 2026-07 design review.
       mirror, so tampering isn't fully escaped. If the goal is the tampering
       risk specifically, a mirror-vs-`p4 have` verification check is a lower
       -risk alternative. Needs a real workspace to verify byte fidelity.
+      The have-manifest variant above captures most of the performance win
+      without the print-fidelity traps.
 - [x] CI on GitHub Actions: Linux + Windows build & unit tests
       (.github/workflows/ci.yml)
 - [ ] Wishlist: scripted end-to-end run in CI (init → import → branch →
