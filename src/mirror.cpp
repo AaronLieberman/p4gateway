@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <thread>
 #include <unordered_set>
 
@@ -14,21 +17,25 @@ namespace {
 
 // On Windows, antivirus and the Search indexer transiently open files the
 // moment git or p4 writes them, so a remove or overwrite that lands in that
-// window fails with a sharing violation ("being used by another process")
-// that clears within milliseconds. Retry the filesystem op a handful of times
-// with a short backoff before surfacing the error. On a genuine, persistent
-// failure this only adds a fraction of a second to the error path; on Linux
-// the op succeeds on the first attempt and the retries never run.
+// window fails with a sharing violation ("being used by another process").
+// Most such locks clear within milliseconds, but a scanner can hold a file
+// for a second or more, so the schedule escalates: a burst of quick attempts
+// for the common case, then 100ms pauses, then up to 1s - about 3.5s in total
+// before surfacing the error. On a genuine, persistent failure this only
+// delays the error path; on Linux the op succeeds on the first attempt and
+// the retries never run.
 template <typename Op>
 void withRetry(std::error_code& ec, Op&& op) {
-    constexpr int kMaxAttempts = 20;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    constexpr int kDelaysMs[] = {25,  25,  25,  25,  25,   25,  25,  25,
+                                 100, 100, 100, 250, 500, 1000, 1000};
+    size_t attempt = 0;
+    for (;;) {
         ec.clear();
         op(ec);
         if (!ec) return;
-        if (attempt + 1 < kMaxAttempts) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-        }
+        if (attempt >= std::size(kDelaysMs)) return;
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(kDelaysMs[attempt++]));
     }
 }
 
@@ -111,7 +118,7 @@ bool copyNeeded(std::uintmax_t srcSize, fs::file_time_type srcMtime,
 
 std::expected<std::size_t, std::string> applySyncActions(
     const SyncActions& actions, const std::string& mirrorDir,
-    const std::string& worktreeDir) {
+    const std::string& worktreeDir, bool trustStats) {
     std::error_code ec;
     std::size_t copied = 0;
     for (const auto& rel : actions.deletes) {
@@ -129,22 +136,28 @@ std::expected<std::size_t, std::string> applySyncActions(
         // Skip files whose working-tree copy already matches the mirror in size
         // and mtime; import stamps the mirror mtime onto the copy below so an
         // untouched file stays detectable as unchanged on the next run. Any
-        // stat error just falls through to a normal copy.
-        const auto srcSize = fs::file_size(source, ec);
-        const auto srcMtime = fs::last_write_time(source, ec);
-        if (!ec) {
-            std::error_code dstEc;
-            const bool dstExists = fs::exists(target, dstEc);
-            const auto dstSize =
-                dstExists ? fs::file_size(target, dstEc) : std::uintmax_t{0};
-            const auto dstMtime = dstExists ? fs::last_write_time(target, dstEc)
-                                            : fs::file_time_type{};
-            if (!dstEc && !copyNeeded(srcSize, srcMtime, dstExists, dstSize,
-                                      dstMtime)) {
-                continue;
+        // stat error just falls through to a normal copy. In full-copy mode
+        // (`trustStats` false) the stamps are suspect - a torn import may have
+        // left them on files whose content was since restored by `git reset` -
+        // so nothing is skipped.
+        if (trustStats) {
+            const auto srcSize = fs::file_size(source, ec);
+            const auto srcMtime = fs::last_write_time(source, ec);
+            if (!ec) {
+                std::error_code dstEc;
+                const bool dstExists = fs::exists(target, dstEc);
+                const auto dstSize =
+                    dstExists ? fs::file_size(target, dstEc) : std::uintmax_t{0};
+                const auto dstMtime = dstExists
+                                          ? fs::last_write_time(target, dstEc)
+                                          : fs::file_time_type{};
+                if (!dstEc && !copyNeeded(srcSize, srcMtime, dstExists, dstSize,
+                                          dstMtime)) {
+                    continue;
+                }
             }
+            ec.clear();
         }
-        ec.clear();
 
         fs::create_directories(target.parent_path(), ec);
         if (ec) {
@@ -181,7 +194,9 @@ std::expected<std::size_t, std::string> applySyncActions(
             return std::unexpected("failed to read mtime of " + source.string() +
                                    ": " + ec.message());
         }
-        fs::last_write_time(target, stampMtime, ec);
+        withRetry(ec, [&](std::error_code& e) {
+            fs::last_write_time(target, stampMtime, e);
+        });
         if (ec) {
             return std::unexpected("failed to set mtime on " + target.string() +
                                    ": " + ec.message());
@@ -189,6 +204,60 @@ std::expected<std::size_t, std::string> applySyncActions(
         ++copied;  // reached only when the file was actually (re)copied
     }
     return copied;
+}
+
+bool filesIdentical(const fs::path& a, const fs::path& b) {
+    std::ifstream fileA(a, std::ios::binary);
+    std::ifstream fileB(b, std::ios::binary);
+    if (!fileA || !fileB) return false;
+    constexpr std::streamsize kChunk = 64 * 1024;
+    std::vector<char> bufA(kChunk);
+    std::vector<char> bufB(kChunk);
+    for (;;) {
+        fileA.read(bufA.data(), kChunk);
+        fileB.read(bufB.data(), kChunk);
+        const std::streamsize gotA = fileA.gcount();
+        const std::streamsize gotB = fileB.gcount();
+        if (gotA != gotB) return false;
+        if (gotA == 0) return true;
+        if (std::memcmp(bufA.data(), bufB.data(),
+                        static_cast<size_t>(gotA)) != 0) {
+            return false;
+        }
+        if (fileA.eof() || fileB.eof()) return fileA.eof() == fileB.eof();
+    }
+}
+
+std::vector<std::string> findStaleFastPathFiles(
+    const std::vector<std::string>& files, const std::string& mirrorDir,
+    const std::string& worktreeDir) {
+    std::vector<std::string> stale;
+    for (const auto& rel : files) {
+        const fs::path source = fs::path(mirrorDir) / rel;
+        const fs::path target = fs::path(worktreeDir) / rel;
+        std::error_code ec;
+        if (!fs::exists(target, ec) || ec) continue;  // import would copy it
+        const auto srcSize = fs::file_size(source, ec);
+        if (ec) continue;
+        const auto srcMtime = fs::last_write_time(source, ec);
+        if (ec) continue;
+        const auto dstSize = fs::file_size(target, ec);
+        if (ec) continue;
+        const auto dstMtime = fs::last_write_time(target, ec);
+        if (ec) continue;
+        // Only files the fast path would skip can hide stale content; a file
+        // it would recopy anyway is self-healing and not worth flagging.
+        if (copyNeeded(srcSize, srcMtime, /*dstExists=*/true, dstSize,
+                       dstMtime)) {
+            continue;
+        }
+        if (!filesIdentical(source, target)) stale.push_back(rel);
+    }
+    return stale;
+}
+
+std::string importPendingMarkerPath(const std::string& gitDir) {
+    return (fs::path(gitDir) / "p4gw-import-pending").string();
 }
 
 }  // namespace p4gw::mirror

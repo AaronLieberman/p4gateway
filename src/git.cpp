@@ -70,6 +70,30 @@ std::expected<std::string, std::string> switchDetached(const std::string& ref,
     return run({"switch", "--detach", ref}, cwd);
 }
 
+std::expected<std::string, std::string> switchBranchForce(
+    const std::string& branch, const std::string& cwd) {
+    return run({"switch", "-f", branch}, cwd);
+}
+
+std::expected<std::string, std::string> switchDetachedForce(
+    const std::string& ref, const std::string& cwd) {
+    return run({"switch", "-f", "--detach", ref}, cwd);
+}
+
+std::expected<std::string, std::string> cleanUntracked(
+    const std::vector<std::string>& paths, const std::string& cwd) {
+    std::vector<std::string> args{"clean", "-fd"};
+    if (!paths.empty()) {
+        args.push_back("--");
+        args.insert(args.end(), paths.begin(), paths.end());
+    }
+    return run(args, cwd);
+}
+
+std::expected<std::string, std::string> gitDir(const std::string& cwd) {
+    return run({"rev-parse", "--absolute-git-dir"}, cwd);
+}
+
 std::expected<void, std::string> updateRef(const std::string& ref,
                                            const std::string& target,
                                            const std::string& cwd) {

@@ -70,9 +70,36 @@ bool copyNeeded(std::uintmax_t srcSize,
 // Copied files are made writable (mirror files are typically read-only).
 // Returns the number of files actually copied - the ones copyNeeded flagged as
 // changed - which is far fewer than `actions.copies.size()` on a re-import
-// where most of the mirror is unchanged.
+// where most of the mirror is unchanged. With `trustStats` false the
+// size+mtime fast path is bypassed and every file is recopied - the recovery
+// mode for when the stamped stats may lie (a torn import followed by outside
+// cleanup such as `git reset --hard`).
 std::expected<std::size_t, std::string> applySyncActions(
     const SyncActions& actions, const std::string& mirrorDir,
+    const std::string& worktreeDir, bool trustStats = true);
+
+// Byte-for-byte comparison of two files (safe for binaries). A missing or
+// unreadable file compares unequal.
+bool filesIdentical(const std::filesystem::path& a,
+                    const std::filesystem::path& b);
+
+// Files whose working-tree copy the import fast path would *skip* (size and
+// mtime match the mirror - see copyNeeded) yet whose bytes differ from the
+// mirror. Legitimate divergence - a branch edit, a fresh p4 sync - rewrites
+// mtime or size and is never flagged, so any hit means the stamped stats lie
+// and the next import would silently keep stale content. `files` is the
+// tracked mirror listing (mirror-relative, forward slashes), the same list
+// import copies; the returned paths are a subset of it, in input order.
+std::vector<std::string> findStaleFastPathFiles(
+    const std::vector<std::string>& files, const std::string& mirrorDir,
     const std::string& worktreeDir);
+
+// Marker file recording an import that started mutating the repo and has not
+// finished. `gw import` writes it before the first mutation and removes it
+// once the snapshot is committed; while it exists, import distrusts the
+// size+mtime fast path and recopies everything, and `gw doctor` reports the
+// torn import. Lives in the git dir (never the working tree or the mirror),
+// so it survives `git reset --hard` / `git clean` and p4 operations alike.
+std::string importPendingMarkerPath(const std::string& gitDir);
 
 }  // namespace p4gw::mirror

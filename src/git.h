@@ -47,6 +47,31 @@ std::expected<std::string, std::string> switchBranch(const std::string& branch,
 std::expected<std::string, std::string> switchDetached(const std::string& ref,
                                                        const std::string& cwd = {});
 
+// `git switch -f <branch>` / `git switch -f --detach <ref>`: like the plain
+// switches but discard working-tree modifications that would block the
+// checkout. Used only by import's failure recovery, where the tree was
+// verified clean at the start and everything discarded is the torn import's
+// own partial output.
+std::expected<std::string, std::string> switchBranchForce(
+    const std::string& branch, const std::string& cwd = {});
+std::expected<std::string, std::string> switchDetachedForce(
+    const std::string& ref, const std::string& cwd = {});
+
+// `git clean -fd [-- <paths>]`: remove untracked files and directories under
+// the given repo-relative paths (the whole tree when `paths` is empty).
+// Ignored files - the mirror, build output, gw's own config - are never
+// touched (no -x). Used only by import's failure recovery to sweep the
+// partial copies a torn import left behind.
+std::expected<std::string, std::string> cleanUntracked(
+    const std::vector<std::string>& paths, const std::string& cwd = {});
+
+// Absolute path of the repository's git directory (`git rev-parse
+// --absolute-git-dir`), correct for worktrees where `.git` is a file. gw
+// stores its import-pending marker there: outside the working tree so `git
+// reset`/`git clean` can't remove it, and outside the mirror so p4 never
+// sees it.
+std::expected<std::string, std::string> gitDir(const std::string& cwd = {});
+
 // `git update-ref <ref> <target>`: point `ref` at `target` without checking it
 // out. Used to advance the hidden depot-tracking ref and to fast-forward a
 // non-current branch.

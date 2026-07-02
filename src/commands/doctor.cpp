@@ -3,10 +3,12 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <unordered_set>
 
 #include "commands.h"
 #include "config.h"
 #include "git.h"
+#include "mirror.h"
 #include "p4.h"
 #include "process.h"
 
@@ -17,7 +19,7 @@ namespace p4gw {
 namespace {
 
 constexpr const char* kDoctorUsage =
-    "usage: gw doctor\n"
+    "usage: gw doctor [options]\n"
     "\n"
     "Check that the environment is sane for the mirror workflow: git and p4 on\n"
     "PATH, a readable p4gw.cfg, the P4 connection, repo-directory ownership, and\n"
@@ -26,7 +28,12 @@ constexpr const char* kDoctorUsage =
     "FAIL per check and exits non-zero if any check failed.\n"
     "\n"
     "options:\n"
-    "  -h, --help  Show this help\n"
+    "      --verify  Also compare every mirror file byte-for-byte against its\n"
+    "                working-tree copy and flag files whose content differs\n"
+    "                while size+mtime match - the files 'gw import' would\n"
+    "                wrongly skip (fix with 'gw import --full'). Reads the\n"
+    "                whole mirror; can take a while on a big subtree.\n"
+    "  -h, --help    Show this help\n"
     "\n";
 
 }  // namespace
@@ -36,10 +43,15 @@ constexpr const char* kDoctorUsage =
 // mirror, and nothing may map into the Git repo directory - if the spec
 // ever loses the remap line, this is where it gets caught.
 int cmdDoctor(const Args& args) {
+    bool verify = false;
     for (const auto& arg : args) {
         if (arg == "--help" || arg == "-h") {
             std::printf("%s", kDoctorUsage);
             return 0;
+        }
+        if (arg == "--verify") {
+            verify = true;
+            continue;
         }
         std::fprintf(stderr, "gw doctor: unexpected argument '%s'\n",
                      arg.c_str());
@@ -104,6 +116,26 @@ int cmdDoctor(const Args& args) {
                         "appears on the first sync after the view line is "
                         "added\n", mirrorDir.c_str());
             ++warnings;
+        }
+    }
+
+    // A torn import (crash, kill, a file locked past the retries) leaves a
+    // pending marker in the git dir; while it exists, import distrusts its
+    // size+mtime fast path and recopies everything. Surface it here so a
+    // weird working-tree state has a visible cause. No git repo yet (doctor
+    // runs before 'gw init' too) simply means no marker to check.
+    if (auto gitDirPath = git::gitDir(root)) {
+        const std::string marker =
+            mirror::importPendingMarkerPath(*gitDirPath);
+        if (fs::exists(marker)) {
+            std::printf("WARN  an earlier 'gw import' was interrupted (%s "
+                        "exists) - the working tree may not match the mirror; "
+                        "rerun 'gw import'\n      (it will recopy every mirror "
+                        "file instead of trusting sizes and timestamps)\n",
+                        marker.c_str());
+            ++warnings;
+        } else {
+            std::printf("ok    no interrupted import pending\n");
         }
     }
 
@@ -246,9 +278,86 @@ int cmdDoctor(const Args& args) {
                         opened.error().c_str());
             ++warnings;
         }
+
+        // --verify: byte-compare every p4-tracked mirror file against its
+        // working-tree copy, flagging only files import's size+mtime fast path
+        // would *skip* while their bytes differ. Legitimate divergence (a
+        // branch edit, a fresh sync, an opened file's depot-head restore)
+        // rewrites mtime or size and is never flagged, so a hit means the
+        // stamped stats lie - a torn import cleaned up by hand - and the next
+        // plain import would silently keep stale content.
+        if (verify) {
+            for (const auto* rule : includeRules(config->rules)) {
+                const std::string mirrorDir =
+                    resolveMirrorPath(rule->mirrorPath, root);
+                if (!fs::exists(mirrorDir)) continue;  // warned above
+                auto mirrorFiles = mirror::listFiles(mirrorDir);
+                if (!mirrorFiles) {
+                    std::printf("FAIL  --verify: %s\n",
+                                mirrorFiles.error().c_str());
+                    ++failures;
+                    continue;
+                }
+                // Same stray filter as import: only files p4 reports as synced
+                // ever get copied, so only those can hide a stale skip.
+                auto haveDepot = p4::haveFiles(*config, rule->depotPath);
+                if (!haveDepot) {
+                    std::printf("FAIL  --verify: %s\n",
+                                haveDepot.error().c_str());
+                    ++failures;
+                    continue;
+                }
+                std::unordered_set<std::string> haveRel;
+                for (const auto& depotFile : *haveDepot) {
+                    std::string rel =
+                        p4::depotRelativePath(rule->depotPath, depotFile);
+                    if (!rel.empty()) haveRel.insert(std::move(rel));
+                }
+                std::vector<std::string> mirrorTracked;
+                for (auto& path : *mirrorFiles) {
+                    if (haveRel.contains(path)) {
+                        mirrorTracked.push_back(std::move(path));
+                    }
+                }
+                const std::string worktreeDir =
+                    rule->repoSubtree.empty()
+                        ? root
+                        : (fs::path(root) / rule->repoSubtree).string();
+                const auto stale = mirror::findStaleFastPathFiles(
+                    mirrorTracked, mirrorDir, worktreeDir);
+                if (stale.empty()) {
+                    std::printf("ok    verified %zu mirror file(s) against the "
+                                "working tree for %s\n",
+                                mirrorTracked.size(), rule->depotPath.c_str());
+                    continue;
+                }
+                std::printf("FAIL  %zu file(s) under %s differ from the mirror "
+                            "while matching its size+mtime - 'gw import' would "
+                            "wrongly skip them; run 'gw import --full':\n",
+                            stale.size(), rule->depotPath.c_str());
+                constexpr size_t kMaxListed = 20;
+                for (size_t i = 0; i < stale.size() && i < kMaxListed; ++i) {
+                    std::printf("        %s%s%s\n",
+                                rule->repoSubtree.empty()
+                                    ? ""
+                                    : rule->repoSubtree.c_str(),
+                                rule->repoSubtree.empty() ? "" : "/",
+                                stale[i].c_str());
+                }
+                if (stale.size() > kMaxListed) {
+                    std::printf("        ... and %zu more\n",
+                                stale.size() - kMaxListed);
+                }
+                ++failures;
+            }
+        }
     } else {
         std::printf("note  skipping P4 connection, client view, and opened-"
                     "file checks (no p4)\n");
+        if (verify) {
+            std::printf("note  skipping --verify (needs p4 to tell tracked "
+                        "mirror files from strays)\n");
+        }
     }
 
     if (failures == 0 && warnings == 0) {

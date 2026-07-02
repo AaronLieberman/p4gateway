@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_set>
 
@@ -28,6 +29,9 @@ constexpr const char* kImportUsage =
     "options:\n"
     "  -r, --rebase  Replay your local commits on top of the new depot state\n"
     "                (otherwise divergent branches are left as-is)\n"
+    "      --full    Recopy every mirror file, ignoring the size+mtime fast\n"
+    "                path (use when the working tree may not match what the\n"
+    "                stamped stats claim - 'gw doctor --verify' checks that)\n"
     "  -h, --help    Show this help\n"
     "\n";
 
@@ -55,12 +59,15 @@ constexpr const char* kImportUsage =
 //     working.
 int cmdImport(const Args& args) {
     bool rebase = false;
+    bool fullCopy = false;
     for (const auto& arg : args) {
         if (arg == "--help" || arg == "-h") {
             std::printf("%s", kImportUsage);
             return 0;
         } else if (arg == "--rebase" || arg == "-r") {
             rebase = true;
+        } else if (arg == "--full") {
+            fullCopy = true;
         } else {
             std::fprintf(stderr, "gw import: unknown option '%s'\n", arg.c_str());
             std::fprintf(stderr, "%s", kImportUsage);
@@ -96,6 +103,25 @@ int cmdImport(const Args& args) {
                      "gw import: working tree is not clean - commit, stash, "
                      "or gitignore your changes first\n");
         return 1;
+    }
+
+    // A marker in the git dir means an earlier import started mutating the
+    // repo and never finished (crash, kill, a file locked past the retries).
+    // Its stamped mtimes can no longer be trusted - outside cleanup like `git
+    // reset --hard` restores content but can leave stats that still match the
+    // mirror, and the fast path would then skip files whose bytes differ. So
+    // while the marker exists, recopy everything; it comes off below once a
+    // snapshot lands cleanly.
+    auto gitDirPath = git::gitDir(root);
+    if (!gitDirPath) {
+        std::fprintf(stderr, "gw import: %s\n", gitDirPath.error().c_str());
+        return 1;
+    }
+    const std::string marker = mirror::importPendingMarkerPath(*gitDirPath);
+    if (fs::exists(marker)) {
+        std::printf("note  a previous import did not finish - ignoring the "
+                    "size+mtime fast path and recopying every mirror file\n");
+        fullCopy = true;
     }
 
     const std::string& baseline = config->baselineBranch;
@@ -183,25 +209,83 @@ int cmdImport(const Args& args) {
         }
     }
 
-    // From here failures may have moved HEAD off the user's branch; report it.
+    // From here failures may have moved HEAD off the user's branch or half-
+    // written the working tree. Once `mutating` is set, fail() restores the
+    // user's pre-import state: the tree was verified clean above, so
+    // everything the restore discards is the import's own partial output -
+    // `switch -f` puts tracked content back and `clean -fd` sweeps the
+    // untracked partial copies (never ignored files: the mirror and build
+    // output stay put). The pending marker is deliberately left in place so
+    // the next import distrusts the stamped stats and recopies everything.
+    bool mutating = false;
     auto fail = [&](const std::string& message) {
         std::fprintf(stderr, "gw import: %s\n", message.c_str());
+        if (mutating) {
+            bool restored = false;
+            std::string restoredTo;
+            if (!originalBranch.empty()) {
+                restored =
+                    git::switchBranchForce(originalBranch, root).has_value();
+                restoredTo = "'" + originalBranch + "'";
+            } else if (!originalHead.empty()) {
+                restored =
+                    git::switchDetachedForce(originalHead, root).has_value();
+                restoredTo = "detached HEAD at " + originalHead;
+            } else {
+                restored = true;  // unborn branch: no prior commit to return to
+                restoredTo = "its pre-import state";
+            }
+            std::vector<std::string> subtrees;
+            for (const auto* rule : includeRules(config->rules)) {
+                if (rule->repoSubtree.empty()) {
+                    subtrees.clear();  // a whole-repo include: sweep everywhere
+                    break;
+                }
+                subtrees.push_back(rule->repoSubtree);
+            }
+            if (restored && git::cleanUntracked(subtrees, root).has_value()) {
+                std::fprintf(stderr,
+                             "note: working tree restored to %s; the next "
+                             "'gw import' will recopy every mirror file\n",
+                             restoredTo.c_str());
+                return 1;
+            }
+        }
+        // Nothing was mutated, or the restore itself failed: tell the user
+        // where HEAD is and how to get back by hand.
         auto where = git::currentBranch(root);
-        if (where && *where == "HEAD" && !originalHead.empty()) {
-            std::fprintf(stderr,
-                         "note: HEAD is detached mid-import; return with: "
-                         "git switch --detach %s\n",
-                         originalHead.c_str());
-        } else if (where && *where == "HEAD" && !originalBranch.empty()) {
+        if (where && *where == "HEAD" && !originalBranch.empty()) {
             std::fprintf(stderr,
                          "note: HEAD is detached mid-import; return with: "
                          "git switch -f %s\n",
                          originalBranch.c_str());
+        } else if (where && *where == "HEAD" && !originalHead.empty()) {
+            std::fprintf(stderr,
+                         "note: HEAD is detached mid-import; return with: "
+                         "git switch --detach %s\n",
+                         originalHead.c_str());
         } else if (where) {
             std::fprintf(stderr, "note: you are on '%s'\n", where->c_str());
         }
         return 1;
     };
+
+    // From here the command moves HEAD and rewrites working-tree files.
+    // Record that in the marker so a torn import (crash, kill, a locked file)
+    // stays detectable: `gw doctor` reports it and the next import distrusts
+    // the size+mtime fast path. Removed once the snapshot is committed.
+    {
+        std::ofstream markerFile(marker, std::ios::trunc);
+        if (!markerFile) {
+            std::fprintf(stderr, "gw import: cannot write %s\n", marker.c_str());
+            return 1;
+        }
+        markerFile << "A 'gw import' run started and has not finished. If no "
+                      "import is running,\nit was interrupted: run 'gw import' "
+                      "again (it will recopy every mirror\nfile instead of "
+                      "trusting file sizes and timestamps).\n";
+    }
+    mutating = true;
 
     // Position the working tree on a pristine depot base, then overlay the
     // mirror. With an existing depot ref we detach onto it so the user's branch
@@ -340,8 +424,9 @@ int cmdImport(const Args& args) {
                      std::to_string(toDelete) + " to delete)...");
         }
 
-        auto applied =
-            mirror::applySyncActions(plan.actions, mirrorDir, worktreeDir);
+        auto applied = mirror::applySyncActions(plan.actions, mirrorDir,
+                                                worktreeDir,
+                                                /*trustStats=*/!fullCopy);
         if (!applied) return fail(applied.error());
         const size_t actuallyCopied = *applied;
 
@@ -395,6 +480,16 @@ int cmdImport(const Args& args) {
         newDepot = *tip;
         auto advanced = git::updateRef(depotRef, newDepot, root);
         if (!advanced) return fail(advanced.error());
+    }
+
+    // The snapshot is committed (or nothing had changed): the working tree
+    // and its stamped mtimes now faithfully mirror the depot state, so the
+    // fast-path stats are trustworthy again. The branch juggling below only
+    // moves refs and checks out commits - git keeps that consistent on its
+    // own - so the marker comes off here, not at the end.
+    {
+        std::error_code markerEc;
+        fs::remove(marker, markerEc);  // best effort; leftover costs a recopy
     }
 
     progress("Snapshot staged. Updating branch...");
