@@ -193,7 +193,8 @@ conflict/abort) on Linux.
       mirror, so tampering isn't fully escaped. If the goal is the tampering
       risk specifically, a mirror-vs-`p4 have` verification check is a lower
       -risk alternative. Needs a real workspace to verify byte fidelity.
-- [ ] CI on GitHub Actions: Linux + Windows build & unit tests
+- [x] CI on GitHub Actions: Linux + Windows build & unit tests
+      (.github/workflows/ci.yml)
 
 ## Risks / open questions
 
