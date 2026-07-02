@@ -86,15 +86,45 @@ worst external failure (the remap line vanishing from the client spec) is a
 
 **Needs real-workspace verification** (Windows + live P4 server): `p4 change
 -i` spec round-trip, `p4 move` semantics, reconcile-preview output parsing,
-the doctor checks against a real spec. Everything Git-side is exercised by a
-scripted end-to-end run (init → import → branch → import --rebase →
-conflict/abort) on Linux.
+the doctor checks against a real spec. `gw integtest run` automates that
+check on such a machine (see README-integtest.md); the unit tests cover the
+pure logic without p4.
+
+## Next up — prioritized
+
+The short list, in order. Items promoted from the milestones below or added
+by the 2026-07 design review.
+
+1. [ ] `gw prepare --update <CL>`: refresh an existing pending CL after a
+       rebase or review feedback instead of creating a new one. Today the
+       answer to "reviewer wants one more tweak" or "depot moved under my
+       pending CL" is revert-by-hand + re-prepare, and prepare's opened-files
+       preflight (correctly) refuses to run until then — the sharpest edge
+       left in daily use.
+2. [ ] Unique temp-file names: `p4gw_prepare_cmp.tmp`, `p4gw_change_spec.txt`,
+       and the `p4gw_shelf_*` files use fixed names in the shared temp
+       directory, so two concurrent gw runs (or two users on a shared /tmp)
+       can collide. Suffix with the PID (or use a properly unique name).
+       Cheap.
+3. [ ] `gw import` builds its snapshot in a hidden git worktree pinned to
+       `refs/p4gw/<baseline>` instead of detaching the user's checkout.
+       Today import rewrites the working tree twice (detach onto the old
+       snapshot, then switch back), requires a clean tree even for the
+       fetch-equivalent half, and a crash mid-import leaves HEAD detached.
+       A worktree keeps full .gitignore/.gitattributes semantics (the
+       `git add -A` flow is unchanged) while the user's checkout is never
+       touched — only `--rebase`/fast-forward would need a clean tree.
+4. [ ] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
+       POSIX): separate stdout/stderr, no shell quoting risks (cmd.exe still
+       expands `%` inside double quotes), real exit codes (POSIX `pclose`
+       returns the raw wait status), native stdin/stdout plumbing. Separate
+       streams also let several merged-output string heuristics ("no file(s)
+       to reconcile", "not opened") get simpler or go away.
 
 ## M2 — Make it trustworthy
 
-- [ ] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
-      POSIX): separate stdout/stderr, no shell quoting risks, real exit
-      codes, native stdin/stdout plumbing
+- [>] Replace popen with `CreateProcessW`/`posix_spawn` — moved to the
+      prioritized list above
 - [~] `--dry-run`: `gw prepare --dry-run` does all its read-only planning
       (git diff → p4 ops, route check, opened-files guard) and prints the exact
       `p4` operations it would open, then stops before creating the changelist
@@ -147,8 +177,7 @@ conflict/abort) on Linux.
       mirror. `gw integtest run` covers it (shelf has the branch's files, no
       opens remain, the mirror is back at the depot head). **Needs a
       real-workspace check** on a live server.
-- [ ] `gw prepare --update <CL>` to refresh an existing pending CL after a
-      rebase instead of creating a new one
+- [>] `gw prepare --update <CL>` — moved to the prioritized list above
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to
       restore the mirror to depot state
 - [ ] Helpful error for the "depot changed under my pending CL" case
@@ -195,6 +224,10 @@ conflict/abort) on Linux.
       -risk alternative. Needs a real workspace to verify byte fidelity.
 - [x] CI on GitHub Actions: Linux + Windows build & unit tests
       (.github/workflows/ci.yml)
+- [ ] Wishlist: scripted end-to-end run in CI (init → import → branch →
+      import --rebase → prepare). Requires a disposable p4 server (p4d) in
+      the CI container — even `gw init` needs a live client spec — which
+      isn't worth setting up right now; parked until it is.
 
 ## Risks / open questions
 
@@ -210,12 +243,9 @@ conflict/abort) on Linux.
   of truth, and identical bytes across commits is what keeps two imports (and a
   rebase across them) from disagreeing. init commits the metadata before the
   first import, so every depot snapshot carries `.gitattributes` and the policy
-  is always in effect when import stages. A repo whose baseline predates it
-  needs a one-time manual repair - `git add --renormalize .` (bypasses git's
-  stat cache, which a plain `git add -A` trusts even after an attribute
-  change), commit, repoint the depot ref - documented in README; deliberately
-  no fixup code in the tool. `-text` assumes a single client LineEnd (an
-  all-Windows CRLF shop); a mixed team wants `* text=auto`. The doctor check
+  is always in effect when import stages. `-text` assumes a single client
+  LineEnd (an all-Windows CRLF shop); a mixed team wants `* text=auto`. The
+  doctor check
   (a `.gitattributes` that pins EOL, else the LineEnd/autocrlf comparison)
   plus the reconcile-preview canary are the mitigations; revisit if a real
   workspace shows churn.
@@ -237,3 +267,9 @@ conflict/abort) on Linux.
 - **Submit-time races**: depot changes between `import` and submit are
   detected by P4 itself at submit; the M3 "re-prepare" flow is the answer.
   No locking cleverness.
+- **Personal vs shareable config**: the `include`/`exclude` view and `ignore`
+  patterns are depot knowledge a team would want to share, but `p4gw.cfg` is
+  personal (it names the client) and different people may legitimately map
+  different subtrees. Deliberately unsolved for now — needs more mileage on
+  the system to see what teams actually end up sharing before picking a
+  split (committed view file vs personal client file, or similar).

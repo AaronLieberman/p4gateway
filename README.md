@@ -245,28 +245,6 @@ This assumes everyone's P4 client uses the same `LineEnd` — the right choice f
 an all-Windows (CRLF) team. A mixed CRLF/LF team would instead want
 `* text=auto`, which normalizes every blob to LF regardless of client.
 
-A repo whose history predates the `.gitattributes` has blobs committed under
-whatever `core.autocrlf` was at the time, and needs a one-time repair after
-committing the `* -text` policy:
-
-```
-git add --renormalize .    # re-stage every tracked file's exact disk bytes
-git commit -m "Normalize tracked files to P4 bytes"
-git update-ref refs/p4gw/<baseline> HEAD    # make it the depot baseline
-git branch -f <baseline> HEAD
-```
-
-`--renormalize` matters: it re-applies the attribute to every tracked file even
-when git's stat cache says the file is unchanged (a plain `git add -A` trusts
-the cache and re-reads nothing after an attribute change). Files that stay LF
-afterwards are P4 `binary`-typed files whose bytes really are LF — verbatim is
-correct for those. A file `gw prepare` submitted during the LF era can hold
-stale LF bytes in the mirror; a scoped `p4 sync -f <depot_file>` rewrites it
-with the client `LineEnd`, and the next `gw import` picks it up. Then for each
-feature branch, `git diff --ignore-cr-at-eol <baseline> <branch>` — empty means
-it differs only in line endings (its content is already shipped), so delete it;
-otherwise force its files to CRLF and `git rebase <baseline>`.
-
 ### Complex client views
 
 A subtree need not sync as one solid block. Two patterns are supported:
