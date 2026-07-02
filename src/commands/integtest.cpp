@@ -94,7 +94,7 @@ constexpr const char* kObliterateFiles[] = {
 // p4.ini/.p4config are the personal connection config and are kept, not wiped.
 constexpr const char* kKnownLocalEntries[] = {
     "p4.ini", ".p4config",
-    "p4gw.cfg", ".gitignore", ".git",
+    "p4gw.cfg", ".gitignore", ".gitattributes", ".git",
     ".p4gw", "src", "bin",
     "readme.txt", "notes.txt",
 };
@@ -456,6 +456,15 @@ std::expected<void, std::string> itGwInit(ItContext& it) {
     }
     if (!fs::exists(fs::path(it.repoDir) / ".gitignore")) {
         return std::unexpected("init did not write a .gitignore");
+    }
+    if (!fs::exists(fs::path(it.repoDir) / ".gitattributes")) {
+        return std::unexpected("init did not write a .gitattributes");
+    }
+    auto tracked = git::lsFiles(it.repoDir);
+    if (!tracked) return std::unexpected(tracked.error());
+    if (std::find(tracked->begin(), tracked->end(), ".gitattributes") ==
+        tracked->end()) {
+        return std::unexpected(".gitattributes was written but not committed");
     }
     return {};
 }
