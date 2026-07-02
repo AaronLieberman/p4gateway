@@ -21,6 +21,7 @@
 #define PCLOSE _pclose
 #else
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #define POPEN popen
 #define PCLOSE pclose
@@ -154,7 +155,19 @@ std::expected<RunResult, std::string> run(const std::string& exe,
     while ((bytesRead = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
         result.output.append(buffer.data(), bytesRead);
     }
-    result.exitCode = PCLOSE(pipe);
+    const int rawStatus = PCLOSE(pipe);
+#ifdef _WIN32
+    // _pclose returns the child's exit code directly.
+    result.exitCode = rawStatus;
+#else
+    // pclose returns a wait(2) status: the exit code is packed in the high
+    // byte (exit 1 comes back as 256). Without decoding, every tool that
+    // legitimately exits 1 - `git merge-base --is-ancestor` answering "no",
+    // `git rev-parse --verify --quiet` on a missing ref - reads as a hard
+    // failure on Linux while working fine on Windows.
+    result.exitCode = WIFEXITED(rawStatus) ? WEXITSTATUS(rawStatus)
+                                           : -1;  // killed by a signal
+#endif
     return result;
 }
 
