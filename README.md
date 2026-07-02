@@ -20,9 +20,11 @@ built from your commit messages. You review and submit it from P4V.
 
 ## Status
 
-Early development. `init`, `import`, `prepare`, `status`, and `doctor` are implemented
-and exercised end-to-end on the Git side; verification against a real P4
-server is in progress — see [PLAN.md](PLAN.md) for the roadmap and
+In daily use. All commands (`setup`, `init`, `import`, `prepare`, `status`,
+`shelf`, `doctor`) are implemented; `gw integtest run` exercises the whole
+workflow end-to-end against a live P4 server (see
+[README-integtest.md](README-integtest.md)), with a few edge paths still
+awaiting real-workspace checks — see [PLAN.md](PLAN.md) for the roadmap and
 [docs/sample-session.md](docs/sample-session.md) for what using it feels like.
 
 ## The workflow

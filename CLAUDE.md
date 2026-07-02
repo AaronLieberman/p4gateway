@@ -29,8 +29,10 @@ writes is an allowlist (`/*` then `!/src/`…) built from the same ordered rules
 Git tracks only the mapped subtrees, each `exclude` adds a re-exclusion
 (`/src/thirdparty/`), and a re-`include` opens its slice back up
 (`!/src/lib/public/win64/`); unmapped depot content that syncs in place stays
-out of Git unless the user re-includes a directory by hand (`!/dir/`). `gw import` commits mirror state to the `main`
-baseline branch (like `git fetch`/`git pull --rebase`); `gw prepare` stages
+out of Git unless the user re-includes a directory by hand (`!/dir/`). `gw import` commits mirror state to the
+hidden depot-tracking ref `refs/p4gw/<baseline>` — the `origin/main` analog —
+and keeps a like-named local branch fast-forwarded to it for convenience
+(like `git fetch`/`git pull --rebase`); `gw prepare` stages
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
 a pending CL that the user submits from P4V — gw itself never submits.
@@ -63,12 +65,14 @@ build/gw --help                # build\gw.exe on Windows
 ```
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
-src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, doctor, integtest)
+src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, shelf, doctor, integtest)
 src/process.{h,cpp} subprocess runner — the ONLY place that spawns processes
 src/git.{h,cpp}     thin typed wrappers over the git CLI
 src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks
 src/p4ops.{h,cpp}   pure mapping: git diff -> ordered p4 operations (prepare)
 src/mirror.{h,cpp}  mirror <-> working tree sync actions (import)
+src/shelf.{h,cpp}   pure parsing of p4 changes/describe output (shelf list/import)
+src/statusview.{h,cpp}  pure status decision + formatting logic (status)
 src/config.{h,cpp}  p4gw.cfg config file (key = value), found by walking parents
 tests/              zero-dependency harness (test_framework.h), one file per unit
 ```
@@ -113,4 +117,4 @@ wrapper function, not an inline `run("p4", ...)` call.
 - A real end-to-end check needs a Windows machine with a P4 workspace; flag
   changes that need that in your summary rather than claiming they're verified.
   `gw integtest run` automates exactly that check on such a machine
-  (see PLAN-integrationtests.md) — it is never run by ctest or CI.
+  (see README-integtest.md) — it is never run by ctest or CI.
