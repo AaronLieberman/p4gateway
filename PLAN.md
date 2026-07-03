@@ -273,16 +273,15 @@ by the 2026-07 design review.
       without the print-fidelity traps.
 - [x] CI on GitHub Actions: Linux + Windows build & unit tests
       (.github/workflows/ci.yml)
-- [ ] Wishlist: run `gw integtest run` in GitHub Actions. More feasible than
-      it first looked: p4d and p4 are single-binary downloads (free below 5
-      users / 20 workspaces), so a windows-latest job can fetch a pinned
-      version (and cache it), write the sentinel server.id, boot p4d on
-      localhost in the background, script the user/client setup
+- [x] Run `gw integtest run` in GitHub Actions
+      (.github/workflows/integtest.yml). A windows-latest job fetches a
+      pinned p4d/p4 (cached), writes the sentinel server.id, boots p4d on
+      localhost in the background, scripts the user/client setup
       (`p4 user -o | p4 user -i`; `p4 client -o`, append the remap line,
-      `p4 client -i`), and run the suite — the Windows runner is the one
-      that exercises the CRLF LineEnd path. Keep it a separate job from the
-      unit-test CI so a Perforce download hiccup never blocks a normal
-      merge. Parked until wanted.
+      `p4 client -i`), and runs the suite — the Windows runner is the one
+      that exercises the CRLF LineEnd path. It is a separate workflow from
+      the unit-test CI so a Perforce download hiccup never blocks a normal
+      merge.
 
 ## Risks / open questions
 
