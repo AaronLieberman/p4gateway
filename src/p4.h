@@ -292,6 +292,13 @@ std::expected<std::string, std::string> openedInCl(const Config& config,
 std::expected<std::string, std::string> submit(const Config& config,
                                                const std::string& cl);
 
+// `p4 client -i`: replace the client spec with `spec` (a full `p4 client -o`
+// document). Used only by integtest's doctor-misconfiguration scenarios,
+// which deliberately break the view and restore it - gw's own commands never
+// modify the client spec.
+std::expected<std::string, std::string> writeClientSpec(const Config& config,
+                                                        const std::string& spec);
+
 // `p4 shelve -c <cl>`: shelve the files open in `cl`. Used by the integration
 // tests to build a shelf for `gw shelf import` to read.
 std::expected<std::string, std::string> shelve(const Config& config,

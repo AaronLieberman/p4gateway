@@ -155,8 +155,15 @@ by the 2026-07 design review.
 - [x] `--verbose` (global, before or after the command) echoes every spawned
       `git`/`p4` command line to stderr from the process layer, so it covers
       every command uniformly
-- [ ] `gw doctor` against a real Windows P4 workspace catches each
-      misconfiguration when introduced deliberately (exit criterion)
+- [x] `gw doctor` against a real Windows P4 workspace catches each
+      misconfiguration when introduced deliberately (exit criterion) — now a
+      permanent `gw integtest run` step: it rewrites the client view five
+      ways (nothing mapped, remap removed, remap shadowed by a later broader
+      line, subtree excluded, sub-path diverted out of the mirror) and
+      asserts doctor fails with the matching message, restoring the spec
+      around each probe. The "maps into the Git repo" leak message is the
+      one gap: it can't fire when the repo is the client root (as in the
+      fixture) — the diversion check is the one that covers that case.
 - [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
       file list (belt to the reconcile-preview suspenders)
 

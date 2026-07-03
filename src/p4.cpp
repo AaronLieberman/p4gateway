@@ -847,6 +847,25 @@ std::expected<std::string, std::string> submit(const Config& config,
     return run(config, {"submit", "-c", cl});
 }
 
+std::expected<std::string, std::string> writeClientSpec(const Config& config,
+                                                        const std::string& spec) {
+    const fs::path specPath = uniqueTempFile("p4gw_client_spec", ".txt");
+    {
+        std::ofstream file(specPath, std::ios::binary);
+        if (!file) {
+            return std::unexpected("cannot write temp file: " +
+                                   specPath.string());
+        }
+        file << spec;
+    }
+    RunOptions options;
+    options.stdinFile = specPath.string();
+    auto result = runWithOptions(config, {"client", "-i"}, options);
+    std::error_code ec;
+    fs::remove(specPath, ec);
+    return result;
+}
+
 std::expected<std::string, std::string> shelve(const Config& config,
                                                const std::string& cl) {
     return run(config, {"shelve", "-c", cl});

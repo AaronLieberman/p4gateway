@@ -1106,6 +1106,163 @@ std::expected<void, std::string> itFinalChecks(ItContext& it) {
     return {};
 }
 
+// gw doctor's client-view check is the architecture's safety interlock (the
+// "remap line vanished from the spec" risk in PLAN.md), so break the view in
+// each distinct way and assert doctor catches it with the right FAIL message.
+// The spec is broken only for the duration of a single doctor run - mutate,
+// run doctor, restore, then judge - so even a failed assertion leaves the
+// client usable for the next run. One doctor message is deliberately not
+// covered: the "maps into the Git repo directory" leak can't fire in this
+// fixture because the repo IS the client root (everything syncs under it, so
+// that generic check is disabled by design; the depot-subtree diversion check
+// below is the one that covers the client-root case).
+std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string mirrorClient =
+        p4::clientViewPath(clientName, clientRoot, it.mirrorDir, "/...");
+    if (mirrorClient.empty()) {
+        return std::unexpected("cannot compute the mirror's client view path");
+    }
+
+    // Split the spec into the header (through the "View:" line) and the parsed
+    // view, so scenarios can rebuild the spec with a modified line list.
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    const auto view = p4::parseClientView(*originalSpec);
+
+    auto renderLine = [](const p4::ViewLine& line) {
+        auto quoted = [](const std::string& path) {
+            return path.find(' ') == std::string::npos ? path
+                                                       : '"' + path + '"';
+        };
+        std::string s = "\t";
+        if (line.exclude) s += "-";
+        if (line.overlay) s += "+";
+        s += quoted(line.depot) + " " + quoted(line.client) + "\n";
+        return s;
+    };
+    auto buildSpec = [&](const std::vector<p4::ViewLine>& lines) {
+        std::string spec = header + "View:\n";
+        for (const auto& line : lines) spec += renderLine(line);
+        return spec;
+    };
+
+    // The remap line under test, and every other line in original order. The
+    // baseline setup always carries the default broad `//depot/... //client/...`
+    // line (p4 writes it into a fresh client), which is what makes the
+    // missing/shadowed scenarios read as a wrong *effective* mapping rather
+    // than no mapping at all.
+    p4::ViewLine remap;
+    bool foundRemap = false;
+    std::vector<p4::ViewLine> others;
+    for (const auto& line : view) {
+        if (!line.exclude && !line.overlay && line.depot == it.srcDepotPath &&
+            line.client == mirrorClient) {
+            remap = line;
+            foundRemap = true;
+        } else {
+            others.push_back(line);
+        }
+    }
+    if (!foundRemap) {
+        return std::unexpected("the view has no '" + it.srcDepotPath + " " +
+                               mirrorClient + "' remap line to break");
+    }
+
+    // A depot subtree that covers nothing the config maps (scenario 1), and a
+    // line diverting part of the mapped subtree to sync in place (scenario 5).
+    std::string srcBase = it.srcDepotPath;  // "//.../src/..." -> "//.../src/"
+    srcBase.resize(srcBase.size() - 3);
+    const p4::ViewLine unrelated{
+        it.depotRoot + "/p4gw-it-unrelated/...",
+        "//" + clientName + "/p4gw-it-unrelated/...", false, false};
+    const std::string divertClient = p4::clientViewPath(
+        clientName, clientRoot, (fs::path(it.srcWork) / "lib").string(),
+        "/...");
+    if (divertClient.empty()) {
+        return std::unexpected("cannot compute the diversion's client path");
+    }
+    const p4::ViewLine divert{srcBase + "lib/...", divertClient, false, false};
+    p4::ViewLine excludeSrc = remap;
+    excludeSrc.exclude = true;
+
+    struct Scenario {
+        const char* name;
+        std::vector<p4::ViewLine> lines;
+        const char* expect;  // doctor's FAIL message must contain this
+    };
+    std::vector<Scenario> scenarios;
+    scenarios.push_back({"nothing maps the subtree",
+                         {unrelated},
+                         "is not mapped in the client view"});
+    scenarios.push_back({"remap line removed (default line wins)", others,
+                         "the effective mapping for"});
+    {
+        // Remap present but shadowed: a later, broader line wins per path.
+        std::vector<p4::ViewLine> shadowed;
+        shadowed.push_back(remap);
+        shadowed.insert(shadowed.end(), others.begin(), others.end());
+        scenarios.push_back({"remap shadowed by a later broader line",
+                             std::move(shadowed), "the effective mapping for"});
+    }
+    {
+        std::vector<p4::ViewLine> excluded = view;
+        excluded.push_back(excludeSrc);
+        scenarios.push_back({"subtree excluded from the view",
+                             std::move(excluded), "the mirror would be empty"});
+    }
+    {
+        std::vector<p4::ViewLine> diverted = view;
+        diverted.push_back(divert);
+        scenarios.push_back({"sub-path diverted out of the mirror",
+                             std::move(diverted), "diverts part of"});
+    }
+
+    for (const auto& scenario : scenarios) {
+        vlog(it, "-- doctor scenario: " + std::string(scenario.name));
+        auto broke = p4::writeClientSpec(it.p4, buildSpec(scenario.lines));
+        if (!broke) {
+            return std::unexpected(std::string(scenario.name) + ": " +
+                                   broke.error());
+        }
+        auto doctor = runGw(it, it.repoDir, {"doctor"});
+        // Restore before judging, so a failed assertion never leaves the
+        // client spec broken.
+        auto restored = p4::writeClientSpec(it.p4, *originalSpec);
+        if (!restored) {
+            return std::unexpected("restoring the client spec failed: " +
+                                   restored.error());
+        }
+        if (doctor) {
+            return std::unexpected(std::string(scenario.name) +
+                                   ": doctor passed on a broken view:\n" +
+                                   *doctor);
+        }
+        if (doctor.error().find(scenario.expect) == std::string::npos) {
+            return std::unexpected(
+                std::string(scenario.name) +
+                ": doctor failed for the wrong reason - expected \"" +
+                scenario.expect + "\" in:\n" + doctor.error());
+        }
+    }
+
+    // Positive control: with the original spec restored, doctor is green.
+    auto healthy = runGw(it, it.repoDir, {"doctor"});
+    if (!healthy) {
+        return std::unexpected(
+            "doctor still failing after the spec was restored:\n" +
+            healthy.error());
+    }
+    return {};
+}
+
 // Leaves both sides clean: reverts opens, sweeps any leftover changelists,
 // obliterates the explicitly-named depot files, and wipes the local tree. Runs
 // as the last step of a successful run (unless --leave) and as the whole job
@@ -1307,6 +1464,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itShelfImport(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
+        steps.emplace_back("doctor catches each deliberate view "
+                           "misconfiguration",
+                           [&] { return itDoctorMisconfigs(it); });
         if (!it.leave) {
             steps.emplace_back("clean up the depot and local repo",
                                [&] { return itCleanup(it); });
