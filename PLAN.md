@@ -164,13 +164,13 @@ by the 2026-07 design review.
       are pure and unit tested. `gw integtest run` covers the happy path
       (edit + add shelved against head, clean merge), which exercises the
       `#rev` base-revision assumption on a live server. **Still needs a
-      real-workspace check** for binary files, the conflict (shelf based on
-      an older depot state) path, and LineEnd effects on `p4 print` content
-      (print skips the client LineEnd translation sync performs, so an LF
-      base/theirs against a CRLF working tree could conflict on every line -
-      the same translation caveat as the have-manifest note in M4; the
-      integtest print-fidelity step now measures the print-vs-sync question
-      directly, the conflict path itself still needs a manual check).
+      real-workspace check** for the shelf-import flow on binary files and
+      the conflict (shelf based on an older depot state) path. The earlier
+      LineEnd worry - that `p4 print` might skip the client LineEnd
+      translation sync performs and make every merge line conflict - is
+      settled: the integtest print-fidelity step passed on a real Windows
+      workspace (2026-07), print output byte-matches synced mirror copies
+      for text and binary files (see the have-manifest note in M4).
 - [x] `gw shelf list`: the caller's pending and shelved CLs (`p4 -ztag
       changes -s pending|shelved -u <user>`, scoped to `depot_path`), newest
       first with shelved ones flagged, to pick one for `shelf import`.
@@ -247,16 +247,15 @@ by the 2026-07 design review.
       unopened (tampered) files need nothing extra, since the default
       noclobber makes sync refuse to overwrite them, their have rev never
       advances, and the manifest diff skips them - the baseline keeps the
-      clean bytes of the earlier import. Caveat on the depot-head reads:
-      `p4 print` does NOT apply the client LineEnd translation the way sync
-      does (text files come back in the server's LF form, and `+k` keyword
-      expansion differs), so printed text files likely need an explicit
-      LF->CRLF translation by filetype (`p4 opened -ztag` carries the type,
-      the spec carries LineEnd; isBinaryType exists). `gw integtest run` now
-      has a print-fidelity step that byte-compares `p4 print` output against
-      the synced mirror copy for a text and a binary file - run it on
-      Windows to settle whether the translation step is needed (a pass means
-      it is not; the failure message spells out the LF-vs-CRLF case).
+      clean bytes of the earlier import. Depot-head reads via `p4 print`
+      are verified byte-faithful: the integtest print-fidelity step
+      byte-compares print output against the synced mirror copy for a text
+      (CRLF) and a binary file, and it passed on a real Windows workspace
+      (LineEnd local, 2026-07) - print matches sync, so no translation step
+      is needed. Untested corners: a client LineEnd that differs from the
+      platform convention (e.g. 'unix' on Windows - not this shop's
+      configuration) and `+k` keyword files, which the fixture doesn't
+      carry.
       Pairs with the hidden-worktree item in "Next up": together a
       no-change import is one p4 query, a text diff, and a no-op commit.
 - [ ] `import` from depot instead of mirror (design): read content via
