@@ -578,10 +578,8 @@ std::expected<void, std::string> itPrintFidelity(ItContext& it) {
         }
 
         const std::string depotFile = it.depotRoot + "/src/" + c.rel;
-        const fs::path printed =
-            fs::temp_directory_path() /
-            (std::string("p4gw_it_print_") + (c.binary ? "bin" : "txt") +
-             ".tmp");
+        const fs::path printed = uniqueTempFile(
+            std::string("p4gw_it_print_") + (c.binary ? "bin" : "txt"), ".tmp");
         vlog(it, "$ p4 print -q -o " + printed.string() + " " + depotFile +
                  "#head");
         auto fetched = p4::printHeadToFile(it.p4, depotFile, printed.string());

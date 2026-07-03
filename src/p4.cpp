@@ -392,8 +392,7 @@ std::expected<std::string, std::string> createChangelist(
         spec += "\t(no description)\n";
     }
 
-    const fs::path specPath =
-        fs::temp_directory_path() / "p4gw_change_spec.txt";
+    const fs::path specPath = uniqueTempFile("p4gw_change_spec", ".txt");
     {
         std::ofstream file(specPath, std::ios::binary);
         if (!file) {

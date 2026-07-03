@@ -41,6 +41,14 @@ std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const RunOptions& options);
 
+// Returns a path in the system temp directory built from `prefix` and `suffix`
+// but guaranteed unique to this process and call: the process id and a
+// per-process counter are spliced in between. Two concurrent gw runs (or two
+// users sharing /tmp) therefore never collide on the same scratch file. The
+// caller owns the returned path and is responsible for removing it.
+std::string uniqueTempFile(const std::string& prefix,
+                           const std::string& suffix = {});
+
 // True when `path` is owned by the current user. Mismatched ownership is what
 // breaks libgit2-based tools (git-branchless refuses to open the repo) even
 // when the git CLI tolerates it - a confusing failure worth flagging. On

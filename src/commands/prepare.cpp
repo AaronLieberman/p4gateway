@@ -13,6 +13,7 @@
 #include "git.h"
 #include "p4.h"
 #include "p4ops.h"
+#include "process.h"
 
 namespace fs = std::filesystem;
 
@@ -137,7 +138,7 @@ std::expected<bool, std::string> stagedMatchesMirror(const std::string& root,
                                                      const std::string& mirrorPath) {
     std::error_code ec;
     if (!fs::exists(mirrorPath, ec)) return false;  // no counterpart: a real edit
-    const fs::path tmp = fs::temp_directory_path() / "p4gw_prepare_cmp.tmp";
+    const fs::path tmp = uniqueTempFile("p4gw_prepare_cmp", ".tmp");
     auto blob = git::catBlobToFile(commit, repoRel, tmp.string(), root);
     if (!blob) {
         fs::remove(tmp, ec);

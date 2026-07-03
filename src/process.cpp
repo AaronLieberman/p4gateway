@@ -1,6 +1,7 @@
 #include "process.h"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -98,6 +99,22 @@ std::expected<RunResult, std::string> run(const std::string& exe,
     RunOptions options;
     options.cwd = cwd;
     return run(exe, args, options);
+}
+
+std::string uniqueTempFile(const std::string& prefix,
+                           const std::string& suffix) {
+    // PID separates concurrent gw runs; the atomic counter separates multiple
+    // scratch files within one run (and avoids a same-name reuse race after a
+    // caller removes an earlier one).
+    static std::atomic<unsigned long long> counter{0};
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    const std::string name = prefix + "_" + std::to_string(pid) + "_" +
+                             std::to_string(counter.fetch_add(1)) + suffix;
+    return (std::filesystem::temp_directory_path() / name).string();
 }
 
 // NOTE: popen-based implementation merges stderr into stdout via shell

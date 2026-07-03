@@ -101,11 +101,13 @@ by the 2026-07 design review.
        pending CL" is revert-by-hand + re-prepare, and prepare's opened-files
        preflight (correctly) refuses to run until then — the sharpest edge
        left in daily use.
-2. [ ] Unique temp-file names: `p4gw_prepare_cmp.tmp`, `p4gw_change_spec.txt`,
+2. [x] Unique temp-file names: `p4gw_prepare_cmp.tmp`, `p4gw_change_spec.txt`,
        and the `p4gw_shelf_*` files use fixed names in the shared temp
        directory, so two concurrent gw runs (or two users on a shared /tmp)
        can collide. Suffix with the PID (or use a properly unique name).
-       Cheap.
+       Cheap. — done: `uniqueTempFile()` in `process.{h,cpp}` splices the PID
+       and a per-process counter into every scratch name; all call sites
+       (prepare, p4 change spec, shelf, integtest) route through it.
 3. [ ] `gw import` builds its snapshot in a hidden git worktree pinned to
        `refs/p4gw/<baseline>` instead of detaching the user's checkout.
        Today import rewrites the working tree twice (detach onto the old

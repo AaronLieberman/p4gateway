@@ -9,6 +9,7 @@
 #include "config.h"
 #include "git.h"
 #include "p4.h"
+#include "process.h"
 #include "shelf.h"
 
 namespace fs = std::filesystem;
@@ -228,9 +229,8 @@ int shelfImport(const Args& args) {
                 break;
             }
             const fs::path baseTmp =
-                fs::temp_directory_path() / ("p4gw_shelf_base_" + file.rev);
-            const fs::path theirsTmp =
-                fs::temp_directory_path() / "p4gw_shelf_theirs";
+                uniqueTempFile("p4gw_shelf_base", "_" + file.rev);
+            const fs::path theirsTmp = uniqueTempFile("p4gw_shelf_theirs");
             auto base = p4::printDepotFile(*config, file.depotFile + "#" +
                                                         file.rev,
                                            baseTmp.string());
