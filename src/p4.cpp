@@ -43,10 +43,13 @@ std::expected<std::string, std::string> runWithOptions(
         return std::unexpected(result.error());
     }
     if (result->exitCode != 0) {
+        // The error carries both streams: p4 writes its diagnostics to
+        // stderr, and callers that excuse benign failures ("up-to-date",
+        // "not opened") match against this string.
         return std::unexpected(commandLine(fullArgs) + " failed:\n" +
-                               result->output);
+                               result->combined());
     }
-    return result->output;
+    return result->stdoutText;
 }
 
 // Opens `files` with `p4 <verb> -c <cl>`, chunked.
@@ -470,16 +473,16 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config) {
     if (!result) {
         return std::unexpected(result.error());
     }
-    // With nothing to do, p4 prints "... - no file(s) to reconcile." and may
-    // exit non-zero; that's the clean case, not an error.
-    if (reconcileReportsClean(result->output)) {
-        return std::string{};
-    }
-    if (result->exitCode != 0) {
+    // Real preview lines arrive on stdout; "no file(s) to reconcile" is a
+    // per-path notice on stderr (with a non-zero exit when nothing at all was
+    // found). The two can mix - one include clean, another with strays - so
+    // keep whatever stdout carries and let the notice only excuse the exit
+    // code, never hide preview output.
+    if (result->exitCode != 0 && !reconcileReportsClean(result->stderrText)) {
         return std::unexpected(commandLine(args) + " failed:\n" +
-                               result->output);
+                               result->combined());
     }
-    return result->output;
+    return result->stdoutText;
 }
 
 std::expected<std::string, std::string> reconcilePreviewFiles(
@@ -495,17 +498,18 @@ std::expected<std::string, std::string> reconcilePreviewFiles(
         if (!result) {
             return std::unexpected(result.error());
         }
-        // A clean chunk reports "No file(s) to reconcile." (capitalized for an
-        // explicit file list, and possibly with a non-zero exit); skip it.
-        // Anything else is either real preview output or a failure.
-        if (reconcileReportsClean(result->output)) {
-            continue;
-        }
-        if (result->exitCode != 0) {
+        // Preview lines arrive on stdout; a clean file reports "No file(s) to
+        // reconcile." on stderr (capitalized for an explicit file list, and
+        // with a non-zero exit when the whole chunk is clean). A chunk can mix
+        // clean and changed files, so always keep stdout - the notice only
+        // excuses the exit code. (The old merged-stream capture couldn't tell
+        // these apart and dropped a mixed chunk's preview lines entirely.)
+        if (result->exitCode != 0 &&
+            !reconcileReportsClean(result->stderrText)) {
             return std::unexpected(commandLine(args) + " failed:\n" +
-                                   result->output);
+                                   result->combined());
         }
-        combined += result->output;
+        combined += result->stdoutText;
     }
     return combined;
 }
@@ -684,19 +688,21 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
     if (!result) {
         return std::unexpected(result.error());
     }
-    if (result->output.find("not opened") != std::string::npos) {
-        return std::vector<OpenedFile>{};
-    }
-    if (result->exitCode != 0) {
+    // The -ztag records live on stdout; a "file(s) not opened" notice on
+    // stderr just means the normal empty result and only excuses a non-zero
+    // exit (parsing empty stdout already yields no files).
+    if (result->exitCode != 0 &&
+        result->stderrText.find("not opened") == std::string::npos) {
         return std::unexpected(commandLine(args) + " failed:\n" +
-                               result->output);
+                               result->combined());
     }
     // `p4 opened` is scoped to the include depot paths, so it also reports files
     // open under excluded subtrees (vendored libs the user edits directly in
     // P4). Those are not part of any gw changelist, so drop them (via the
     // ordered rules) - otherwise prepare's opened-files preflight would refuse
     // to run on account of the user's own unrelated P4 work.
-    return filterExcludedOpens(parseTaggedOpened(result->output), config.rules);
+    return filterExcludedOpens(parseTaggedOpened(result->stdoutText),
+                               config.rules);
 }
 
 std::expected<std::vector<std::string>, std::string> haveFiles(
@@ -709,16 +715,16 @@ std::expected<std::vector<std::string>, std::string> haveFiles(
     }
     // Nothing synced under the subtree is a normal, empty result - not an
     // error - so it must not be confused with a failed call (which would
-    // otherwise make import treat every mirror file as a stray).
-    if (result->output.find("file(s) not on client") != std::string::npos ||
-        result->output.find("no such file") != std::string::npos) {
-        return std::vector<std::string>{};
-    }
-    if (result->exitCode != 0) {
+    // otherwise make import treat every mirror file as a stray). The notice
+    // arrives on stderr and only excuses a non-zero exit; the file records
+    // themselves are stdout.
+    if (result->exitCode != 0 &&
+        result->stderrText.find("file(s) not on client") == std::string::npos &&
+        result->stderrText.find("no such file") == std::string::npos) {
         return std::unexpected(commandLine(args) + " failed:\n" +
-                               result->output);
+                               result->combined());
     }
-    return parseTaggedDepotFiles(result->output);
+    return parseTaggedDepotFiles(result->stdoutText);
 }
 
 std::expected<void, std::string> printHeadToFile(const Config& config,
@@ -913,7 +919,7 @@ std::expected<int, std::string> securityLevel(const Config& config) {
     if (!result) {
         return std::unexpected(result.error());
     }
-    return securityLevelFromShow(result->output);
+    return securityLevelFromShow(result->stdoutText);
 }
 
 }  // namespace p4gw::p4

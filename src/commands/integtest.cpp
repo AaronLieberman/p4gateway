@@ -141,13 +141,15 @@ std::expected<std::string, std::string> runGw(const ItContext& it,
     if (!result) {
         return std::unexpected(result.error());
     }
-    vlog(it, result->output);
+    // The tests assert against everything gw said, so keep both streams
+    // together here (gw prints its notes to stdout and errors to stderr).
+    vlog(it, result->combined());
     if (result->exitCode != 0) {
         return std::unexpected(display + " exited " +
                                std::to_string(result->exitCode) + ":\n" +
-                               result->output);
+                               result->combined());
     }
-    return result->output;
+    return result->combined();
 }
 
 std::expected<void, std::string> writeFile(const fs::path& path,

@@ -64,7 +64,7 @@ int cmdDoctor(const Args& args) {
 
     auto gitVersion = run("git", {"--version"});
     if (gitVersion && gitVersion->exitCode == 0) {
-        std::printf("ok    git found: %s", gitVersion->output.c_str());
+        std::printf("ok    git found: %s", gitVersion->stdoutText.c_str());
     } else {
         std::printf("FAIL  git not found on PATH\n");
         ++failures;

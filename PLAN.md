@@ -137,9 +137,13 @@ by the 2026-07 design review.
        trailing `\r` already. Verified on Linux with a scratch driver
        (argument fidelity incl. `%`/`$()`/quotes, cwd, stdin/stdout
        redirection with binary content, exit-code passthrough, missing
-       exe/cwd as start failures, a 1.6 MB dual-stream flood); **the Windows
-       path needs its CI/integtest run** — simplifying the heuristics on top
-       of separate streams is possible follow-up, not done here.
+       exe/cwd as start failures, a 1.6 MB dual-stream flood) and on Windows
+       by a green integtest workflow run. Follow-up done: RunResult carries
+       stdoutText/stderrText, parsers read stdout only, and the "no results"
+       notices ("no file(s) to reconcile", "not opened", "not on client")
+       are matched against stderr purely to excuse a non-zero exit — which
+       also fixed a latent merged-stream bug where a reconcile chunk mixing
+       clean and changed files had its real preview lines dropped.
 
 ## M2 — Make it trustworthy
 

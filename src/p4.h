@@ -143,10 +143,13 @@ std::expected<std::string, std::string> reconcilePreview(const Config& config);
 std::expected<std::string, std::string> reconcilePreviewFiles(
     const Config& config, const std::vector<std::string>& files);
 
-// True when `p4 reconcile` output means "nothing to reconcile". Matched
-// case-insensitively: p4 says "No file(s) to reconcile." for an explicit file
-// list but "<path> - no file(s) to reconcile." for a directory, and the
-// difference must not read as a spurious mismatch. Pure; unit-tested.
+// True when `p4 reconcile` diagnostics mean "nothing to reconcile". The notice
+// arrives on stderr (real preview lines are stdout), so callers apply this to
+// the stderr text - or to an error string that embeds it - to excuse a
+// non-zero exit. Matched case-insensitively: p4 says "No file(s) to
+// reconcile." for an explicit file list but "<path> - no file(s) to
+// reconcile." for a directory, and the difference must not read as a spurious
+// mismatch. Pure; unit-tested.
 bool reconcileReportsClean(const std::string& output);
 
 // Highest submitted changelist among the synced revisions of the subtree

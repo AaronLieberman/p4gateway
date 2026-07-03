@@ -248,9 +248,9 @@ std::expected<RunResult, std::string> spawnChild(
 
     // Drain both pipes concurrently: a child that fills one while gw reads
     // only the other would deadlock once the ~64 KiB pipe buffer is full.
-    std::string errText;
-    std::thread errReader([&] { errText = readPipe(errRead); });
-    std::string outText = readPipe(outRead);
+    RunResult result;
+    std::thread errReader([&] { result.stderrText = readPipe(errRead); });
+    result.stdoutText = readPipe(outRead);
     errReader.join();
     CloseHandle(outRead);
     outRead = nullptr;
@@ -263,9 +263,7 @@ std::expected<RunResult, std::string> spawnChild(
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
-    RunResult result;
     result.exitCode = static_cast<int>(exitCode);
-    result.output = std::move(outText) + errText;
     return result;
 }
 
@@ -376,8 +374,7 @@ std::expected<RunResult, std::string> spawnChild(
     }
 
     RunResult result;
-    std::string errText;
-    drainPipes(outPipe[0], errPipe[0], result.output, errText);
+    drainPipes(outPipe[0], errPipe[0], result.stdoutText, result.stderrText);
     closeAll();
 
     int status = 0;
@@ -389,7 +386,6 @@ std::expected<RunResult, std::string> spawnChild(
     // would read as a hard failure.
     result.exitCode =
         WIFEXITED(status) ? WEXITSTATUS(status) : -1;  // killed by a signal
-    result.output += errText;
     return result;
 }
 

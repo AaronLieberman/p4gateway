@@ -26,9 +26,11 @@ std::expected<std::string, std::string> run(const std::vector<std::string>& args
     if (result->exitCode != 0) {
         std::string cmd = "git";
         for (const auto& arg : args) cmd += ' ' + arg;
-        return std::unexpected(cmd + " failed:\n" + result->output);
+        return std::unexpected(cmd + " failed:\n" + result->combined());
     }
-    return trimTrailing(result->output);
+    // The value is stdout alone: git's chatter ("Switched to branch ...",
+    // hints) goes to stderr and must not pollute a parsed result.
+    return trimTrailing(result->stdoutText);
 }
 
 std::expected<std::string, std::string> currentBranch(const std::string& cwd) {
@@ -138,7 +140,7 @@ std::expected<bool, std::string> mergeFile(const std::string& ours,
     // git merge-file: 0 = clean, N>0 = that many conflicts, <0 (255) = error.
     if (result->exitCode < 0 || result->exitCode == 255) {
         return std::unexpected("git merge-file " + ours + " " + base + " " +
-                               theirs + " failed:\n" + result->output);
+                               theirs + " failed:\n" + result->combined());
     }
     return result->exitCode != 0;
 }
@@ -154,7 +156,7 @@ std::expected<bool, std::string> isAncestor(const std::string& ancestor,
     if (result->exitCode == 0) return true;
     if (result->exitCode == 1) return false;
     return std::unexpected("git merge-base --is-ancestor " + ancestor + " " +
-                           descendant + " failed:\n" + result->output);
+                           descendant + " failed:\n" + result->combined());
 }
 
 std::expected<AheadBehind, std::string> aheadBehind(const std::string& base,
@@ -256,7 +258,7 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd) {
             "git", {"config", scope, "--get", "branchless.core.mainBranch"},
             cwd);
         if (!result) return std::unexpected(result.error());
-        if (result->exitCode == 0 && !trimTrailing(result->output).empty()) {
+        if (result->exitCode == 0 && !trimTrailing(result->stdoutText).empty()) {
             return true;
         }
     }
@@ -291,9 +293,10 @@ std::expected<std::string, std::string> catBlobToFile(const std::string& ref,
     }
     if (result->exitCode != 0) {
         return std::unexpected("git cat-file blob " + ref + ":" + path +
-                               " failed:\n" + result->output);
+                               " failed:\n" + result->combined());
     }
-    return result->output;
+    // stdout went to destFile; anything captured is stderr chatter.
+    return result->stderrText;
 }
 
 std::expected<std::string, std::string> configValue(const std::string& key,
@@ -309,7 +312,7 @@ std::expected<std::string, std::string> configValue(const std::string& key,
     if (result->exitCode != 0) {
         return std::string{};  // unset key
     }
-    return trimTrailing(result->output);
+    return trimTrailing(result->stdoutText);
 }
 
 std::expected<std::vector<FileChange>, std::string> diffNameStatus(

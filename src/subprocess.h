@@ -17,11 +17,16 @@ namespace p4gw {
 
 struct RunResult {
     int exitCode = 0;
-    // The child's stdout followed by its stderr. The streams are captured
-    // separately (raw bytes, no text-mode translation) and concatenated in
-    // that order, so substring checks over both keep working but the two are
-    // no longer interleaved the way the old shell-merged capture was.
-    std::string output;
+    // The child's two streams, captured separately as raw bytes (no text-mode
+    // translation). Data parsers read stdoutText; the "no results" notices p4
+    // emits ("no file(s) to reconcile", "file(s) not opened") arrive on
+    // stderrText, so they can never be mistaken for - or hide - real output.
+    std::string stdoutText;
+    std::string stderrText;
+
+    // stdout followed by stderr - for error messages that should show
+    // everything the child said.
+    std::string combined() const { return stdoutText + stderrText; }
 };
 
 struct RunOptions {
