@@ -147,13 +147,11 @@ by the 2026-07 design review.
 
 ## M2 — Make it trustworthy
 
-- [>] Replace popen with `CreateProcessW`/`posix_spawn` — moved to the
-      prioritized list above
-- [~] `--dry-run`: `gw prepare --dry-run` does all its read-only planning
+- [x] `--dry-run`: `gw prepare --dry-run` does all its read-only planning
       (git diff → p4 ops, route check, opened-files guard) and prints the exact
       `p4` operations it would open, then stops before creating the changelist
-      or touching the mirror. Still to extend to `import` and the other
-      mutating commands.
+      or touching the mirror.
+- [ ] `--dry-run` for `import` and the other mutating commands.
 - [x] `--verbose` (global, before or after the command) echoes every spawned
       `git`/`p4` command line to stderr from the process layer, so it covers
       every command uniformly
