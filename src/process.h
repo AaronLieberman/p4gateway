@@ -8,7 +8,11 @@ namespace p4gw {
 
 struct RunResult {
     int exitCode = 0;
-    std::string output;  // stdout and stderr combined
+    // The child's stdout followed by its stderr. The streams are captured
+    // separately (raw bytes, no text-mode translation) and concatenated in
+    // that order, so substring checks over both keep working but the two are
+    // no longer interleaved the way the old shell-merged capture was.
+    std::string output;
 };
 
 struct RunOptions {
@@ -27,9 +31,11 @@ void setVerbose(bool on);
 // identity to the local account.
 std::string currentUser();
 
-// Runs an external command and captures its output. Arguments are quoted as
-// needed for the platform shell. If `cwd` is non-empty the command runs in
-// that directory.
+// Runs an external command and captures its output. The child is spawned
+// directly (CreateProcessW / posix_spawnp) with the arguments passed verbatim
+// - no shell, so nothing is subject to shell quoting or expansion - and the
+// executable is resolved against PATH. If `cwd` is non-empty the command runs
+// in that directory.
 //
 // Returns an error string only if the process could not be started; a
 // non-zero exit code is reported through RunResult::exitCode.

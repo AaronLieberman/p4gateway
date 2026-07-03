@@ -121,12 +121,25 @@ by the 2026-07 design review.
        touched — only `--rebase`/fast-forward would need a clean tree.
        Pairs with the incremental-import-via-have-manifest design note in
        M4; together a no-change import is one p4 query and a no-op commit.
-4. [ ] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
+4. [x] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
        POSIX): separate stdout/stderr, no shell quoting risks (cmd.exe still
        expands `%` inside double quotes), real exit codes (POSIX `pclose`
        returns the raw wait status), native stdin/stdout plumbing. Separate
        streams also let several merged-output string heuristics ("no file(s)
-       to reconcile", "not opened") get simpler or go away.
+       to reconcile", "not opened") get simpler or go away. — done: the
+       runner spawns children directly (posix_spawnp with PATH lookup and
+       addchdir_np; CreateProcessW with CRT argv quoting and the command
+       resolved against PATH), captures stdout and stderr on separate pipes
+       drained concurrently (poll / a reader thread, so a flooded stream
+       can't deadlock), and keeps RunResult::output as stdout-then-stderr so
+       every existing substring heuristic still holds. Captured bytes are now
+       raw (no _popen text-mode CRLF stripping) — the line parsers all strip
+       trailing `\r` already. Verified on Linux with a scratch driver
+       (argument fidelity incl. `%`/`$()`/quotes, cwd, stdin/stdout
+       redirection with binary content, exit-code passthrough, missing
+       exe/cwd as start failures, a 1.6 MB dual-stream flood); **the Windows
+       path needs its CI/integtest run** — simplifying the heuristics on top
+       of separate streams is possible follow-up, not done here.
 
 ## M2 — Make it trustworthy
 

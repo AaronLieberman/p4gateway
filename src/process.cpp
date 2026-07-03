@@ -1,6 +1,5 @@
 #include "process.h"
 
-#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -17,15 +16,21 @@
 #include <windows.h>
 
 #include <aclapi.h>
+
+#include <thread>
 #pragma comment(lib, "advapi32.lib")
-#define POPEN _popen
-#define PCLOSE _pclose
 #else
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#define POPEN popen
-#define PCLOSE pclose
+
+#include <cerrno>
+#include <cstring>
+
+extern char** environ;
 #endif
 
 namespace p4gw {
@@ -34,8 +39,10 @@ namespace {
 
 bool g_verbose = false;
 
-// Quotes a single argument for the platform shell if it contains characters
-// that would otherwise be misinterpreted.
+// Quotes a single argument for *display* (the --verbose echo and error
+// messages), so the line can be copy-pasted into a shell to rerun by hand.
+// The spawn itself passes arguments to the child natively - no shell is
+// involved - so this quoting never affects what the child receives.
 std::string quoteArg(const std::string& arg) {
     if (!arg.empty() && arg.find_first_of(" \t\"'&|<>^%") == std::string::npos) {
         return arg;
@@ -79,6 +86,315 @@ std::string envValue(const char* name) {
 #endif
 }
 
+#ifdef _WIN32
+
+// Appends one argument to a CreateProcessW command line, quoted the way the
+// MSVC CRT and CommandLineToArgvW parse it back into argv: backslashes are
+// literal except when they precede a double quote, where N backslashes plus a
+// quote must be written as 2N+1 backslashes plus the quote (and a quoted
+// argument's trailing backslashes are doubled so they don't escape the closing
+// quote). This is argv quoting for the child itself - no cmd.exe - so shell
+// metacharacters (%, ^, &) need no treatment.
+void appendQuotedArg(std::wstring& cmdline, const std::wstring& arg) {
+    if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+        cmdline += arg;
+        return;
+    }
+    cmdline += L'"';
+    size_t backslashes = 0;
+    for (const wchar_t c : arg) {
+        if (c == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (c == L'"') {
+            cmdline.append(backslashes * 2 + 1, L'\\');
+        } else {
+            cmdline.append(backslashes, L'\\');
+        }
+        backslashes = 0;
+        cmdline += c;
+    }
+    cmdline.append(backslashes * 2, L'\\');
+    cmdline += L'"';
+}
+
+// Narrow to UTF-16 for the W-series APIs, via the active code page - the
+// encoding gw's narrow strings (argv, fs::path::string()) actually carry
+// today. The M3 "UTF-8 output" polish item revisits the encoding story.
+std::wstring widen(const std::string& narrow) {
+    if (narrow.empty()) return {};
+    const int size = static_cast<int>(narrow.size());
+    const int len =
+        MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, nullptr, 0);
+    std::wstring wide(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, wide.data(), len);
+    return wide;
+}
+
+// Reads a pipe to EOF (ReadFile fails with ERROR_BROKEN_PIPE once the child
+// closes its end). Raw bytes - no text-mode CRLF translation, unlike _popen.
+std::string readPipe(HANDLE pipe) {
+    std::string text;
+    char buffer[4096];
+    DWORD got = 0;
+    while (ReadFile(pipe, buffer, sizeof buffer, &got, nullptr) && got > 0) {
+        text.append(buffer, got);
+    }
+    return text;
+}
+
+std::expected<RunResult, std::string> spawnChild(
+    const std::string& exe, const std::vector<std::string>& args,
+    const RunOptions& options) {
+    std::wstring cmdline;
+    appendQuotedArg(cmdline, widen(exe));
+    for (const auto& arg : args) {
+        cmdline += L' ';
+        appendQuotedArg(cmdline, widen(arg));
+    }
+
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof inheritable;
+    inheritable.bInheritHandle = TRUE;
+
+    HANDLE outRead = nullptr;
+    HANDLE outWrite = nullptr;
+    HANDLE errRead = nullptr;
+    HANDLE errWrite = nullptr;
+    HANDLE stdinFile = nullptr;   // owned handle for options.stdinFile
+    HANDLE stdoutFile = nullptr;  // owned handle for options.stdoutFile
+    auto closeAll = [&] {
+        for (HANDLE h : {outRead, outWrite, errRead, errWrite, stdinFile,
+                         stdoutFile}) {
+            if (h != nullptr) CloseHandle(h);
+        }
+    };
+
+    // The child inherits the write ends; the parent's read ends must not leak
+    // into the child or the pipes would never signal EOF.
+    if (!CreatePipe(&outRead, &outWrite, &inheritable, 0) ||
+        !CreatePipe(&errRead, &errWrite, &inheritable, 0)) {
+        closeAll();
+        return std::unexpected("failed to start process: " + exe +
+                               ": cannot create pipes");
+    }
+    SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
+
+    // Without a stdin redirect the child shares gw's own stdin (as popen did),
+    // so an interactive prompt (p4 login) still reaches the console.
+    HANDLE childStdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (!options.stdinFile.empty()) {
+        stdinFile = CreateFileW(widen(options.stdinFile).c_str(), GENERIC_READ,
+                                FILE_SHARE_READ, &inheritable, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (stdinFile == INVALID_HANDLE_VALUE) {
+            stdinFile = nullptr;
+            closeAll();
+            return std::unexpected("failed to start process: " + exe +
+                                   ": cannot open " + options.stdinFile);
+        }
+        childStdin = stdinFile;
+    }
+    HANDLE childStdout = outWrite;
+    if (!options.stdoutFile.empty()) {
+        stdoutFile = CreateFileW(widen(options.stdoutFile).c_str(),
+                                 GENERIC_WRITE, 0, &inheritable, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (stdoutFile == INVALID_HANDLE_VALUE) {
+            stdoutFile = nullptr;
+            closeAll();
+            return std::unexpected("failed to start process: " + exe +
+                                   ": cannot write " + options.stdoutFile);
+        }
+        childStdout = stdoutFile;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = childStdin;
+    si.hStdOutput = childStdout;
+    si.hStdError = errWrite;
+    PROCESS_INFORMATION pi{};
+    // No application name: CreateProcessW resolves the command line's first
+    // token against PATH (appending .exe), like the shell used to.
+    const std::wstring cwd = widen(options.cwd);
+    if (!CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr,
+                        /*bInheritHandles=*/TRUE, 0, nullptr,
+                        options.cwd.empty() ? nullptr : cwd.c_str(), &si,
+                        &pi)) {
+        const DWORD error = GetLastError();
+        closeAll();
+        return std::unexpected("failed to start process: " + exe + " (error " +
+                               std::to_string(error) + ")");
+    }
+
+    // Close the child's ends (and the redirect files) in the parent, or the
+    // pipe reads below would never see EOF.
+    CloseHandle(outWrite);
+    outWrite = nullptr;
+    CloseHandle(errWrite);
+    errWrite = nullptr;
+    if (stdinFile != nullptr) {
+        CloseHandle(stdinFile);
+        stdinFile = nullptr;
+    }
+    if (stdoutFile != nullptr) {
+        CloseHandle(stdoutFile);
+        stdoutFile = nullptr;
+    }
+
+    // Drain both pipes concurrently: a child that fills one while gw reads
+    // only the other would deadlock once the ~64 KiB pipe buffer is full.
+    std::string errText;
+    std::thread errReader([&] { errText = readPipe(errRead); });
+    std::string outText = readPipe(outRead);
+    errReader.join();
+    CloseHandle(outRead);
+    outRead = nullptr;
+    CloseHandle(errRead);
+    errRead = nullptr;
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    RunResult result;
+    result.exitCode = static_cast<int>(exitCode);
+    result.output = std::move(outText) + errText;
+    return result;
+}
+
+#else  // POSIX
+
+// Reads both pipes to EOF concurrently via poll: a child that fills one pipe
+// while gw drains only the other would deadlock once the ~64 KiB pipe buffer
+// is full.
+void drainPipes(int outFd, int errFd, std::string& outText,
+                std::string& errText) {
+    struct Stream {
+        int fd;
+        std::string* dest;
+        bool open = true;
+    } streams[2] = {{outFd, &outText, true}, {errFd, &errText, true}};
+
+    char buffer[4096];
+    while (streams[0].open || streams[1].open) {
+        pollfd fds[2];
+        nfds_t count = 0;
+        for (const auto& s : streams) {
+            if (s.open) fds[count++] = {s.fd, POLLIN, 0};
+        }
+        if (poll(fds, count, -1) < 0) {
+            if (errno == EINTR) continue;
+            return;  // give up on the output; waitpid still reaps the child
+        }
+        nfds_t next = 0;
+        for (auto& s : streams) {
+            if (!s.open) continue;
+            const short revents = fds[next++].revents;
+            if (revents == 0) continue;  // POLLIN or POLLHUP: try a read
+            const ssize_t got = read(s.fd, buffer, sizeof buffer);
+            if (got > 0) {
+                s.dest->append(buffer, static_cast<size_t>(got));
+            } else if (got == 0 || errno != EINTR) {
+                s.open = false;  // EOF, or a real error
+            }
+        }
+    }
+}
+
+std::expected<RunResult, std::string> spawnChild(
+    const std::string& exe, const std::vector<std::string>& args,
+    const RunOptions& options) {
+    int outPipe[2] = {-1, -1};
+    int errPipe[2] = {-1, -1};
+    auto closeAll = [&] {
+        for (int fd : {outPipe[0], outPipe[1], errPipe[0], errPipe[1]}) {
+            if (fd >= 0) ::close(fd);
+        }
+    };
+    if (::pipe(outPipe) != 0 || ::pipe(errPipe) != 0) {
+        closeAll();
+        return std::unexpected("failed to start process: " + exe +
+                               ": cannot create pipes");
+    }
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    // File actions run in the child, in order, before exec; an action that
+    // fails (missing cwd, unreadable stdin file) surfaces as posix_spawnp's
+    // return value below. addchdir_np is the one non-standard call: glibc,
+    // musl, and macOS all provide it, and it is what makes a fork/exec
+    // fallback unnecessary.
+    if (!options.cwd.empty()) {
+        posix_spawn_file_actions_addchdir_np(&actions, options.cwd.c_str());
+    }
+    if (!options.stdinFile.empty()) {
+        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO,
+                                         options.stdinFile.c_str(), O_RDONLY,
+                                         0);
+    }
+    if (!options.stdoutFile.empty()) {
+        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
+                                         options.stdoutFile.c_str(),
+                                         O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    } else {
+        posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO);
+    }
+    posix_spawn_file_actions_adddup2(&actions, errPipe[1], STDERR_FILENO);
+    for (int fd : {outPipe[0], outPipe[1], errPipe[0], errPipe[1]}) {
+        posix_spawn_file_actions_addclose(&actions, fd);
+    }
+
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 2);
+    argv.push_back(const_cast<char*>(exe.c_str()));
+    for (const auto& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    pid_t pid = -1;
+    // posix_spawnp resolves `exe` against PATH and reports the child's exec
+    // failure (e.g. a missing binary) as its own return value.
+    const int rc =
+        posix_spawnp(&pid, exe.c_str(), &actions, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    ::close(outPipe[1]);
+    outPipe[1] = -1;
+    ::close(errPipe[1]);
+    errPipe[1] = -1;
+    if (rc != 0) {
+        closeAll();
+        return std::unexpected("failed to start process: " + exe + ": " +
+                               std::strerror(rc));
+    }
+
+    RunResult result;
+    std::string errText;
+    drainPipes(outPipe[0], errPipe[0], result.output, errText);
+    closeAll();
+
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    // The exit code is packed in the wait status: without decoding, every
+    // tool that legitimately exits 1 - `git merge-base --is-ancestor`
+    // answering "no", `git rev-parse --verify --quiet` on a missing ref -
+    // would read as a hard failure.
+    result.exitCode =
+        WIFEXITED(status) ? WEXITSTATUS(status) : -1;  // killed by a signal
+    result.output += errText;
+    return result;
+}
+
+#endif
+
 }  // namespace
 
 void setVerbose(bool on) { g_verbose = on; }
@@ -117,39 +433,11 @@ std::string uniqueTempFile(const std::string& prefix,
     return (std::filesystem::temp_directory_path() / name).string();
 }
 
-// NOTE: popen-based implementation merges stderr into stdout via shell
-// redirection and routes through the shell, which is also how the stdin and
-// stdout file redirections are done. PLAN.md replaces this with
-// CreateProcess/posix_spawn for separate streams and no shell.
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const RunOptions& options) {
-    std::string cmdline;
-    if (!options.cwd.empty()) {
-#ifdef _WIN32
-        cmdline += "cd /d " + quoteArg(options.cwd) + " && ";
-#else
-        cmdline += "cd " + quoteArg(options.cwd) + " && ";
-#endif
-    }
-    cmdline += quoteArg(exe);
-    for (const auto& arg : args) {
-        cmdline += ' ';
-        cmdline += quoteArg(arg);
-    }
-    if (!options.stdinFile.empty()) {
-        cmdline += " < " + quoteArg(options.stdinFile);
-    }
-    // `2>&1` first so stderr is duplicated onto the capture pipe *before* a
-    // stdout file redirection takes stdout away from it.
-    cmdline += " 2>&1";
-    if (!options.stdoutFile.empty()) {
-        cmdline += " > " + quoteArg(options.stdoutFile);
-    }
-
     if (g_verbose) {
-        // Echo the meaningful command, not the shell wrapping (cd/redirects);
-        // quoted so it can be copy-pasted to rerun by hand.
+        // Echo the command quoted so it can be copy-pasted to rerun by hand.
         std::string display = quoteArg(exe);
         for (const auto& arg : args) {
             display += ' ';
@@ -160,32 +448,7 @@ std::expected<RunResult, std::string> run(const std::string& exe,
         }
         std::fprintf(stderr, "+ %s\n", display.c_str());
     }
-
-    FILE* pipe = POPEN(cmdline.c_str(), "r");
-    if (!pipe) {
-        return std::unexpected("failed to start process: " + exe);
-    }
-
-    RunResult result;
-    std::array<char, 4096> buffer{};
-    size_t bytesRead = 0;
-    while ((bytesRead = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
-        result.output.append(buffer.data(), bytesRead);
-    }
-    const int rawStatus = PCLOSE(pipe);
-#ifdef _WIN32
-    // _pclose returns the child's exit code directly.
-    result.exitCode = rawStatus;
-#else
-    // pclose returns a wait(2) status: the exit code is packed in the high
-    // byte (exit 1 comes back as 256). Without decoding, every tool that
-    // legitimately exits 1 - `git merge-base --is-ancestor` answering "no",
-    // `git rev-parse --verify --quiet` on a missing ref - reads as a hard
-    // failure on Linux while working fine on Windows.
-    result.exitCode = WIFEXITED(rawStatus) ? WEXITSTATUS(rawStatus)
-                                           : -1;  // killed by a signal
-#endif
-    return result;
+    return spawnChild(exe, args, options);
 }
 
 #ifdef _WIN32
