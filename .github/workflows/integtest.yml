@@ -25,7 +25,7 @@ jobs:
       P4USER: integtest
       P4CLIENT: integtest-ws
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S . -B build
@@ -37,7 +37,7 @@ jobs:
       # CDN doesn't fail every run. Keyed on the pinned version.
       - name: Cache Perforce binaries
         id: cache-p4
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}\p4bin
           key: perforce-${{ env.P4_VERSION }}-ntx64
