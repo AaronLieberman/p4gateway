@@ -74,6 +74,10 @@ constexpr const char* kPrepareUsage =
     "                        branch's commit messages\n"
     "  -n, --dry-run         Show the p4 operations a real run would perform and\n"
     "                        exit, touching neither P4 nor the mirror\n"
+    "      --update <CL>     Refresh the existing pending changelist <CL> to match\n"
+    "                        the branch instead of creating a new one (reverts its\n"
+    "                        current opens first, then re-stages); keeps the CL's\n"
+    "                        number and description\n"
     "      --shelf           Build a P4 shelf instead of a pending changelist:\n"
     "                        stage, shelve, then revert the opens so only the\n"
     "                        shelf remains and the mirror is left untouched\n"
@@ -165,10 +169,16 @@ std::expected<bool, std::string> stagedMatchesMirror(const std::string& root,
 // gw never submits; review the CL and submit it from P4V. With --shelf the same
 // staging produces a P4 shelf instead: gw shelves the staged content and then
 // reverts the opens, so only the shelf remains and the mirror is left untouched.
+// With --update <CL> the staging targets an existing pending changelist: gw
+// reverts that CL's current opens to restore the mirror to the depot head, then
+// re-stages the branch into the same CL - refreshing a pending CL after a rebase
+// or review tweak without creating a new one and without a manual revert.
 int cmdPrepare(const Args& args) {
     bool fullVerify = false;
     bool dryRun = false;
     bool shelf = false;
+    bool update = false;
+    std::string updateCl;
     std::string messageOverride;
     std::string target = "HEAD";
     bool targetSet = false;
@@ -182,6 +192,14 @@ int cmdPrepare(const Args& args) {
             shelf = true;
         } else if (args[i] == "--dry-run" || args[i] == "-n") {
             dryRun = true;
+        } else if (args[i] == "--update" && i + 1 < args.size()) {
+            update = true;
+            updateCl = args[++i];
+        } else if (args[i] == "--update") {
+            std::fprintf(stderr,
+                         "gw prepare: --update requires a changelist number "
+                         "(e.g. 'gw prepare --update 12345')\n");
+            return 1;
         } else if ((args[i] == "--message" || args[i] == "-m") &&
                    i + 1 < args.size()) {
             messageOverride = args[++i];
@@ -194,6 +212,13 @@ int cmdPrepare(const Args& args) {
             std::fprintf(stderr, "%s", kPrepareUsage);
             return 1;
         }
+    }
+
+    if (update && shelf) {
+        std::fprintf(stderr,
+                     "gw prepare: --update and --shelf cannot be combined - "
+                     "--update refreshes a pending changelist, not a shelf.\n");
+        return 1;
     }
 
     std::string root;
@@ -339,12 +364,52 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
 
+    // --update targets an existing pending CL, so restore the mirror to the
+    // depot head *now* by reverting that CL's opens: the CL currently holds the
+    // previous prepare's staged content, and both the byte comparison below and
+    // the staging further down assume the mirror sits at depot head. Reverting
+    // first also frees the CL to be repopulated. The re-check afterwards catches
+    // opens left in *other* changelists - restaging would move them into this
+    // CL, the same harm the create path's guard prevents - so refuse. The CL
+    // keeps its number and description. --dry-run mutates nothing, so it skips
+    // the revert; its preview is then computed against the mirror's current
+    // (pre-revert) content and may differ slightly from a live run.
+    if (update && !dryRun) {
+        auto reverted = p4::revertChangelist(*config, updateCl);
+        if (!reverted) {
+            std::fprintf(stderr, "gw prepare: %s\n", reverted.error().c_str());
+            return 1;
+        }
+        auto stillOpen = p4::openedFilesTagged(*config);
+        if (!stillOpen) {
+            std::fprintf(stderr, "gw prepare: %s\n", stillOpen.error().c_str());
+            return 1;
+        }
+        if (!stillOpen->empty()) {
+            std::fprintf(stderr,
+                         "gw prepare: %zu file(s) are open in another changelist "
+                         "under the configured mappings:\n",
+                         stillOpen->size());
+            for (const auto& o : *stillOpen) {
+                std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
+                             o.depotFile.c_str());
+            }
+            std::fprintf(stderr,
+                         "Re-staging would move them into changelist %s. Submit "
+                         "or revert those\nopens first (see 'gw status'), then "
+                         "rerun 'gw prepare --update %s'.\n",
+                         updateCl.c_str(), updateCl.c_str());
+            return 1;
+        }
+    }
+
     // Drop edits whose staged content already matches the mirror: a file
     // changed and then reverted within the branch still shows up in the
     // endpoint git diff, but opening it would put a no-op into the changelist.
-    // Reading the mirror and writing the comparison blob to a temp file is
-    // read-only with respect to P4 and the mirror, so this is safe before the
-    // --dry-run cutoff below.
+    // (In --update the mirror was just reverted to the depot head above, so this
+    // compares against depot state exactly as in a fresh prepare.) Reading the
+    // mirror and writing the comparison blob to a temp file is read-only with
+    // respect to P4 and the mirror, so this is safe before the --dry-run cutoff.
     std::vector<std::string> unchanged;
     {
         std::vector<Staged> realEdits;
@@ -425,8 +490,10 @@ int cmdPrepare(const Args& args) {
         }
     };
 
+    // --update leaves the existing CL's description untouched, so there is
+    // nothing to build; a new CL is described by -m or the branch's commits.
     std::string description = messageOverride;
-    if (description.empty()) {
+    if (!update && description.empty()) {
         auto messages = git::commitMessages(depotRef, target, root);
         if (!messages) {
             std::fprintf(stderr, "gw prepare: %s\n", messages.error().c_str());
@@ -438,34 +505,42 @@ int cmdPrepare(const Args& args) {
     // Refuse to run if files are already open in the mirror (a previous
     // prepare's still-pending CL, a stray p4 edit). Opening them again would
     // silently move them between changelists; the user must resolve the
-    // existing opens first. (A future --update/--abandon flow, PLAN.md M3,
-    // will let the user opt in.)
-    auto opened = p4::openedFilesTagged(*config);
-    if (!opened) {
-        std::fprintf(stderr, "gw prepare: %s\n", opened.error().c_str());
-        return 1;
-    }
-    if (!opened->empty()) {
-        std::fprintf(stderr,
-                     "gw prepare: %zu file(s) are already open in P4 under the "
-                     "configured mappings:\n",
-                     opened->size());
-        for (const auto& o : *opened) {
-            std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
-                         o.depotFile.c_str());
+    // existing opens first. --update opts in to exactly this: it targets the
+    // named CL, reverting its opens below to restore the mirror before
+    // re-staging, so the guard is deferred to a post-revert re-check that only
+    // trips on opens left in *other* changelists.
+    if (!update) {
+        auto opened = p4::openedFilesTagged(*config);
+        if (!opened) {
+            std::fprintf(stderr, "gw prepare: %s\n", opened.error().c_str());
+            return 1;
         }
-        std::fprintf(stderr,
-                     "Opening them again would move them between changelists. "
-                     "Submit or revert\nthe existing changelist first (see "
-                     "'gw status'), then rerun 'gw prepare'.\n");
-        return 1;
+        if (!opened->empty()) {
+            std::fprintf(stderr,
+                         "gw prepare: %zu file(s) are already open in P4 under "
+                         "the configured mappings:\n",
+                         opened->size());
+            for (const auto& o : *opened) {
+                std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
+                             o.depotFile.c_str());
+            }
+            std::fprintf(stderr,
+                         "Opening them again would move them between "
+                         "changelists. Submit or revert\nthe existing "
+                         "changelist first (see 'gw status'), then rerun "
+                         "'gw prepare'.\n");
+            return 1;
+        }
     }
 
     // --dry-run stops here: everything above is read-only (git diff, the route
     // planning, the opened-files guard). Show exactly which p4 operations a
     // real run would open, and touch neither P4 nor the mirror.
     if (dryRun) {
-        if (shelf) {
+        if (update) {
+            std::printf("[dry-run] would revert changelist %s's current opens, "
+                        "then re-stage into it and open:\n", updateCl.c_str());
+        } else if (shelf) {
             std::printf("[dry-run] would create a shelf from (open, shelve, then "
                         "revert):\n");
         } else {
@@ -474,17 +549,27 @@ int cmdPrepare(const Args& args) {
         }
         printPlannedOps();
         std::printf("\n[dry-run] no changes made. Rerun without --dry-run to "
-                    "create the %s.\n",
-                    shelf ? "shelf" : "changelist and open these files");
+                    "%s.\n",
+                    update ? "refresh the changelist"
+                    : shelf ? "create the shelf"
+                            : "create the changelist and open these files");
         return 0;
     }
 
-    auto cl = p4::createChangelist(*config, description);
-    if (!cl) {
-        std::fprintf(stderr, "gw prepare: %s\n", cl.error().c_str());
-        return 1;
+    // In --update the target CL was reverted (and its number validated) above,
+    // so we reuse it directly; otherwise mint a fresh pending CL.
+    std::expected<std::string, std::string> cl;
+    if (update) {
+        cl = updateCl;
+        std::printf("Refreshing pending changelist %s\n", updateCl.c_str());
+    } else {
+        cl = p4::createChangelist(*config, description);
+        if (!cl) {
+            std::fprintf(stderr, "gw prepare: %s\n", cl.error().c_str());
+            return 1;
+        }
+        std::printf("Created pending changelist %s\n", cl->c_str());
     }
-    std::printf("Created pending changelist %s\n", cl->c_str());
 
     auto fail = [&](const std::string& message) {
         std::fprintf(stderr, "gw prepare: %s\n", message.c_str());

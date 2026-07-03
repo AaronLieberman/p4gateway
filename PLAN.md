@@ -95,12 +95,15 @@ pure logic without p4.
 The short list, in order. Items promoted from the milestones below or added
 by the 2026-07 design review.
 
-1. [ ] `gw prepare --update <CL>`: refresh an existing pending CL after a
-       rebase or review feedback instead of creating a new one. Today the
-       answer to "reviewer wants one more tweak" or "depot moved under my
-       pending CL" is revert-by-hand + re-prepare, and prepare's opened-files
-       preflight (correctly) refuses to run until then — the sharpest edge
-       left in daily use.
+1. [x] `gw prepare --update <CL>`: refresh an existing pending CL after a
+       rebase or review feedback instead of creating a new one. Reverts the
+       CL's current opens (restoring the mirror to the depot head), then runs
+       the normal staging into that same CL — number and description kept.
+       A post-revert opened-files re-check still blocks on files open in
+       *other* changelists. `--dry-run` previews it; `--shelf` is rejected as
+       a combination. `gw integtest run` covers a refresh that adds a file and
+       one that drops it back to the original CL. **Needs a real-workspace
+       check** on a live server.
 2. [x] Unique temp-file names: `p4gw_prepare_cmp.tmp`, `p4gw_change_spec.txt`,
        and the `p4gw_shelf_*` files use fixed names in the shared temp
        directory, so two concurrent gw runs (or two users on a shared /tmp)
@@ -186,7 +189,6 @@ by the 2026-07 design review.
       mirror. `gw integtest run` covers it (shelf has the branch's files, no
       opens remain, the mirror is back at the depot head). **Needs a
       real-workspace check** on a live server.
-- [>] `gw prepare --update <CL>` — moved to the prioritized list above
 - [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to
       restore the mirror to depot state
 - [ ] Helpful error for the "depot changed under my pending CL" case

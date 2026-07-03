@@ -786,6 +786,78 @@ std::expected<void, std::string> itPrepare(ItContext& it) {
     return {};
 }
 
+// After itPrepare built the pending CL, a review tweak arrives: a new commit
+// adds src/extra.cpp on top of the branch. `gw prepare --update <CL>` must
+// refresh that same CL in place (same number, no new changelist) rather than
+// hit the opened-files guard, and the added file must show up among its opens.
+// Then the tweak is dropped and the CL refreshed again, proving --update also
+// *removes* what left the branch - and leaving the CL exactly as itPrepare
+// produced it (five opens) so the submit/import steps that follow are
+// unaffected.
+std::expected<void, std::string> itPrepareUpdate(ItContext& it) {
+    // 1. Add a tweak commit, then refresh the existing CL to match.
+    auto added = writeFile(
+        fs::path(it.srcWork) / "extra.cpp",
+        "// integtest update tweak\nint extraFn() { return 9; }\n");
+    if (!added) return added;
+    auto staged = git::addAll(it.repoDir);
+    if (!staged) return std::unexpected(staged.error());
+    auto committed = git::commit("integtest: review tweak, add extra.cpp",
+                                 it.repoDir);
+    if (!committed) return std::unexpected(committed.error());
+
+    auto out = runGw(it, it.repoDir, {"prepare", "--update", it.pendingCl});
+    if (!out) return std::unexpected(out.error());
+    if (out->find("Refreshing pending changelist " + it.pendingCl) ==
+        std::string::npos) {
+        return std::unexpected("prepare --update did not refresh CL " +
+                               it.pendingCl + ":\n" + *out);
+    }
+    if (out->find("Created pending changelist") != std::string::npos) {
+        return std::unexpected("prepare --update created a new changelist "
+                               "instead of refreshing " + it.pendingCl + ":\n" +
+                               *out);
+    }
+
+    auto opened = trace(it, "p4 opened -c " + it.pendingCl,
+                        p4::openedInCl(it.p4, it.pendingCl));
+    if (!opened) return std::unexpected(opened.error());
+    if (opened->find(it.depotRoot + "/src/extra.cpp") == std::string::npos) {
+        return std::unexpected("prepare --update did not open the new extra.cpp "
+                               "in CL " + it.pendingCl + ":\n" + *opened);
+    }
+
+    // 2. Drop the tweak commit and refresh again: the CL must return to exactly
+    // the five opens itPrepare produced (extra.cpp gone), so the following
+    // submit and import steps see the same state.
+    auto reset = trace(it, "git reset --hard HEAD~1",
+                       git::run({"reset", "--hard", "HEAD~1"}, it.repoDir));
+    if (!reset) return std::unexpected(reset.error());
+
+    auto out2 = runGw(it, it.repoDir, {"prepare", "--update", it.pendingCl});
+    if (!out2) return std::unexpected(out2.error());
+
+    auto opened2 = trace(it, "p4 opened -c " + it.pendingCl,
+                         p4::openedInCl(it.p4, it.pendingCl));
+    if (!opened2) return std::unexpected(opened2.error());
+    if (opened2->find("/src/extra.cpp") != std::string::npos) {
+        return std::unexpected("prepare --update left extra.cpp open after it "
+                               "was dropped from the branch:\n" + *opened2);
+    }
+    std::istringstream lines(*opened2);
+    std::string line;
+    size_t count = 0;
+    while (std::getline(lines, line)) {
+        if (!line.empty()) ++count;
+    }
+    if (count != 5) {
+        return std::unexpected("prepare --update should have restored CL " +
+                               it.pendingCl + " to 5 opens, got " +
+                               std::to_string(count) + ":\n" + *opened2);
+    }
+    return {};
+}
+
 std::expected<void, std::string> itSubmitAndAbsorb(ItContext& it) {
     auto submitted = trace(it, "p4 submit -c " + it.pendingCl,
                            p4::submit(it.p4, it.pendingCl));
@@ -1219,6 +1291,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itPrepareShelf(it); });
         steps.emplace_back("gw prepare opens the exact expected files",
                            [&] { return itPrepare(it); });
+        steps.emplace_back("gw prepare --update refreshes the CL in place",
+                           [&] { return itPrepareUpdate(it); });
         steps.emplace_back("submit, then gw import --rebase melts the branch",
                            [&] { return itSubmitAndAbsorb(it); });
         steps.emplace_back("teammate change absorbed with import --rebase",
