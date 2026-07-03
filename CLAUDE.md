@@ -56,7 +56,7 @@ build/gw --help                # build\gw.exe on Windows
 - Primary target is Windows/MSVC (VS 2022), but the code must also build
   with g++/clang on Linux — that is how it is verified in CI and in remote
   Claude Code sessions. Keep platform-specific code behind `#ifdef _WIN32`
-  in `src/process.cpp`; everything else stays portable.
+  in `src/subprocess.cpp`; everything else stays portable.
 - No external dependencies. Standard library only (`std::expected`,
   `std::filesystem`). Don't introduce a dependency without asking.
 
@@ -66,7 +66,9 @@ build/gw --help                # build\gw.exe on Windows
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
 src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, shelf, doctor, integtest)
-src/process.{h,cpp} subprocess runner — the ONLY place that spawns processes
+src/subprocess.{h,cpp} subprocess runner — the ONLY place that spawns processes
+                    (not named process.h: that shadows the CRT header MSVC's
+                    <thread> needs)
 src/git.{h,cpp}     thin typed wrappers over the git CLI
 src/p4.{h,cpp}      thin typed wrappers over the p4 CLI + pure client-view checks
 src/p4ops.{h,cpp}   pure mapping: git diff -> ordered p4 operations (prepare)

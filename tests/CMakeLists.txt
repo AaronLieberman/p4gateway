@@ -7,7 +7,7 @@ add_executable(p4gw_tests
     test_status.cpp
     test_shelf.cpp
     test_preflight.cpp
-    test_process.cpp
+    test_subprocess.cpp
 )
 target_link_libraries(p4gw_tests PRIVATE p4gw_core)
 

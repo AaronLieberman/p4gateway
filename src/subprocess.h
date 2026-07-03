@@ -1,5 +1,14 @@
 #pragma once
 
+// The subprocess runner - the only place gw spawns child processes.
+//
+// This file must NOT be named process.h: MSVC's <thread> pulls in the CRT
+// header <process.h> for _beginthreadex, and cl.exe searches /I directories
+// before the system include path even for angle-bracket includes - so a
+// project header named process.h silently shadows the CRT one, and any TU
+// that constructs a std::thread fails with "'_beginthreadex': is not a
+// member of '`global namespace'".
+
 #include <expected>
 #include <string>
 #include <vector>

@@ -2,7 +2,7 @@
 
 #include <sstream>
 
-#include "process.h"
+#include "subprocess.h"
 
 namespace p4gw::git {
 

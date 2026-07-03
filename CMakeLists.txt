@@ -19,7 +19,7 @@ else()
 endif()
 
 add_library(p4gw_core STATIC
-    src/process.cpp
+    src/subprocess.cpp
     src/config.cpp
     src/git.cpp
     src/p4.cpp

@@ -108,7 +108,7 @@ by the 2026-07 design review.
        and the `p4gw_shelf_*` files use fixed names in the shared temp
        directory, so two concurrent gw runs (or two users on a shared /tmp)
        can collide. Suffix with the PID (or use a properly unique name).
-       Cheap. — done: `uniqueTempFile()` in `process.{h,cpp}` splices the PID
+       Cheap. — done: `uniqueTempFile()` in `subprocess.{h,cpp}` splices the PID
        and a per-process counter into every scratch name; all call sites
        (prepare, p4 change spec, shelf, integtest) route through it.
 3. [ ] `gw import` builds its snapshot in a hidden git worktree pinned to

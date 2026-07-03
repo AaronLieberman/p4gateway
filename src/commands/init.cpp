@@ -9,7 +9,7 @@
 #include "config.h"
 #include "git.h"
 #include "p4.h"
-#include "process.h"
+#include "subprocess.h"
 
 namespace fs = std::filesystem;
 
