@@ -1,10 +1,11 @@
 # Running the integration tests
 
 `gw integtest run` drives the full workflow — `init`, `import`, `prepare`,
-`doctor`, submits, rebases — against a real Perforce server. It can't run in
-CI (it needs a live server and a configured workspace), so it lives here as a
-manual step. The setup below runs a throwaway p4d server in WSL2 and runs the
-tests natively on Windows against it.
+`doctor`, submits, rebases — against a real Perforce server. It needs a live
+server and a configured workspace, so it is a manual step today (a CI job
+that downloads and boots a throwaway p4d on the runner is feasible — see the
+wishlist in PLAN.md). The setup below runs a throwaway p4d server in WSL2 and
+runs the tests natively on Windows against it.
 
 > **⚠️ Destructive — throwaway servers only.** Every run **obliterates** the
 > test depot files and **wipes** everything under the current directory (except

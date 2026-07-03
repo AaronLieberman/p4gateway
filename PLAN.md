@@ -163,7 +163,9 @@ by the 2026-07 design review.
       an older depot state) path, and LineEnd effects on `p4 print` content
       (print skips the client LineEnd translation sync performs, so an LF
       base/theirs against a CRLF working tree could conflict on every line -
-      the same translation caveat as the have-manifest note in M4).
+      the same translation caveat as the have-manifest note in M4; the
+      integtest print-fidelity step now measures the print-vs-sync question
+      directly, the conflict path itself still needs a manual check).
 - [x] `gw shelf list`: the caller's pending and shelved CLs (`p4 -ztag
       changes -s pending|shelved -u <user>`, scoped to `depot_path`), newest
       first with shelved ones flagged, to pick one for `shelf import`.
@@ -246,9 +248,11 @@ by the 2026-07 design review.
       does (text files come back in the server's LF form, and `+k` keyword
       expansion differs), so printed text files likely need an explicit
       LF->CRLF translation by filetype (`p4 opened -ztag` carries the type,
-      the spec carries LineEnd; isBinaryType exists). Verify on a real
-      workspace first: `p4 print -q -o` a text file and byte-compare it to
-      the synced mirror copy - identical means no translation step needed.
+      the spec carries LineEnd; isBinaryType exists). `gw integtest run` now
+      has a print-fidelity step that byte-compares `p4 print` output against
+      the synced mirror copy for a text and a binary file - run it on
+      Windows to settle whether the translation step is needed (a pass means
+      it is not; the failure message spells out the LF-vs-CRLF case).
       Pairs with the hidden-worktree item in "Next up": together a
       no-change import is one p4 query, a text diff, and a no-op commit.
 - [ ] `import` from depot instead of mirror (design): read content via
@@ -267,10 +271,16 @@ by the 2026-07 design review.
       without the print-fidelity traps.
 - [x] CI on GitHub Actions: Linux + Windows build & unit tests
       (.github/workflows/ci.yml)
-- [ ] Wishlist: scripted end-to-end run in CI (init → import → branch →
-      import --rebase → prepare). Requires a disposable p4 server (p4d) in
-      the CI container — even `gw init` needs a live client spec — which
-      isn't worth setting up right now; parked until it is.
+- [ ] Wishlist: run `gw integtest run` in GitHub Actions. More feasible than
+      it first looked: p4d and p4 are single-binary downloads (free below 5
+      users / 20 workspaces), so a windows-latest job can fetch a pinned
+      version (and cache it), write the sentinel server.id, boot p4d on
+      localhost in the background, script the user/client setup
+      (`p4 user -o | p4 user -i`; `p4 client -o`, append the remap line,
+      `p4 client -i`), and run the suite — the Windows runner is the one
+      that exercises the CRLF LineEnd path. Keep it a separate job from the
+      unit-test CI so a Perforce download hiccup never blocks a normal
+      merge. Parked until wanted.
 
 ## Risks / open questions
 

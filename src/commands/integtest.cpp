@@ -76,6 +76,18 @@ constexpr FixtureFile kSrcFixture[] = {
     {"docs/overview.md", "# fixture overview\n"},
 };
 
+// Content of the binary fixture src/blob.bin, built with an explicit length so
+// the embedded NULs survive (which is also why it can't live in kSrcFixture's
+// C-string table). The NULs make p4 auto-type the file binary when the fixture
+// is reconciled; the mixed CRLF / lone-LF / lone-CR runs make any line-ending
+// translation - which must never happen to a binary file - corrupt it
+// detectably.
+std::string binaryBlobContent() {
+    static constexpr char kBytes[] =
+        "p4gw-test binary fixture\x00\x01\x02\xff\r\nmid\nlone\rend\r\n";
+    return std::string(kBytes, sizeof kBytes - 1);
+}
+
 // The ServerID a throwaway p4d must carry before this destructive command will
 // touch it; the README setup writes this exact value to server.id.
 constexpr const char* kThrowawayServerId = "p4gw-integtest-throwaway";
@@ -85,7 +97,7 @@ constexpr const char* kThrowawayServerId = "p4gw-integtest-throwaway";
 constexpr const char* kObliterateFiles[] = {
     "readme.txt", "notes.txt",
     "bin/tool.txt", "bin/helper.txt",
-    "src/main.cpp", "src/util.cpp", "src/util.h",
+    "src/main.cpp", "src/util.cpp", "src/util.h", "src/blob.bin",
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
 };
 
@@ -374,6 +386,9 @@ std::expected<void, std::string> itWriteFixture(ItContext& it) {
         auto written = writeFile(fs::path(it.mirrorDir) / file.rel, file.content);
         if (!written) return written;
     }
+    auto blob = writeFile(fs::path(it.mirrorDir) / "blob.bin",
+                          binaryBlobContent());
+    if (!blob) return blob;
     return {};
 }
 
@@ -507,6 +522,90 @@ std::expected<void, std::string> itFirstImport(ItContext& it) {
     if (*repoMain != *mirrorMain) {
         return std::unexpected("main.cpp content differs between the repo "
                                "and the mirror after import");
+    }
+    return {};
+}
+
+// `p4 print -q -o` (printHeadToFile) is how import reads depot-head content
+// for opened files and how shelf import reads every file, so its bytes must be
+// exactly what `p4 sync` writes into the mirror. That is not a given: sync
+// applies the client's LineEnd translation to text files (CRLF for win/local
+// on a Windows client) while print may hand back the server's stored form
+// (LF). If the two differ, an imported opened file churns on every line and a
+// shelf-import merge conflicts throughout. Byte-compare print output against
+// the freshly synced mirror copy for a text file and for the binary fixture;
+// for text, first confirm the mirror copy really carries the client's line
+// endings so the comparison cannot pass vacuously, and for binary confirm
+// sync preserved the fixture's exact bytes.
+std::expected<void, std::string> itPrintFidelity(ItContext& it) {
+    auto spec = p4::clientSpec(it.p4);
+    if (!spec) return std::unexpected(spec.error());
+    const std::string lineEnd = p4::specField(*spec, "LineEnd");
+#ifdef _WIN32
+    // 'local' (and an unset field, which defaults to local) means the
+    // platform convention - CRLF here.
+    const bool expectCrlf =
+        lineEnd.empty() || lineEnd == "local" || lineEnd == "win";
+#else
+    const bool expectCrlf = lineEnd == "win";
+#endif
+
+    struct Case {
+        const char* rel;
+        bool binary;
+    };
+    constexpr Case kCases[] = {{"main.cpp", false}, {"blob.bin", true}};
+    for (const auto& c : kCases) {
+        auto mirrorBytes = readFile(fs::path(it.mirrorDir) / c.rel);
+        if (!mirrorBytes) return std::unexpected(mirrorBytes.error());
+
+        if (c.binary) {
+            // Sync must never translate a binary file: the mirror copy must be
+            // the fixture's exact bytes (NULs, lone CR/LF runs and all).
+            if (*mirrorBytes != binaryBlobContent()) {
+                return std::unexpected(
+                    std::string(c.rel) +
+                    ": the synced mirror bytes differ from the fixture - "
+                    "line-ending translation on a binary file?");
+            }
+        } else if (expectCrlf &&
+                   mirrorBytes->find("\r\n") == std::string::npos) {
+            return std::unexpected(
+                std::string(c.rel) +
+                ": the synced mirror copy has no CRLF despite client LineEnd '" +
+                (lineEnd.empty() ? "local" : lineEnd) +
+                "' - the print comparison would be vacuous");
+        }
+
+        const std::string depotFile = it.depotRoot + "/src/" + c.rel;
+        const fs::path printed =
+            fs::temp_directory_path() /
+            (std::string("p4gw_it_print_") + (c.binary ? "bin" : "txt") +
+             ".tmp");
+        vlog(it, "$ p4 print -q -o " + printed.string() + " " + depotFile +
+                 "#head");
+        auto fetched = p4::printHeadToFile(it.p4, depotFile, printed.string());
+        if (!fetched) return std::unexpected(fetched.error());
+        auto printedBytes = readFile(printed);
+        std::error_code ec;
+        fs::remove(printed, ec);
+        if (!printedBytes) return std::unexpected(printedBytes.error());
+
+        if (*printedBytes != *mirrorBytes) {
+            std::string message =
+                std::string(c.rel) + ": p4 print bytes differ from the synced "
+                "mirror copy (" + std::to_string(printedBytes->size()) +
+                " vs " + std::to_string(mirrorBytes->size()) + " bytes)";
+            if (!c.binary &&
+                printedBytes->find("\r\n") == std::string::npos &&
+                mirrorBytes->find("\r\n") != std::string::npos) {
+                message += " - print returned LF where sync wrote CRLF: "
+                           "p4 print skips the client LineEnd translation, so "
+                           "printHeadToFile needs a per-filetype translation "
+                           "step (see the have-manifest note in PLAN.md)";
+            }
+            return std::unexpected(message);
+        }
     }
     return {};
 }
@@ -1114,6 +1213,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itGwInit(it); });
         steps.emplace_back("sync + first gw import builds main",
                            [&] { return itFirstImport(it); });
+        steps.emplace_back("p4 print matches synced bytes (text and binary)",
+                           [&] { return itPrintFidelity(it); });
         steps.emplace_back("feature branch: edit/add then delete/rename",
                            [&] { return itFeatureBranch(it); });
         steps.emplace_back("gw prepare --shelf shelves and leaves no opens",
