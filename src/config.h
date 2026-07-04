@@ -38,6 +38,16 @@ struct ViewRule {
     std::string repoSubtree;
 };
 
+// How `gw import` builds the depot snapshot.
+//   kCheckout: detach the user's own checkout onto the baseline, overlay the
+//     mirror there, commit, switch back (the original behavior). Requires a
+//     clean working tree.
+//   kWorktree: build the snapshot in a hidden git worktree pinned to
+//     refs/p4gw/<baseline>, so the user's checkout is never touched and import
+//     works even with a dirty tree (the branch fast-forward/rebase half is
+//     skipped when dirty). Chosen with `import_mode = worktree` in p4gw.cfg.
+enum class ImportMode { kCheckout, kWorktree };
+
 // Project configuration, loaded from a `p4gw.cfg` file at the root of the Git
 // overlay repo. Simple `key = value` lines; `#` starts a comment.
 struct Config {
@@ -59,6 +69,11 @@ struct Config {
     // not in gw's code. buildGitignore appends them last, after the allowlist
     // and any carve-out re-exclusions.
     std::vector<std::string> ignorePatterns;
+
+    // How `gw import` stages the depot snapshot (see ImportMode). Default
+    // kCheckout preserves the original behavior; `import_mode = worktree`
+    // opts into the hidden-worktree staging.
+    ImportMode importMode = ImportMode::kCheckout;
 };
 
 // The `include` rules of `rules`, in declaration order. Most consumers only

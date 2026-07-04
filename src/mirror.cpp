@@ -260,4 +260,8 @@ std::string importPendingMarkerPath(const std::string& gitDir) {
     return (fs::path(gitDir) / "p4gw-import-pending").string();
 }
 
+std::string snapshotWorktreePath(const std::string& gitDir) {
+    return (fs::path(gitDir) / "p4gw" / "worktree").string();
+}
+
 }  // namespace p4gw::mirror

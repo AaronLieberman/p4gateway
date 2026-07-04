@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <unordered_set>
 
@@ -16,6 +17,173 @@ namespace fs = std::filesystem;
 namespace p4gw {
 
 namespace {
+
+// Files copied and deleted while building a snapshot, for the summary line.
+struct SnapshotStats {
+    size_t copied = 0;
+    size_t deleted = 0;
+};
+
+// Builds and commits the depot snapshot at `stagingRoot` and advances
+// `depotRef` to it. `stagingRoot` is the user's own checkout in checkout mode
+// and the hidden worktree in worktree mode; either way it must already be
+// positioned on `oldDepot` (or unborn on the very first import). The mirror is
+// always resolved against `root` (it lives only in the main working tree).
+// Returns the new depot tip: equal to `oldDepot` when the mirror already
+// matched (nothing committed), or empty when there was never anything to
+// commit (a first import against an empty mirror). The caller owns HEAD
+// positioning, the pending marker, and failure recovery, so this returns a
+// plain std::unexpected on error rather than driving any restore.
+std::expected<std::string, std::string> buildSnapshot(
+    const Config& config, const std::string& root,
+    const std::string& stagingRoot, const std::string& depotRef,
+    const std::string& oldDepot, bool fullCopy,
+    const std::function<void(const std::string&)>& progress,
+    SnapshotStats& stats) {
+    auto tracked = git::lsFiles(stagingRoot);
+    if (!tracked) return std::unexpected(tracked.error());
+
+    // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
+    // have an un-submitted working copy. The baseline must stay pristine
+    // submitted depot state, so for those files read the depot head instead of
+    // copying the mirror, and omit add-only files (no depot revision exists).
+    progress("Reading P4 state...");
+    auto opened = p4::openedFilesTagged(config);
+    if (!opened) return std::unexpected(opened.error());
+
+    // Each mapping is its own depot subtree, synced into its own mirror and
+    // living under its own working-tree directory; import them independently
+    // and tally for the summary.
+    for (const auto* rule : includeRules(config.rules)) {
+        const std::string mirrorDir =
+            resolveMirrorPath(rule->mirrorPath, root);
+        const std::string subtreePrefix =
+            rule->repoSubtree.empty() ? std::string{}
+                                      : rule->repoSubtree + "/";
+        const std::string worktreeDir =
+            rule->repoSubtree.empty()
+                ? stagingRoot
+                : (fs::path(stagingRoot) / rule->repoSubtree).string();
+
+        progress("Listing mirror files under " + mirrorDir + "...");
+        auto mirrorFiles = mirror::listFiles(mirrorDir);
+        if (!mirrorFiles) return std::unexpected(mirrorFiles.error());
+
+        // p4 only ever removes files it deleted a revision of, so anything it
+        // never tracked (build output, leftovers from a botched sync, hand
+        // edits) lingers in the mirror. Keep only the files p4 reports as
+        // synced; strays are ignored so they never land in the baseline. A
+        // failed `p4 have` is an error (don't mistake it for "everything is a
+        // stray"); an empty result is legitimately nothing synced.
+        progress("Querying p4 have for " + rule->depotPath + "...");
+        auto haveDepot = p4::haveFiles(config, rule->depotPath);
+        if (!haveDepot) return std::unexpected(haveDepot.error());
+        std::unordered_set<std::string> haveRel;
+        for (const auto& depotFile : *haveDepot) {
+            std::string rel =
+                p4::depotRelativePath(rule->depotPath, depotFile);
+            if (!rel.empty()) haveRel.insert(std::move(rel));
+        }
+        std::vector<std::string> mirrorTracked;
+        for (auto& path : *mirrorFiles) {
+            if (haveRel.contains(path)) mirrorTracked.push_back(std::move(path));
+        }
+
+        // Tracked files under this subtree, made mirror-relative so they line
+        // up with the mirror's own (subtree-rooted) listing.
+        std::vector<std::string> trackedHere;
+        for (const auto& path : *tracked) {
+            if (subtreePrefix.empty()) {
+                trackedHere.push_back(path);
+            } else if (path.starts_with(subtreePrefix)) {
+                trackedHere.push_back(path.substr(subtreePrefix.size()));
+            }
+        }
+
+        const auto actions =
+            mirror::computeSyncActions(mirrorTracked, trackedHere);
+
+        std::vector<mirror::OpenedMirrorFile> openedMirror;
+        for (const auto& o : *opened) {
+            std::string rel =
+                p4::depotRelativePath(rule->depotPath, o.depotFile);
+            if (rel.empty()) continue;  // belongs to a different mapping
+            openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
+        }
+        const auto plan = mirror::planImport(actions, openedMirror);
+
+        // "Scan" count: import reconciles the *whole* mirror against the
+        // working tree every time (it is not diff-based), then copies only the
+        // files that actually changed - so this is how many it inspects, not how
+        // many it copies. Say "Importing", not "Syncing": nothing is synced from
+        // P4 here, gw only moves already-synced mirror files into the repo.
+        const size_t toScan = plan.actions.copies.size();
+        const size_t toDelete = plan.actions.deletes.size();
+        if (toScan != 0 || toDelete != 0 || !plan.depotReads.empty()) {
+            progress("Importing " + rule->depotPath + " (" +
+                     std::to_string(toScan) + " mirror file(s) to scan, " +
+                     std::to_string(toDelete) + " to delete)...");
+        }
+
+        auto applied = mirror::applySyncActions(plan.actions, mirrorDir,
+                                                worktreeDir,
+                                                /*trustStats=*/!fullCopy);
+        if (!applied) return std::unexpected(applied.error());
+        const size_t actuallyCopied = *applied;
+
+        // Restore depot-head content for files open in the mirror.
+        if (!plan.depotReads.empty()) {
+            std::string depotBase = rule->depotPath;
+            if (depotBase.ends_with("...")) {
+                depotBase.resize(depotBase.size() - 3);
+            }
+            for (const auto& rel : plan.depotReads) {
+                const fs::path dest = fs::path(worktreeDir) / fs::path(rel);
+                std::error_code ec;
+                fs::create_directories(dest.parent_path(), ec);
+                if (ec) {
+                    return std::unexpected("failed to create directory " +
+                                           dest.parent_path().string() + ": " +
+                                           ec.message());
+                }
+                auto printed =
+                    p4::printHeadToFile(config, depotBase + rel, dest.string());
+                if (!printed) return std::unexpected(printed.error());
+                fs::permissions(dest, fs::perms::owner_write,
+                                fs::perm_options::add, ec);
+            }
+        }
+        stats.copied += actuallyCopied + plan.depotReads.size();
+        stats.deleted += plan.actions.deletes.size();
+    }
+
+    progress("Staging snapshot in Git...");
+    auto added = git::addAll(stagingRoot);
+    if (!added) return std::unexpected(added.error());
+    auto clean = git::indexMatchesHead(stagingRoot);
+    if (!clean) return std::unexpected(clean.error());
+
+    // Commit the snapshot (when there is anything new) and advance the depot
+    // ref to it. newDepot stays at oldDepot when the mirror already matched.
+    std::string newDepot = oldDepot;
+    if (!*clean) {
+        // Best-effort label: the company tool syncs different paths to
+        // different CLs, so this is informational, not a guarantee.
+        std::string message = "Import depot state";
+        auto cl = p4::latestSubmittedCl(config);
+        if (cl && !cl->empty()) {
+            message += " at CL " + *cl;
+        }
+        auto committed = git::commit(message, stagingRoot);
+        if (!committed) return std::unexpected(committed.error());
+        auto tip = git::revParse("HEAD", stagingRoot);
+        if (!tip) return std::unexpected(tip.error());
+        newDepot = *tip;
+        auto advanced = git::updateRef(depotRef, newDepot, stagingRoot);
+        if (!advanced) return std::unexpected(advanced.error());
+    }
+    return newDepot;
+}
 
 constexpr const char* kImportUsage =
     "usage: gw import [options]\n"
@@ -322,9 +490,6 @@ int cmdImport(const Args& args) {
         if (!switched) return fail(switched.error());
     }
 
-    auto tracked = git::lsFiles(root);
-    if (!tracked) return fail(tracked.error());
-
     // Import touches the P4 server (per-mapping `p4 have`, opened-file lookup),
     // walks and copies the whole mirror into the working tree, and hashes it
     // all into Git's index - any of which can run for a while on a large depot.
@@ -340,147 +505,16 @@ int cmdImport(const Args& args) {
         std::fflush(stdout);
     };
 
-    // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
-    // have an un-submitted working copy. The baseline must stay pristine
-    // submitted depot state, so for those files read the depot head instead of
-    // copying the mirror, and omit add-only files (no depot revision exists).
-    progress("Reading P4 state...");
-    auto opened = p4::openedFilesTagged(*config);
-    if (!opened) return fail(opened.error());
-
-    // Each mapping is its own depot subtree, synced into its own mirror and
-    // living under its own working-tree directory; import them independently
-    // and tally for the summary.
-    size_t copiedFiles = 0;
-    size_t deletedFiles = 0;
-    for (const auto* rule : includeRules(config->rules)) {
-        const std::string mirrorDir =
-            resolveMirrorPath(rule->mirrorPath, root);
-        const std::string subtreePrefix =
-            rule->repoSubtree.empty() ? std::string{}
-                                      : rule->repoSubtree + "/";
-        const std::string worktreeDir =
-            rule->repoSubtree.empty()
-                ? root
-                : (fs::path(root) / rule->repoSubtree).string();
-
-        progress("Listing mirror files under " + mirrorDir + "...");
-        auto mirrorFiles = mirror::listFiles(mirrorDir);
-        if (!mirrorFiles) return fail(mirrorFiles.error());
-
-        // p4 only ever removes files it deleted a revision of, so anything it
-        // never tracked (build output, leftovers from a botched sync, hand
-        // edits) lingers in the mirror. Keep only the files p4 reports as
-        // synced; strays are ignored so they never land in the baseline. A
-        // failed `p4 have` is an error (don't mistake it for "everything is a
-        // stray"); an empty result is legitimately nothing synced.
-        progress("Querying p4 have for " + rule->depotPath + "...");
-        auto haveDepot = p4::haveFiles(*config, rule->depotPath);
-        if (!haveDepot) return fail(haveDepot.error());
-        std::unordered_set<std::string> haveRel;
-        for (const auto& depotFile : *haveDepot) {
-            std::string rel =
-                p4::depotRelativePath(rule->depotPath, depotFile);
-            if (!rel.empty()) haveRel.insert(std::move(rel));
-        }
-        std::vector<std::string> mirrorTracked;
-        for (auto& path : *mirrorFiles) {
-            if (haveRel.contains(path)) mirrorTracked.push_back(std::move(path));
-        }
-
-        // Tracked files under this subtree, made mirror-relative so they line
-        // up with the mirror's own (subtree-rooted) listing.
-        std::vector<std::string> trackedHere;
-        for (const auto& path : *tracked) {
-            if (subtreePrefix.empty()) {
-                trackedHere.push_back(path);
-            } else if (path.starts_with(subtreePrefix)) {
-                trackedHere.push_back(path.substr(subtreePrefix.size()));
-            }
-        }
-
-        const auto actions =
-            mirror::computeSyncActions(mirrorTracked, trackedHere);
-
-        std::vector<mirror::OpenedMirrorFile> openedMirror;
-        for (const auto& o : *opened) {
-            std::string rel =
-                p4::depotRelativePath(rule->depotPath, o.depotFile);
-            if (rel.empty()) continue;  // belongs to a different mapping
-            openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
-        }
-        const auto plan = mirror::planImport(actions, openedMirror);
-
-        // "Scan" count: import reconciles the *whole* mirror against the
-        // working tree every time (it is not diff-based), then copies only the
-        // files that actually changed - so this is how many it inspects, not how
-        // many it copies. Say "Importing", not "Syncing": nothing is synced from
-        // P4 here, gw only moves already-synced mirror files into the repo.
-        const size_t toScan = plan.actions.copies.size();
-        const size_t toDelete = plan.actions.deletes.size();
-        if (toScan != 0 || toDelete != 0 || !plan.depotReads.empty()) {
-            progress("Importing " + rule->depotPath + " (" +
-                     std::to_string(toScan) + " mirror file(s) to scan, " +
-                     std::to_string(toDelete) + " to delete)...");
-        }
-
-        auto applied = mirror::applySyncActions(plan.actions, mirrorDir,
-                                                worktreeDir,
-                                                /*trustStats=*/!fullCopy);
-        if (!applied) return fail(applied.error());
-        const size_t actuallyCopied = *applied;
-
-        // Restore depot-head content for files open in the mirror.
-        if (!plan.depotReads.empty()) {
-            std::string depotBase = rule->depotPath;
-            if (depotBase.ends_with("...")) {
-                depotBase.resize(depotBase.size() - 3);
-            }
-            for (const auto& rel : plan.depotReads) {
-                const fs::path dest = fs::path(worktreeDir) / fs::path(rel);
-                std::error_code ec;
-                fs::create_directories(dest.parent_path(), ec);
-                if (ec) {
-                    return fail("failed to create directory " +
-                                dest.parent_path().string() + ": " +
-                                ec.message());
-                }
-                auto printed =
-                    p4::printHeadToFile(*config, depotBase + rel, dest.string());
-                if (!printed) return fail(printed.error());
-                fs::permissions(dest, fs::perms::owner_write,
-                                fs::perm_options::add, ec);
-            }
-        }
-        copiedFiles += actuallyCopied + plan.depotReads.size();
-        deletedFiles += plan.actions.deletes.size();
-    }
-
-    progress("Staging snapshot in Git...");
-    auto added = git::addAll(root);
-    if (!added) return fail(added.error());
-    auto clean = git::indexMatchesHead(root);
-    if (!clean) return fail(clean.error());
-
-    // Commit the snapshot (when there is anything new) and advance the depot
-    // ref to it. newDepot stays at oldDepot when the mirror already matched.
-    std::string newDepot = oldDepot;
-    if (!*clean) {
-        // Best-effort label: the company tool syncs different paths to
-        // different CLs, so this is informational, not a guarantee.
-        std::string message = "Import depot state";
-        auto cl = p4::latestSubmittedCl(*config);
-        if (cl && !cl->empty()) {
-            message += " at CL " + *cl;
-        }
-        auto committed = git::commit(message, root);
-        if (!committed) return fail(committed.error());
-        auto tip = git::revParse("HEAD", root);
-        if (!tip) return fail(tip.error());
-        newDepot = *tip;
-        auto advanced = git::updateRef(depotRef, newDepot, root);
-        if (!advanced) return fail(advanced.error());
-    }
+    // Build and commit the depot snapshot. In checkout mode staging happens in
+    // the user's own checkout (HEAD was positioned above); worktree mode passes
+    // the hidden worktree instead (wired below).
+    SnapshotStats snapStats;
+    auto snap = buildSnapshot(*config, root, /*stagingRoot=*/root, depotRef,
+                              oldDepot, fullCopy, progress, snapStats);
+    if (!snap) return fail(snap.error());
+    const std::string newDepot = *snap;
+    const size_t copiedFiles = snapStats.copied;
+    const size_t deletedFiles = snapStats.deleted;
 
     // The snapshot is committed (or nothing had changed): the working tree
     // and its stamped mtimes now faithfully mirror the depot state, so the

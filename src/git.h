@@ -72,6 +72,24 @@ std::expected<std::string, std::string> cleanUntracked(
 // sees it.
 std::expected<std::string, std::string> gitDir(const std::string& cwd = {});
 
+// `git worktree add --detach <path> <ref>`: create a linked worktree checked
+// out (detached) at `ref`. Used by import's worktree mode for the hidden
+// snapshot worktree under the git dir; the shared object DB and refs mean a
+// commit there advances only that worktree's private HEAD, never the user's.
+std::expected<std::string, std::string> worktreeAdd(const std::string& path,
+                                                    const std::string& ref,
+                                                    const std::string& cwd = {});
+
+// `git worktree prune`: drop registrations whose working directory is gone.
+// Required before re-adding a worktree at a path that was deleted by hand
+// (bare `worktree add` refuses a still-registered missing path).
+std::expected<std::string, std::string> worktreePrune(const std::string& cwd = {});
+
+// `git reset --hard <ref>` in `cwd`. Used only on gw's own snapshot worktree
+// to force it back to the depot baseline (never on the user's checkout).
+std::expected<std::string, std::string> resetHard(const std::string& ref,
+                                                  const std::string& cwd = {});
+
 // `git update-ref <ref> <target>`: point `ref` at `target` without checking it
 // out. Used to advance the hidden depot-tracking ref and to fast-forward a
 // non-current branch.

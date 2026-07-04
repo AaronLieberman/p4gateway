@@ -96,6 +96,21 @@ std::expected<std::string, std::string> gitDir(const std::string& cwd) {
     return run({"rev-parse", "--absolute-git-dir"}, cwd);
 }
 
+std::expected<std::string, std::string> worktreeAdd(const std::string& path,
+                                                    const std::string& ref,
+                                                    const std::string& cwd) {
+    return run({"worktree", "add", "--detach", path, ref}, cwd);
+}
+
+std::expected<std::string, std::string> worktreePrune(const std::string& cwd) {
+    return run({"worktree", "prune"}, cwd);
+}
+
+std::expected<std::string, std::string> resetHard(const std::string& ref,
+                                                  const std::string& cwd) {
+    return run({"reset", "--hard", ref}, cwd);
+}
+
 std::expected<void, std::string> updateRef(const std::string& ref,
                                            const std::string& target,
                                            const std::string& cwd) {

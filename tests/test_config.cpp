@@ -308,6 +308,38 @@ TEST(config_defaults_baseline_branch) {
     }
 }
 
+TEST(config_defaults_import_mode_to_checkout) {
+    auto config = loadFromString("include = //depot/yourproject/src/... .p4gw\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->importMode == p4gw::ImportMode::kCheckout);
+    }
+}
+
+TEST(config_parses_import_mode_values) {
+    auto checkout = loadFromString(
+        "include = //depot/yourproject/src/... .p4gw\n"
+        "import_mode = checkout\n");
+    CHECK(checkout.has_value());
+    if (checkout) CHECK(checkout->importMode == p4gw::ImportMode::kCheckout);
+
+    auto worktree = loadFromString(
+        "include = //depot/yourproject/src/... .p4gw\n"
+        "import_mode = worktree\n");
+    CHECK(worktree.has_value());
+    if (worktree) CHECK(worktree->importMode == p4gw::ImportMode::kWorktree);
+}
+
+TEST(config_rejects_unknown_import_mode) {
+    auto config = loadFromString(
+        "include = //depot/yourproject/src/... .p4gw\n"
+        "import_mode = bogus\n");
+    CHECK(!config.has_value());
+    if (!config) {
+        CHECK(config.error().find("import_mode must be") != std::string::npos);
+    }
+}
+
 TEST(depot_tracking_ref_derives_from_baseline) {
     p4gw::Config config;  // default baseline branch
     CHECK(p4gw::depotTrackingRef(config) == "refs/p4gw/main");

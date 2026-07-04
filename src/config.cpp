@@ -439,6 +439,16 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             config.client = value;
         } else if (key == "baseline_branch") {
             config.baselineBranch = value;
+        } else if (key == "import_mode") {
+            if (value == "checkout") {
+                config.importMode = ImportMode::kCheckout;
+            } else if (value == "worktree") {
+                config.importMode = ImportMode::kWorktree;
+            } else {
+                return std::unexpected(
+                    where + ": import_mode must be 'checkout' or 'worktree', "
+                    "got '" + value + "'");
+            }
         } else if (key == "ignore") {
             // A verbatim gitignore pattern, taken as-is (not tokenized) so globs
             // like "/src/**/*.pdb" survive intact. buildGitignore appends it

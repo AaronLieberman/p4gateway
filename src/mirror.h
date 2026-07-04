@@ -102,4 +102,11 @@ std::vector<std::string> findStaleFastPathFiles(
 // so it survives `git reset --hard` / `git clean` and p4 operations alike.
 std::string importPendingMarkerPath(const std::string& gitDir);
 
+// Path of the hidden git worktree `gw import` builds snapshots in under
+// worktree mode: `<gitDir>/p4gw/worktree`. Lives in the git dir for the same
+// reasons as the pending marker (outside the working tree and the mirror), and
+// so that wiping `.git` takes the worktree's files and its registration
+// together. Pure.
+std::string snapshotWorktreePath(const std::string& gitDir);
+
 }  // namespace p4gw::mirror
