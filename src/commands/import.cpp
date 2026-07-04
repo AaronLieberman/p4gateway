@@ -185,6 +185,51 @@ std::expected<std::string, std::string> buildSnapshot(
     return newDepot;
 }
 
+// Ensures the hidden snapshot worktree exists, is registered, and sits
+// detached at `oldDepot` with a clean tree, returning its path. A healthy
+// worktree is reused untouched - its stamped mtimes are the size+mtime fast
+// path. `forceReset` (the pending marker) resets even a matching worktree.
+// Sets `fullCopyNeeded` whenever it (re)created or reset the worktree, since
+// the stamps are then meaningless. Runs its git commands from the main repo
+// (`root`).
+std::expected<std::string, std::string> ensureSnapshotWorktree(
+    const std::string& root, const std::string& gitDirPath,
+    const std::string& oldDepot, bool forceReset, bool& fullCopyNeeded) {
+    const std::string wtPath = mirror::snapshotWorktreePath(gitDirPath);
+
+    // A single rev-parse inside the worktree proves the directory, its `.git`
+    // file, and the `.git/worktrees/<id>` registration are all present and
+    // consistent. If it fails - directory or registration deleted, or a moved
+    // repo whose gitdir back-pointers dangle - recreate from scratch.
+    auto head = git::revParse("HEAD", wtPath);
+    if (!head) {
+        std::error_code ec;
+        fs::remove_all(wtPath, ec);  // best effort; may not exist
+        // `worktree add` refuses a still-registered missing path, so prune the
+        // stale registration first.
+        auto pruned = git::worktreePrune(root);
+        if (!pruned) return std::unexpected(pruned.error());
+        auto added = git::worktreeAdd(wtPath, oldDepot, root);
+        if (!added) return std::unexpected(added.error());
+        fullCopyNeeded = true;
+        return wtPath;
+    }
+
+    // Registered and readable. Reset only when it isn't already the pristine
+    // base: a stamped-stat mismatch (HEAD moved, a crash mid-import, hand
+    // meddling) or the pending marker. The healthy path never resets.
+    auto dirty = git::isDirty(wtPath);
+    if (!dirty) return std::unexpected(dirty.error());
+    if (*head != oldDepot || *dirty || forceReset) {
+        auto reset = git::resetHard(oldDepot, wtPath);
+        if (!reset) return std::unexpected(reset.error());
+        auto cleaned = git::cleanUntracked({}, wtPath);
+        if (!cleaned) return std::unexpected(cleaned.error());
+        fullCopyNeeded = true;
+    }
+    return wtPath;
+}
+
 constexpr const char* kImportUsage =
     "usage: gw import [options]\n"
     "\n"
@@ -193,6 +238,10 @@ constexpr const char* kImportUsage =
     "bring your branch up to it. Like 'git fetch' / 'git pull --rebase'.\n"
     "A branch with no local commits fast-forwards; divergent commits are left\n"
     "untouched unless you pass --rebase.\n"
+    "\n"
+    "With 'import_mode = worktree' in p4gw.cfg the snapshot is built in a hidden\n"
+    "worktree, so import works even with a dirty tree - it just skips bringing\n"
+    "your branch up (do that yourself once the tree is clean).\n"
     "\n"
     "options:\n"
     "  -r, --rebase  Replay your local commits on top of the new depot state\n"
@@ -261,18 +310,6 @@ int cmdImport(const Args& args) {
         }
     }
 
-    auto dirty = git::isDirty(root);
-    if (!dirty) {
-        std::fprintf(stderr, "gw import: %s\n", dirty.error().c_str());
-        return 1;
-    }
-    if (*dirty) {
-        std::fprintf(stderr,
-                     "gw import: working tree is not clean - commit, stash, "
-                     "or gitignore your changes first\n");
-        return 1;
-    }
-
     // A marker in the git dir means an earlier import started mutating the
     // repo and never finished (crash, kill, a file locked past the retries).
     // Its stamped mtimes can no longer be trusted - outside cleanup like `git
@@ -286,7 +323,8 @@ int cmdImport(const Args& args) {
         return 1;
     }
     const std::string marker = mirror::importPendingMarkerPath(*gitDirPath);
-    if (fs::exists(marker)) {
+    const bool markerPresent = fs::exists(marker);
+    if (markerPresent) {
         std::printf("note  a previous import did not finish - ignoring the "
                     "size+mtime fast path and recopying every mirror file\n");
         fullCopy = true;
@@ -294,6 +332,73 @@ int cmdImport(const Args& args) {
 
     const std::string& baseline = config->baselineBranch;
     const std::string depotRef = depotTrackingRef(*config);
+
+    // Resolve the depot-tracking ref (moved above the clean-tree check because
+    // worktree mode's dirty-tree decision depends on whether a baseline exists;
+    // it only reads the ref, or seeds it with update-ref for a legacy repo, so
+    // it is safe here). If the ref does not exist yet but a legacy baseline
+    // branch does, this is a repo from before the hidden-ref model: seed the
+    // ref from the branch's most recent import commit (or its tip if there
+    // isn't one) so existing repos keep working without surprises.
+    std::string oldDepot;
+    if (auto tip = git::revParse(depotRef, root)) {
+        oldDepot = *tip;
+    } else {
+        auto baselineExists = git::branchExists(baseline, root);
+        if (baselineExists && *baselineExists) {
+            std::string seed;
+            auto importCommit = git::latestCommitMatching(
+                "^Import depot state", "refs/heads/" + baseline, root);
+            if (importCommit && !importCommit->empty()) {
+                seed = *importCommit;
+            } else if (auto branchTip =
+                           git::revParse("refs/heads/" + baseline, root)) {
+                seed = *branchTip;
+            }
+            if (!seed.empty()) {
+                auto seeded = git::updateRef(depotRef, seed, root);
+                if (!seeded) {
+                    std::fprintf(stderr, "gw import: %s\n",
+                                 seeded.error().c_str());
+                    return 1;
+                }
+                oldDepot = seed;
+            }
+        }
+    }
+
+    // Worktree mode builds the snapshot in a hidden worktree, so the user's
+    // checkout is never touched and a dirty tree is fine. It needs a commit to
+    // detach at, though, so the very first import (no depot ref yet) always
+    // falls back to checkout mode.
+    const bool worktreeMode =
+        config->importMode == ImportMode::kWorktree && !oldDepot.empty();
+    if (config->importMode == ImportMode::kWorktree && oldDepot.empty()) {
+        std::printf("note  import_mode is 'worktree', but this is the first "
+                    "import - building it in your checkout this once\n");
+    }
+
+    // Clean-tree check. Checkout mode rewrites the user's working tree, so it
+    // must be clean. Worktree mode leaves the checkout alone; a dirty tree only
+    // means the branch fast-forward/rebase half is skipped (see the epilogue),
+    // so record it and carry on.
+    bool dirtyTree = false;
+    {
+        auto dirty = git::isDirty(root);
+        if (!dirty) {
+            std::fprintf(stderr, "gw import: %s\n", dirty.error().c_str());
+            return 1;
+        }
+        if (*dirty) {
+            if (!worktreeMode) {
+                std::fprintf(stderr,
+                             "gw import: working tree is not clean - commit, "
+                             "stash, or gitignore your changes first\n");
+                return 1;
+            }
+            dirtyTree = true;
+        }
+    }
 
     // Branchless users work detached with implicit branches and track commit
     // visibility in their own event log. When we detect it, import accepts a
@@ -346,48 +451,30 @@ int cmdImport(const Args& args) {
         }
     }
 
-    // Resolve the depot-tracking ref. If it does not exist yet but a legacy
-    // baseline branch does, this is a repo from before the hidden-ref model:
-    // seed the ref from the branch's most recent import commit (or its tip if
-    // there isn't one) so existing repos keep working without surprises.
-    std::string oldDepot;
-    if (auto tip = git::revParse(depotRef, root)) {
-        oldDepot = *tip;
-    } else {
-        auto baselineExists = git::branchExists(baseline, root);
-        if (baselineExists && *baselineExists) {
-            std::string seed;
-            auto importCommit = git::latestCommitMatching(
-                "^Import depot state", "refs/heads/" + baseline, root);
-            if (importCommit && !importCommit->empty()) {
-                seed = *importCommit;
-            } else if (auto branchTip =
-                           git::revParse("refs/heads/" + baseline, root)) {
-                seed = *branchTip;
-            }
-            if (!seed.empty()) {
-                auto seeded = git::updateRef(depotRef, seed, root);
-                if (!seeded) {
-                    std::fprintf(stderr, "gw import: %s\n",
-                                 seeded.error().c_str());
-                    return 1;
-                }
-                oldDepot = seed;
-            }
-        }
-    }
-
     // From here failures may have moved HEAD off the user's branch or half-
-    // written the working tree. Once `mutating` is set, fail() restores the
-    // user's pre-import state: the tree was verified clean above, so
-    // everything the restore discards is the import's own partial output -
-    // `switch -f` puts tracked content back and `clean -fd` sweeps the
-    // untracked partial copies (never ignored files: the mirror and build
-    // output stay put). The pending marker is deliberately left in place so
-    // the next import distrusts the stamped stats and recopies everything.
+    // written the working tree (checkout mode) or the hidden worktree
+    // (worktree mode). Once `mutating` is set, fail() restores the pre-import
+    // state. The pending marker is deliberately left in place either way so the
+    // next import distrusts the stamped stats (checkout mode) or resets the
+    // worktree (worktree mode) and recopies everything.
     bool mutating = false;
     auto fail = [&](const std::string& message) {
         std::fprintf(stderr, "gw import: %s\n", message.c_str());
+        if (mutating && worktreeMode) {
+            // The user's checkout was never touched - only the hidden worktree
+            // holds partial output, and the marker (kept) triggers a reset on
+            // the next run.
+            std::fprintf(stderr,
+                         "note: your checkout was not touched; the next "
+                         "'gw import' resets the snapshot worktree and recopies "
+                         "every mirror file\n");
+            return 1;
+        }
+        // Checkout mode: the tree was verified clean at the start, so
+        // everything the restore discards is the import's own partial output -
+        // `switch -f` puts tracked content back and `clean -fd` sweeps the
+        // untracked partial copies (never ignored files: the mirror and build
+        // output stay put).
         if (mutating) {
             bool restored = false;
             std::string restoredTo;
@@ -455,12 +542,26 @@ int cmdImport(const Args& args) {
     }
     mutating = true;
 
-    // Position the working tree on a pristine depot base, then overlay the
-    // mirror. With an existing depot ref we detach onto it so the user's branch
-    // is untouched; for the very first import we create the baseline branch and
-    // commit there (there is no prior depot state to base a snapshot on).
+    // Position the staging area on a pristine depot base, then overlay the
+    // mirror into it. `stagingRoot` is where the snapshot is built and where
+    // the mirror is copied.
+    //   - Worktree mode: the hidden worktree, (re)created detached at oldDepot.
+    //     The user's own checkout and HEAD are never touched.
+    //   - Checkout mode with an existing depot ref: detach the user's checkout
+    //     onto it so their branch is untouched.
+    //   - First import (no depot ref, always checkout mode): create the
+    //     baseline branch and commit there (no prior depot state to base on).
+    std::string stagingRoot = root;
     const bool firstImport = oldDepot.empty();
-    if (firstImport) {
+    if (worktreeMode) {
+        bool resetForced = false;
+        auto wt = ensureSnapshotWorktree(root, *gitDirPath, oldDepot,
+                                         /*forceReset=*/markerPresent,
+                                         resetForced);
+        if (!wt) return fail(wt.error());
+        stagingRoot = *wt;
+        if (resetForced) fullCopy = true;
+    } else if (firstImport) {
         if (hasCommits) {
             // The baseline branch may already exist: gw init creates it (with
             // the committed .gitignore) on a fresh repo. `git switch --orphan`
@@ -505,12 +606,12 @@ int cmdImport(const Args& args) {
         std::fflush(stdout);
     };
 
-    // Build and commit the depot snapshot. In checkout mode staging happens in
-    // the user's own checkout (HEAD was positioned above); worktree mode passes
-    // the hidden worktree instead (wired below).
+    // Build and commit the depot snapshot at the staging area positioned above
+    // (the user's checkout in checkout mode, the hidden worktree in worktree
+    // mode). The mirror is always resolved against the main tree (`root`).
     SnapshotStats snapStats;
-    auto snap = buildSnapshot(*config, root, /*stagingRoot=*/root, depotRef,
-                              oldDepot, fullCopy, progress, snapStats);
+    auto snap = buildSnapshot(*config, root, stagingRoot, depotRef, oldDepot,
+                              fullCopy, progress, snapStats);
     if (!snap) return fail(snap.error());
     const std::string newDepot = *snap;
     const size_t copiedFiles = snapStats.copied;
@@ -529,6 +630,13 @@ int cmdImport(const Args& args) {
     progress("Snapshot staged. Updating branch...");
     const bool importedNew = newDepot != oldDepot;
 
+    // Worktree mode with a dirty tree: the depot baseline was imported, but a
+    // fast-forward/rebase/branchless-sync would touch the user's uncommitted
+    // work, so skip that half (a ref-only convenience update of the baseline
+    // branch stays safe). In worktree mode the user's HEAD never moved, so the
+    // switch-backs below are unnecessary too.
+    const bool skipBranchUpdate = worktreeMode && dirtyTree;
+
     // Working detached: either branchless (which works detached by design) or a
     // plain detached HEAD. The hidden ref is the baseline, so no branch was
     // needed - return HEAD to where the user was and bring it up to date from
@@ -540,8 +648,9 @@ int cmdImport(const Args& args) {
         // Return HEAD to where the user was working (detached) before the
         // restack. The recorded commit still exists; a branchless sync marks it
         // obsolete (recoverable with `git undo`), a plain rebase leaves the
-        // pre-rebase commit reachable via the reflog.
-        if (!originalHead.empty()) {
+        // pre-rebase commit reachable via the reflog. Worktree mode never moved
+        // HEAD, so there is nothing to return.
+        if (!worktreeMode && !originalHead.empty()) {
             auto back = git::switchDetached(originalHead, root);
             if (!back) return fail(back.error());
         }
@@ -577,6 +686,16 @@ int cmdImport(const Args& args) {
             auto created =
                 git::updateRef("refs/heads/" + baseline, newDepot, root);
             if (!created) return fail(created.error());
+        }
+
+        // Dirty tree (worktree mode): the baseline is imported and the
+        // convenience branch advanced above, but restacking would touch the
+        // user's uncommitted work, so leave it.
+        if (skipBranchUpdate) {
+            std::printf("note: working tree is not clean - the depot baseline "
+                        "was imported, but your work was left as-is. Commit or "
+                        "stash, then rerun 'gw import --rebase'.\n");
+            return 0;
         }
 
         // Without --rebase, leave the user's work where it is (the same "never
@@ -630,7 +749,8 @@ int cmdImport(const Args& args) {
     // Return to the user's branch: we may be on a detached snapshot, or on the
     // freshly created baseline after a first import with pre-existing history.
     // An unborn first import has no branch to go back to and stays on baseline.
-    if (!originalBranch.empty()) {
+    // Worktree mode never moved HEAD, so there is nothing to return.
+    if (!worktreeMode && !originalBranch.empty()) {
         auto cur = git::currentBranch(root);
         if (cur && *cur != originalBranch) {
             auto switchedBack = git::switchBranch(originalBranch, root);
@@ -651,6 +771,34 @@ int cmdImport(const Args& args) {
     } else {
         std::printf("Already up to date - the mirror matches the depot "
                     "baseline.\n");
+    }
+
+    // Dirty tree (worktree mode): the depot baseline was imported, but a
+    // fast-forward would touch the user's uncommitted work. Still advance the
+    // convenience baseline branch when the user isn't on it (a ref move never
+    // touches the tree); otherwise leave it. Then point them at the manual
+    // catch-up and stop.
+    if (skipBranchUpdate) {
+        const std::string current =
+            originalBranch.empty() ? baseline : originalBranch;
+        if (current != baseline) {
+            auto baselineExists = git::branchExists(baseline, root);
+            if (baselineExists && *baselineExists) {
+                auto branchFf =
+                    git::isAncestor("refs/heads/" + baseline, newDepot, root);
+                if (branchFf && *branchFf) {
+                    auto moved = git::updateRef("refs/heads/" + baseline,
+                                                newDepot, root);
+                    if (!moved) return fail(moved.error());
+                }
+            }
+        }
+        std::printf("note: working tree is not clean - the depot baseline was "
+                    "imported to '%s', but '%s' was left as-is. Commit or "
+                    "stash, then rerun 'gw import' (or git merge --ff-only "
+                    "%s).\n",
+                    depotRef.c_str(), current.c_str(), baseline.c_str());
+        return 0;
     }
 
     // Bring the user's branch up to the new depot state. `ffable` is true when

@@ -1,7 +1,8 @@
 # Running the integration tests
 
-`gw integtest run` drives the full workflow — `init`, `import`, `prepare`,
-`doctor`, submits, rebases — against a real Perforce server. It needs a live
+`gw integtest run` drives the full workflow — `init`, `import` (both checkout
+and `import_mode = worktree`), `prepare`, `doctor`, submits, rebases — against
+a real Perforce server. It needs a live
 server and a configured workspace. CI runs it automatically on a Windows
 runner that downloads and boots a throwaway p4d
 (`.github/workflows/integtest.yml`); the setup below is the manual equivalent,

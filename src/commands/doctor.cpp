@@ -139,6 +139,47 @@ int cmdDoctor(const Args& args) {
         }
     }
 
+    // Worktree import mode: the hidden snapshot worktree should exist, be
+    // registered, and sit detached at the depot baseline. A broken or stale
+    // one just means the next import recreates/resets it, so these degrade to
+    // notes and warnings, never failures.
+    if (config->importMode == ImportMode::kWorktree) {
+        if (auto gitDirPath = git::gitDir(root)) {
+            const std::string depotRef = depotTrackingRef(*config);
+            const std::string wtPath =
+                mirror::snapshotWorktreePath(*gitDirPath);
+            auto depotTip = git::revParse(depotRef, root);
+            if (!depotTip) {
+                std::printf("note  import worktree mode configured; the first "
+                            "import runs in your checkout\n");
+            } else if (!fs::exists(wtPath)) {
+                std::printf("note  snapshot worktree not created yet - the next "
+                            "'gw import' creates it\n");
+            } else {
+                auto wtHead = git::revParse("HEAD", wtPath);
+                auto wtDirty = git::isDirty(wtPath);
+                if (!wtHead) {
+                    std::printf("WARN  snapshot worktree at %s is broken "
+                                "(deleted registration or a moved repo) - the "
+                                "next 'gw import' recreates it and recopies "
+                                "every mirror file\n",
+                                wtPath.c_str());
+                    ++warnings;
+                } else if (*wtHead != *depotTip || (wtDirty && *wtDirty)) {
+                    std::printf("WARN  snapshot worktree at %s is stale or "
+                                "modified - the next 'gw import' resets it and "
+                                "recopies every mirror file\n",
+                                wtPath.c_str());
+                    ++warnings;
+                } else {
+                    std::printf("ok    snapshot worktree healthy (detached at "
+                                "%s)\n",
+                                depotRef.c_str());
+                }
+            }
+        }
+    }
+
     // Repo-directory ownership. gw works through the git CLI, which tolerates a
     // repo owned by another user; libgit2-based tools (git-branchless) do not -
     // they crash with a "not owned by current user" error that is easy to
@@ -287,7 +328,27 @@ int cmdDoctor(const Args& args) {
         // stamped stats lie - a torn import cleaned up by hand - and the next
         // plain import would silently keep stale content.
         if (verify) {
+            // The stamped copies live wherever import stages them: the user's
+            // checkout (checkout mode) or the hidden snapshot worktree
+            // (worktree mode). Compare against that base.
+            std::string compareBase = root;
+            bool skipVerify = false;
+            if (config->importMode == ImportMode::kWorktree) {
+                auto gitDirPath = git::gitDir(root);
+                if (gitDirPath) {
+                    const std::string wtPath =
+                        mirror::snapshotWorktreePath(*gitDirPath);
+                    if (fs::exists(wtPath)) {
+                        compareBase = wtPath;
+                    } else {
+                        std::printf("note  --verify: snapshot worktree not "
+                                    "created yet - nothing to compare\n");
+                        skipVerify = true;
+                    }
+                }
+            }
             for (const auto* rule : includeRules(config->rules)) {
+                if (skipVerify) break;
                 const std::string mirrorDir =
                     resolveMirrorPath(rule->mirrorPath, root);
                 if (!fs::exists(mirrorDir)) continue;  // warned above
@@ -321,8 +382,8 @@ int cmdDoctor(const Args& args) {
                 }
                 const std::string worktreeDir =
                     rule->repoSubtree.empty()
-                        ? root
-                        : (fs::path(root) / rule->repoSubtree).string();
+                        ? compareBase
+                        : (fs::path(compareBase) / rule->repoSubtree).string();
                 const auto stale = mirror::findStaleFastPathFiles(
                     mirrorTracked, mirrorDir, worktreeDir);
                 if (stale.empty()) {

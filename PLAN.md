@@ -111,7 +111,7 @@ by the 2026-07 design review.
        Cheap. — done: `uniqueTempFile()` in `subprocess.{h,cpp}` splices the PID
        and a per-process counter into every scratch name; all call sites
        (prepare, p4 change spec, shelf, integtest) route through it.
-3. [ ] `gw import` builds its snapshot in a hidden git worktree pinned to
+3. [x] `gw import` builds its snapshot in a hidden git worktree pinned to
        `refs/p4gw/<baseline>` instead of detaching the user's checkout.
        Today import rewrites the working tree twice (detach onto the old
        snapshot, then switch back), requires a clean tree even for the
@@ -121,6 +121,22 @@ by the 2026-07 design review.
        touched — only `--rebase`/fast-forward would need a clean tree.
        Pairs with the incremental-import-via-have-manifest design note in
        M4; together a no-change import is one p4 query and a no-op commit.
+       — done: config-selectable via `import_mode = checkout | worktree`
+       (default checkout, unchanged behavior), so it can be trialed and
+       reverted per repo. Worktree lives at `.git/p4gw/worktree`, persists
+       across imports untouched (its mtime stamps ARE the fast path),
+       validates on reuse with one `git rev-parse HEAD` == baseline and
+       self-heals (stale → reset+clean+full copy; broken/moved →
+       prune+recreate+full copy); the pending marker forces a reset. A dirty
+       tree is allowed — the branch fast-forward/rebase half is skipped with a
+       note (the ref-only baseline convenience update still runs when the user
+       isn't on it). First import ever falls back to checkout mode (a worktree
+       needs a commit to detach at). `gw doctor` reports worktree health and
+       `--verify` compares against the worktree; `gw integtest run` covers the
+       dirty-ok / checkout-untouched / branch-not-advanced / clean-ff /
+       up-to-date / verify-healthy path. **Needs a real-workspace check** on
+       Windows (path length, live server); the shared snapshot-build code
+       (`buildSnapshot`) is exercised by both modes.
 4. [x] Replace popen with `CreateProcessW` on Windows (and `posix_spawn` on
        POSIX): separate stdout/stderr, no shell quoting risks (cmd.exe still
        expands `%` inside double quotes), real exit codes (POSIX `pclose`
@@ -253,8 +269,10 @@ by the 2026-07 design review.
       so LineEnd/`+k` byte fidelity is untouched (unlike the p4-print
       variant below), and the per-file manifest sidesteps that variant's
       no-single-baseline-CL trap outright. The touched-path list also lets
-      the `git add` be scoped instead of `-A` (import requires a clean tree,
-      so its own copies are the only changes). Strictly a cache with a
+      the `git add` be scoped instead of `-A` (in checkout mode import
+      requires a clean tree, and in worktree mode the snapshot worktree's own
+      cleanliness check plays the same role, so import's own copies are the
+      only changes either way). Strictly a cache with a
       fallback: a missing or SHA-mismatched manifest (first import, crash
       before the manifest write, hand-moved ref) falls back to today's full
       walk, and `--full` forces it - correctness never depends on the cache.

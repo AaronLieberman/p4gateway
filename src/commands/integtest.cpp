@@ -1076,6 +1076,150 @@ std::expected<void, std::string> itShelfImport(ItContext& it) {
     return {};
 }
 
+// Exercises `import_mode = worktree`: import must succeed with a dirty working
+// tree (checkout mode refuses), advance the depot baseline without touching the
+// user's checkout or their branch, then bring the branch up once the tree is
+// clean, all while the persisted snapshot worktree's stamps survive across
+// runs. Runs on 'main' (clean) after itShelfImport and restores that state.
+std::expected<void, std::string> itWorktreeImport(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path util = fs::path(it.srcWork) / "util.cpp";
+    const fs::path main = fs::path(it.srcWork) / "main.cpp";
+
+    // (a) Checkout mode still refuses a dirty tree. Dirty util.cpp, then import.
+    auto dirtied = appendFile(util, "// local uncommitted edit\n");
+    if (!dirtied) return dirtied;
+    auto refused = runGw(it, it.repoDir, {"import"});
+    if (refused) {
+        return std::unexpected("checkout-mode import should refuse a dirty "
+                               "tree, but it succeeded:\n" + *refused);
+    }
+    if (refused.error().find("not clean") == std::string::npos) {
+        return std::unexpected("checkout-mode import failed for the wrong "
+                               "reason:\n" + refused.error());
+    }
+
+    // (b) Switch to worktree mode (save the config to restore at the end).
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto appended = appendFile(cfg, "\nimport_mode = worktree\n");
+    if (!appended) return appended;
+
+    // (c) A teammate-style depot change to import.
+    auto cl = p4::createChangelist(it.p4, "gw integtest: worktree-mode change");
+    if (!cl) return std::unexpected(cl.error());
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+    auto edited = trace(it, "p4 edit " + mirrorMain,
+                        p4::editFiles(it.p4, *cl, {mirrorMain}));
+    if (!edited) return std::unexpected(edited.error());
+    auto appendedDepot = appendFile(mirrorMain, "// worktree-mode change\n");
+    if (!appendedDepot) return appendedDepot;
+    auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
+    if (!submitted) return std::unexpected(submitted.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // (d) Import while the tree is still dirty: must succeed, advance the
+    // baseline, and leave the user's checkout and branch untouched.
+    auto oldBaseline = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!oldBaseline) return std::unexpected(oldBaseline.error());
+    auto oldHead = git::revParse("HEAD", it.repoDir);
+    if (!oldHead) return std::unexpected(oldHead.error());
+
+    auto dirtyImport = runGw(it, it.repoDir, {"import"});
+    if (!dirtyImport) return std::unexpected(dirtyImport.error());
+    if (dirtyImport->find("working tree is not clean") == std::string::npos) {
+        return std::unexpected("worktree-mode dirty import did not report the "
+                               "skipped branch update:\n" + *dirtyImport);
+    }
+    auto newBaseline = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!newBaseline) return std::unexpected(newBaseline.error());
+    if (*newBaseline == *oldBaseline) {
+        return std::unexpected("worktree-mode import did not advance the depot "
+                               "baseline");
+    }
+    auto baselineMain =
+        git::run({"show", "refs/p4gw/main:src/main.cpp"}, it.repoDir);
+    if (!baselineMain) return std::unexpected(baselineMain.error());
+    if (baselineMain->find("// worktree-mode change") == std::string::npos) {
+        return std::unexpected("the depot change is missing from the imported "
+                               "baseline");
+    }
+    // The user's branch and HEAD must not have moved (on main + dirty).
+    auto branchMain = git::revParse("refs/heads/main", it.repoDir);
+    if (!branchMain) return std::unexpected(branchMain.error());
+    if (*branchMain != *oldHead) {
+        return std::unexpected("worktree-mode import advanced 'main' despite "
+                               "the dirty tree");
+    }
+    auto nowHead = git::revParse("HEAD", it.repoDir);
+    if (!nowHead || *nowHead != *oldHead) {
+        return std::unexpected("worktree-mode import moved HEAD");
+    }
+    // The local edit survives; the depot change has NOT reached the checkout.
+    auto utilNow = readFile(util);
+    if (!utilNow) return std::unexpected(utilNow.error());
+    if (utilNow->find("// local uncommitted edit") == std::string::npos) {
+        return std::unexpected("worktree-mode import discarded the user's local "
+                               "edit");
+    }
+    auto mainNow = readFile(main);
+    if (!mainNow) return std::unexpected(mainNow.error());
+    if (mainNow->find("// worktree-mode change") != std::string::npos) {
+        return std::unexpected("worktree-mode import wrote the depot change "
+                               "into the checkout (it should not touch it)");
+    }
+    const fs::path wtDir =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "worktree";
+    if (!fs::exists(wtDir)) {
+        return std::unexpected("the snapshot worktree was not created");
+    }
+
+    // (e) Clean the tree, import again: now the branch fast-forwards.
+    auto restored = git::run({"restore", "src/util.cpp"}, it.repoDir);
+    if (!restored) return std::unexpected(restored.error());
+    auto cleanImport = runGw(it, it.repoDir, {"import"});
+    if (!cleanImport) return std::unexpected(cleanImport.error());
+    auto branchAfter = git::revParse("refs/heads/main", it.repoDir);
+    if (!branchAfter) return std::unexpected(branchAfter.error());
+    if (*branchAfter != *newBaseline) {
+        return std::unexpected("clean worktree-mode import did not fast-forward "
+                               "'main' onto the depot baseline");
+    }
+    auto mainAfter = readFile(main);
+    if (!mainAfter) return std::unexpected(mainAfter.error());
+    if (mainAfter->find("// worktree-mode change") == std::string::npos) {
+        return std::unexpected("the depot change did not reach the checkout "
+                               "after the clean import");
+    }
+
+    // (f) A no-change import is "Already up to date" (stamps survived unreset),
+    // and doctor --verify confirms the worktree is healthy and byte-honest.
+    auto noop = runGw(it, it.repoDir, {"import"});
+    if (!noop) return std::unexpected(noop.error());
+    if (noop->find("Already up to date") == std::string::npos) {
+        return std::unexpected("a no-change worktree-mode import was not "
+                               "reported as up to date:\n" + *noop);
+    }
+    auto verify = runGw(it, it.repoDir, {"doctor", "--verify"});
+    if (!verify) return std::unexpected(verify.error());
+    if (verify->find("snapshot worktree healthy") == std::string::npos) {
+        return std::unexpected("doctor did not report the snapshot worktree "
+                               "healthy:\n" + *verify);
+    }
+    if (verify->find("verified") == std::string::npos) {
+        return std::unexpected("doctor --verify did not confirm the mirror "
+                               "matches in worktree mode:\n" + *verify);
+    }
+
+    // (g) Restore checkout mode; end on 'main', clean, for itFinalChecks.
+    auto wrote = writeFile(cfg, *savedCfg);
+    if (!wrote) return wrote;
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -1462,6 +1606,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("gw shelf import reconstructs a shelved CL as a "
                            "branch",
                            [&] { return itShelfImport(it); });
+        steps.emplace_back("worktree-mode import: dirty-tree ok, checkout "
+                           "untouched",
+                           [&] { return itWorktreeImport(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
         steps.emplace_back("doctor catches each deliberate view "
