@@ -168,7 +168,7 @@ against the remaining milestones.
        one-time catch-up copy after mode flips) and decides whether the
        have-manifest work below should assume worktree mode as the default
        staging root.
-6. [ ] Incremental `import` via a persisted `p4 have` manifest — promote the
+6. [x] Incremental `import` via a persisted `p4 have` manifest — promote the
        M4 design note to build next. Every open question is settled (print
        fidelity verified live, the noclobber/tampering analysis done,
        cache-with-fallback framing agreed); paired with the worktree, a
@@ -176,6 +176,22 @@ against the remaining milestones.
        no-op commit. Build after (or alongside) the worktree trial, since
        both reshape `buildSnapshot` and the manifest should be keyed to the
        staging root that wins.
+       — done: `buildSnapshot` reads `.git/p4gw/have-<baseline>` and, when
+       its `snapshot` line matches the old depot ref (and `--full`/marker
+       are off), replaces the mirror walk + stat pass with a
+       `diffHaveState` of fresh `p4 have` revs against the manifest (rev
+       unchanged -> skipped without a stat; deletes come from the manifest,
+       so the mirror is never listed) and scopes the git staging to the
+       touched paths (`git add --pathspec-from-file`, NUL-separated). The
+       fresh have state is persisted after the ref advances via temp-file +
+       rename, so a torn write can't leave a plausible manifest. Works in
+       both import modes; opened-file depot-head reads and the gw-metadata
+       delete guard carry over. Pure logic (render/parse/diff, path
+       flattening, `parseTaggedHave`) is unit-tested; `gw integtest run`
+       covers fast path (exact changed/deleted counts, no mirror-walk
+       line), deleted-manifest fallback + rewrite, corrupted-binding
+       fallback, and the fast path returning. `gw doctor` reports the
+       manifest's binding state.
 7. [ ] Pending-CL lifecycle bundle: `gw prepare --abandon <CL>` (`p4 revert
        -c` + scoped `p4 sync -f` to restore the mirror — the natural partner
        to `--update`; today abandoning is hand-revert + sync) plus the
@@ -290,7 +306,9 @@ chains, multiple roots, p4ignore derivation) stay wait-until-it-bites.
       copy so unchanged files keep reading as current on the next run. Turns
       a full copy into a stat per file; `git add -A`'s own tree scan is the
       remaining lower bound.
-- [ ] Incremental `import` via a persisted `p4 have` manifest (design):
+- [x] Incremental `import` via a persisted `p4 have` manifest (design) —
+      built; see Next-up item 6 for the implementation summary. Original
+      design note kept below for the reasoning:
       store the per-file `//depot/file#rev` manifest that produced each
       baseline snapshot (e.g. `.git/p4gw/have-<baseline>`, keyed by the
       snapshot's commit SHA, written only after the ref advances). The next

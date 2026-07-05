@@ -230,12 +230,26 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
 // (pure; unit-tested). Used to read the file list from `p4 -ztag have`.
 std::vector<std::string> parseTaggedDepotFiles(const std::string& ztagOutput);
 
-// Depot files p4 has synced under `depotPath` (`p4 -ztag have <depotPath>`).
-// These are the files the mirror is *supposed* to contain; `gw import` uses
-// the set to ignore strays p4 doesn't track. A subtree with nothing synced is
-// a normal empty result, not an error. `depotPath` must be the configured,
-// scoped path - never an unscoped wildcard.
-std::expected<std::vector<std::string>, std::string> haveFiles(
+// One synced file from `p4 -ztag have`: the depot path and the revision the
+// client has. The revision is what makes the have manifest work: a file whose
+// have rev is unchanged since the last import was not rewritten by sync, so
+// import can skip it without a stat.
+struct HaveEntry {
+    std::string depotFile;  // //depot/...
+    std::string rev;        // haveRev, e.g. "5"
+};
+
+// Parses `p4 -ztag have` output into per-file records (pure; unit-tested).
+std::vector<HaveEntry> parseTaggedHave(const std::string& ztagOutput);
+
+// Depot files p4 has synced under `depotPath`, with their have revisions
+// (`p4 -ztag have <depotPath>`). These are the files the mirror is *supposed*
+// to contain; `gw import` uses the set to ignore strays p4 doesn't track, and
+// the revisions to diff against the persisted have manifest so unchanged
+// files are skipped without a stat. A subtree with nothing synced is a normal
+// empty result, not an error. `depotPath` must be the configured, scoped path
+// - never an unscoped wildcard.
+std::expected<std::vector<HaveEntry>, std::string> haveFiles(
     const Config& config, const std::string& depotPath);
 
 // Writes the head revision of `depotFile` to `dest` (byte-exact, safe for

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace fs = std::filesystem;
@@ -262,6 +263,88 @@ std::string importPendingMarkerPath(const std::string& gitDir) {
 
 std::string snapshotWorktreePath(const std::string& gitDir) {
     return (fs::path(gitDir) / "p4gw" / "worktree").string();
+}
+
+std::string haveManifestPath(const std::string& gitDir,
+                             const std::string& baseline) {
+    // Branch names may contain path separators (team/main); flatten them so
+    // the manifest stays a single file directly under p4gw/.
+    std::string flat = baseline;
+    for (char& c : flat) {
+        if (c == '/' || c == '\\') c = '_';
+    }
+    return (fs::path(gitDir) / "p4gw" / ("have-" + flat)).string();
+}
+
+std::string renderHaveManifest(const std::string& snapshot,
+                               const std::vector<ManifestEntry>& entries) {
+    std::string out =
+        "# gw import have manifest - a cache binding the p4 have state to the\n"
+        "# depot snapshot below. Safe to delete: the next import falls back to\n"
+        "# the full mirror walk and rewrites it.\n";
+    out += "snapshot " + snapshot + "\n";
+    for (const auto& entry : entries) {
+        out += entry.depotFile + "#" + entry.rev + "\n";
+    }
+    return out;
+}
+
+std::vector<ManifestEntry> parseHaveManifest(const std::string& text,
+                                             std::string& snapshot) {
+    snapshot.clear();
+    std::vector<ManifestEntry> entries;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        if (line.starts_with("snapshot ")) {
+            snapshot = line.substr(9);
+            continue;
+        }
+        // `<depotFile>#<rev>`: split on the LAST '#' - depot paths cannot
+        // contain '#' unencoded, but be conservative anyway.
+        const auto hash = line.rfind('#');
+        if (hash == std::string::npos || hash == 0 ||
+            hash + 1 == line.size()) {
+            continue;  // malformed line: skip rather than poison the cache
+        }
+        entries.push_back({line.substr(0, hash), line.substr(hash + 1)});
+    }
+    return entries;
+}
+
+SyncActions diffHaveState(
+    const std::vector<std::pair<std::string, std::string>>& then,
+    const std::vector<std::pair<std::string, std::string>>& now) {
+    std::unordered_map<std::string, const std::string*> thenRev;
+    thenRev.reserve(then.size());
+    for (const auto& [rel, rev] : then) {
+        thenRev.emplace(rel, &rev);
+    }
+
+    SyncActions actions;
+    std::unordered_set<std::string> nowRel;
+    nowRel.reserve(now.size());
+    for (const auto& [rel, rev] : now) {
+        nowRel.insert(rel);
+        const auto it = thenRev.find(rel);
+        if (it == thenRev.end() || *it->second != rev) {
+            actions.copies.push_back(rel);  // added, or synced to another rev
+        }
+    }
+    for (const auto& [rel, rev] : then) {
+        (void)rev;
+        if (!nowRel.contains(rel)) {
+            actions.deletes.push_back(rel);  // gone from the client
+        }
+    }
+    std::sort(actions.copies.begin(), actions.copies.end());
+    std::sort(actions.deletes.begin(), actions.deletes.end());
+    return actions;
 }
 
 }  // namespace p4gw::mirror

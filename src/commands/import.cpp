@@ -3,8 +3,10 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 #include "commands.h"
 #include "config.h"
@@ -29,6 +31,10 @@ struct SnapshotStats {
 // and the hidden worktree in worktree mode; either way it must already be
 // positioned on `oldDepot` (or unborn on the very first import). The mirror is
 // always resolved against `root` (it lives only in the main working tree).
+// `manifestPath` is the have manifest (see mirror.h): when it is bound to
+// `oldDepot` and `fullCopy` is off, the mirror walk and stat pass are replaced
+// by a have diff and the git staging is scoped to the touched paths; the fresh
+// have state is persisted back after the ref advances.
 // Returns the new depot tip: equal to `oldDepot` when the mirror already
 // matched (nothing committed), or empty when there was never anything to
 // commit (a first import against an empty mirror). The caller owns HEAD
@@ -37,11 +43,37 @@ struct SnapshotStats {
 std::expected<std::string, std::string> buildSnapshot(
     const Config& config, const std::string& root,
     const std::string& stagingRoot, const std::string& depotRef,
-    const std::string& oldDepot, bool fullCopy,
+    const std::string& oldDepot, const std::string& manifestPath,
+    bool fullCopy,
     const std::function<void(const std::string&)>& progress,
     SnapshotStats& stats) {
-    auto tracked = git::lsFiles(stagingRoot);
-    if (!tracked) return std::unexpected(tracked.error());
+    // The persisted have manifest is valid only when it is bound to the exact
+    // snapshot the staging tree sits on. Anything else - first import, torn
+    // write, a hand-moved ref, --full - and import falls back to the full
+    // mirror walk below; the manifest is a cache, never a source of truth.
+    std::vector<mirror::ManifestEntry> manifestEntries;
+    bool manifestValid = false;
+    if (!fullCopy && !oldDepot.empty()) {
+        std::ifstream manifestFile(manifestPath, std::ios::binary);
+        if (manifestFile) {
+            std::ostringstream text;
+            text << manifestFile.rdbuf();
+            std::string snapshot;
+            manifestEntries =
+                mirror::parseHaveManifest(std::move(text).str(), snapshot);
+            manifestValid = !snapshot.empty() && snapshot == oldDepot;
+        }
+    }
+
+    // The full walk needs the tracked-file list to compute deletes; the
+    // manifest diff derives deletes from the manifest itself, so skip the
+    // scan entirely on the fast path.
+    std::vector<std::string> tracked;
+    if (!manifestValid) {
+        auto trackedFiles = git::lsFiles(stagingRoot);
+        if (!trackedFiles) return std::unexpected(trackedFiles.error());
+        tracked = std::move(*trackedFiles);
+    }
 
     // Files already opened in the mirror (a mid-prepare CL, a stray p4 edit)
     // have an un-submitted working copy. The baseline must stay pristine
@@ -54,6 +86,8 @@ std::expected<std::string, std::string> buildSnapshot(
     // Each mapping is its own depot subtree, synced into its own mirror and
     // living under its own working-tree directory; import them independently
     // and tally for the summary.
+    std::vector<mirror::ManifestEntry> newManifest;  // fresh have, all mappings
+    std::vector<std::string> touched;  // staging-relative paths (fast path)
     for (const auto* rule : includeRules(config.rules)) {
         const std::string mirrorDir =
             resolveMirrorPath(rule->mirrorPath, root);
@@ -65,43 +99,85 @@ std::expected<std::string, std::string> buildSnapshot(
                 ? stagingRoot
                 : (fs::path(stagingRoot) / rule->repoSubtree).string();
 
-        progress("Listing mirror files under " + mirrorDir + "...");
-        auto mirrorFiles = mirror::listFiles(mirrorDir);
-        if (!mirrorFiles) return std::unexpected(mirrorFiles.error());
-
-        // p4 only ever removes files it deleted a revision of, so anything it
-        // never tracked (build output, leftovers from a botched sync, hand
-        // edits) lingers in the mirror. Keep only the files p4 reports as
-        // synced; strays are ignored so they never land in the baseline. A
-        // failed `p4 have` is an error (don't mistake it for "everything is a
-        // stray"); an empty result is legitimately nothing synced.
+        // The have listing serves three masters: the stray filter (full walk),
+        // the manifest diff (fast path), and the manifest written for the next
+        // run. A failed `p4 have` is an error (don't mistake it for "everything
+        // is a stray"); an empty result is legitimately nothing synced.
         progress("Querying p4 have for " + rule->depotPath + "...");
         auto haveDepot = p4::haveFiles(config, rule->depotPath);
         if (!haveDepot) return std::unexpected(haveDepot.error());
-        std::unordered_set<std::string> haveRel;
-        for (const auto& depotFile : *haveDepot) {
+        std::vector<std::pair<std::string, std::string>> nowRel;
+        nowRel.reserve(haveDepot->size());
+        for (const auto& entry : *haveDepot) {
             std::string rel =
-                p4::depotRelativePath(rule->depotPath, depotFile);
-            if (!rel.empty()) haveRel.insert(std::move(rel));
+                p4::depotRelativePath(rule->depotPath, entry.depotFile);
+            if (!rel.empty()) nowRel.emplace_back(std::move(rel), entry.rev);
         }
-        std::vector<std::string> mirrorTracked;
-        for (auto& path : *mirrorFiles) {
-            if (haveRel.contains(path)) mirrorTracked.push_back(std::move(path));
+        for (auto& entry : *haveDepot) {
+            newManifest.push_back(
+                {std::move(entry.depotFile), std::move(entry.rev)});
         }
 
-        // Tracked files under this subtree, made mirror-relative so they line
-        // up with the mirror's own (subtree-rooted) listing.
-        std::vector<std::string> trackedHere;
-        for (const auto& path : *tracked) {
-            if (subtreePrefix.empty()) {
-                trackedHere.push_back(path);
-            } else if (path.starts_with(subtreePrefix)) {
-                trackedHere.push_back(path.substr(subtreePrefix.size()));
+        mirror::SyncActions actions;
+        if (manifestValid) {
+            // Fast path: diff the fresh have state against the manifest. A rev
+            // that did not move was not rewritten by sync, so the mirror copy
+            // still matches the snapshot the staging tree sits on - skip it
+            // without so much as a stat. Deletes come from the manifest, so
+            // the mirror is never even listed.
+            std::vector<std::pair<std::string, std::string>> thenRel;
+            for (const auto& entry : manifestEntries) {
+                std::string rel =
+                    p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                if (!rel.empty()) thenRel.emplace_back(std::move(rel), entry.rev);
             }
-        }
+            actions = mirror::diffHaveState(thenRel, nowRel);
+            // Parity with computeSyncActions: gw's own metadata never has a
+            // depot counterpart to delete it with (a whole-repo include could
+            // otherwise map a depot .gitignore over it).
+            std::erase_if(actions.deletes, [&](const std::string& rel) {
+                return mirror::isGwMetadataPath(subtreePrefix + rel);
+            });
+            progress("Have manifest for " + rule->depotPath + ": " +
+                     std::to_string(actions.copies.size()) + " changed, " +
+                     std::to_string(actions.deletes.size()) + " deleted, " +
+                     std::to_string(nowRel.size() - actions.copies.size()) +
+                     " unchanged (skipped)");
+        } else {
+            // Full walk: list the mirror and reconcile it against the tracked
+            // files. p4 only ever removes files it deleted a revision of, so
+            // anything it never tracked (build output, leftovers from a
+            // botched sync, hand edits) lingers in the mirror. Keep only the
+            // files p4 reports as synced; strays are ignored so they never
+            // land in the baseline.
+            progress("Listing mirror files under " + mirrorDir + "...");
+            auto mirrorFiles = mirror::listFiles(mirrorDir);
+            if (!mirrorFiles) return std::unexpected(mirrorFiles.error());
 
-        const auto actions =
-            mirror::computeSyncActions(mirrorTracked, trackedHere);
+            std::unordered_set<std::string> haveRel;
+            for (const auto& [rel, rev] : nowRel) {
+                haveRel.insert(rel);
+            }
+            std::vector<std::string> mirrorTracked;
+            for (auto& path : *mirrorFiles) {
+                if (haveRel.contains(path)) {
+                    mirrorTracked.push_back(std::move(path));
+                }
+            }
+
+            // Tracked files under this subtree, made mirror-relative so they
+            // line up with the mirror's own (subtree-rooted) listing.
+            std::vector<std::string> trackedHere;
+            for (const auto& path : tracked) {
+                if (subtreePrefix.empty()) {
+                    trackedHere.push_back(path);
+                } else if (path.starts_with(subtreePrefix)) {
+                    trackedHere.push_back(path.substr(subtreePrefix.size()));
+                }
+            }
+
+            actions = mirror::computeSyncActions(mirrorTracked, trackedHere);
+        }
 
         std::vector<mirror::OpenedMirrorFile> openedMirror;
         for (const auto& o : *opened) {
@@ -112,17 +188,33 @@ std::expected<std::string, std::string> buildSnapshot(
         }
         const auto plan = mirror::planImport(actions, openedMirror);
 
-        // "Scan" count: import reconciles the *whole* mirror against the
-        // working tree every time (it is not diff-based), then copies only the
-        // files that actually changed - so this is how many it inspects, not how
-        // many it copies. Say "Importing", not "Syncing": nothing is synced from
-        // P4 here, gw only moves already-synced mirror files into the repo.
+        // "Scan" count (full walk only; the fast path printed its own tally):
+        // the walk reconciles the *whole* mirror against the working tree, then
+        // copies only the files that actually changed - so this is how many it
+        // inspects, not how many it copies. Say "Importing", not "Syncing":
+        // nothing is synced from P4 here, gw only moves already-synced mirror
+        // files into the repo.
         const size_t toScan = plan.actions.copies.size();
         const size_t toDelete = plan.actions.deletes.size();
-        if (toScan != 0 || toDelete != 0 || !plan.depotReads.empty()) {
+        if (!manifestValid &&
+            (toScan != 0 || toDelete != 0 || !plan.depotReads.empty())) {
             progress("Importing " + rule->depotPath + " (" +
                      std::to_string(toScan) + " mirror file(s) to scan, " +
                      std::to_string(toDelete) + " to delete)...");
+        }
+
+        // On the fast path, remember exactly which staging paths this mapping
+        // touches so the git staging below can be scoped to them.
+        if (manifestValid) {
+            for (const auto& rel : plan.actions.copies) {
+                touched.push_back(subtreePrefix + rel);
+            }
+            for (const auto& rel : plan.actions.deletes) {
+                touched.push_back(subtreePrefix + rel);
+            }
+            for (const auto& rel : plan.depotReads) {
+                touched.push_back(subtreePrefix + rel);
+            }
         }
 
         auto applied = mirror::applySyncActions(plan.actions, mirrorDir,
@@ -158,8 +250,16 @@ std::expected<std::string, std::string> buildSnapshot(
     }
 
     progress("Staging snapshot in Git...");
-    auto added = git::addAll(stagingRoot);
-    if (!added) return std::unexpected(added.error());
+    if (manifestValid) {
+        // The fast path knows exactly which paths it touched; stage just
+        // those instead of rescanning the whole tree. An empty list means the
+        // index is already right and the no-op is free.
+        auto added = git::addPaths(touched, stagingRoot);
+        if (!added) return std::unexpected(added.error());
+    } else {
+        auto added = git::addAll(stagingRoot);
+        if (!added) return std::unexpected(added.error());
+    }
     auto clean = git::indexMatchesHead(stagingRoot);
     if (!clean) return std::unexpected(clean.error());
 
@@ -181,6 +281,35 @@ std::expected<std::string, std::string> buildSnapshot(
         newDepot = *tip;
         auto advanced = git::updateRef(depotRef, newDepot, stagingRoot);
         if (!advanced) return std::unexpected(advanced.error());
+    }
+
+    // Persist the fresh have state, bound to the snapshot it produced, so the
+    // next import can take the fast path. Written only after the ref is safely
+    // advanced, via temp-file + rename so a torn write can never leave a
+    // plausible-looking manifest with a valid snapshot line. Best effort: a
+    // failed write just costs the next import a full walk.
+    if (!newDepot.empty()) {
+        const std::string tmpPath = manifestPath + ".tmp";
+        std::error_code ec;
+        fs::create_directories(fs::path(manifestPath).parent_path(), ec);
+        bool written = false;
+        if (!ec) {
+            std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+            if (out) {
+                out << mirror::renderHaveManifest(newDepot, newManifest);
+                written = out.good();
+            }
+        }
+        if (written) {
+            fs::rename(tmpPath, manifestPath, ec);
+            written = !ec;
+        }
+        if (!written) {
+            fs::remove(tmpPath, ec);
+            std::printf("note: could not write the have manifest (%s); the "
+                        "next import will do a full mirror walk\n",
+                        manifestPath.c_str());
+        }
     }
     return newDepot;
 }
@@ -610,8 +739,10 @@ int cmdImport(const Args& args) {
     // (the user's checkout in checkout mode, the hidden worktree in worktree
     // mode). The mirror is always resolved against the main tree (`root`).
     SnapshotStats snapStats;
+    const std::string manifestPath =
+        mirror::haveManifestPath(*gitDirPath, baseline);
     auto snap = buildSnapshot(*config, root, stagingRoot, depotRef, oldDepot,
-                              fullCopy, progress, snapStats);
+                              manifestPath, fullCopy, progress, snapStats);
     if (!snap) return fail(snap.error());
     const std::string newDepot = *snap;
     const size_t copiedFiles = snapStats.copied;

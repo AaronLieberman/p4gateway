@@ -1,5 +1,7 @@
 #include "git.h"
 
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 
 #include "subprocess.h"
@@ -238,6 +240,28 @@ std::expected<std::vector<std::string>, std::string> lsFiles(
 
 std::expected<std::string, std::string> addAll(const std::string& cwd) {
     return run({"add", "-A"}, cwd);
+}
+
+std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
+                                          const std::string& cwd) {
+    if (paths.empty()) return {};
+    const std::string pathsFile = uniqueTempFile("p4gw_add_paths", ".txt");
+    {
+        std::ofstream file(pathsFile, std::ios::binary);
+        if (!file) {
+            return std::unexpected("cannot write temp file: " + pathsFile);
+        }
+        for (const auto& path : paths) {
+            file << path << '\0';
+        }
+    }
+    auto result = run({"add", "-A", "--pathspec-from-file=" + pathsFile,
+                       "--pathspec-file-nul"},
+                      cwd);
+    std::error_code ec;
+    std::filesystem::remove(pathsFile, ec);
+    if (!result) return std::unexpected(result.error());
+    return {};
 }
 
 std::expected<bool, std::string> indexMatchesHead(const std::string& cwd) {

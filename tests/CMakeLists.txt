@@ -4,6 +4,7 @@ add_executable(p4gw_tests
     test_p4view.cpp
     test_prepare.cpp
     test_mirror.cpp
+    test_manifest.cpp
     test_status.cpp
     test_shelf.cpp
     test_preflight.cpp

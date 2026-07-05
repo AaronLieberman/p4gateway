@@ -178,6 +178,29 @@ TEST(parse_tagged_depot_files_empty_is_empty) {
     CHECK(p4gw::p4::parseTaggedDepotFiles("").empty());
 }
 
+TEST(parse_tagged_have_reads_files_and_revs) {
+    const std::string out =
+        "... depotFile //depot/project/src/a.cpp\n"
+        "... clientFile /ws/a.cpp\n"
+        "... haveRev 5\n"
+        "\n"
+        "... depotFile //depot/project/src/sub/b.h\n"
+        "... haveRev 2\n"
+        "\n";
+    const auto entries = p4gw::p4::parseTaggedHave(out);
+    CHECK(entries.size() == 2);
+    if (entries.size() == 2) {
+        CHECK(entries[0].depotFile == "//depot/project/src/a.cpp");
+        CHECK(entries[0].rev == "5");
+        CHECK(entries[1].depotFile == "//depot/project/src/sub/b.h");
+        CHECK(entries[1].rev == "2");
+    }
+}
+
+TEST(parse_tagged_have_empty_is_empty) {
+    CHECK(p4gw::p4::parseTaggedHave("").empty());
+}
+
 TEST(depot_relative_path_strips_subtree) {
     CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
                                       "//depot/project/src/sub/a.cpp") ==

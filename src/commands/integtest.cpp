@@ -1220,6 +1220,94 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
     return {};
 }
 
+// Exercises the have-manifest fast path and its fallback: a depot change is
+// imported via the manifest diff (no mirror walk), a deleted manifest falls
+// back to the full walk and is rewritten, a corrupted binding is ignored the
+// same way, and the path is fast again afterwards. Runs on 'main', clean,
+// with a manifest already written by the earlier import steps.
+std::expected<void, std::string> itHaveManifest(ItContext& it) {
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    if (!fs::exists(manifest)) {
+        return std::unexpected("no have manifest after the earlier imports (" +
+                               manifest.string() + " missing)");
+    }
+
+    // A depot change, imported through the manifest diff.
+    auto cl = p4::createChangelist(it.p4, "gw integtest: manifest change");
+    if (!cl) return std::unexpected(cl.error());
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+    auto edited = trace(it, "p4 edit " + mirrorMain,
+                        p4::editFiles(it.p4, *cl, {mirrorMain}));
+    if (!edited) return std::unexpected(edited.error());
+    auto appended = appendFile(mirrorMain, "// manifest change\n");
+    if (!appended) return appended;
+    auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
+    if (!submitted) return std::unexpected(submitted.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    auto fast = runGw(it, it.repoDir, {"import"});
+    if (!fast) return std::unexpected(fast.error());
+    if (fast->find("Have manifest for") == std::string::npos ||
+        fast->find("1 changed, 0 deleted") == std::string::npos) {
+        return std::unexpected("import did not take the have-manifest fast "
+                               "path:\n" + *fast);
+    }
+    if (fast->find("Listing mirror files") != std::string::npos) {
+        return std::unexpected("fast-path import still walked the mirror:\n" +
+                               *fast);
+    }
+    auto mainNow = readFile(fs::path(it.srcWork) / "main.cpp");
+    if (!mainNow) return std::unexpected(mainNow.error());
+    if (mainNow->find("// manifest change") == std::string::npos) {
+        return std::unexpected("the fast-path import did not deliver the "
+                               "depot change");
+    }
+
+    // Delete the manifest: the next import must fall back to the full walk,
+    // stay correct, and rewrite the manifest.
+    std::error_code ec;
+    fs::remove(manifest, ec);
+    auto fallback = runGw(it, it.repoDir, {"import"});
+    if (!fallback) return std::unexpected(fallback.error());
+    if (fallback->find("Listing mirror files") == std::string::npos) {
+        return std::unexpected("import without a manifest did not fall back "
+                               "to the mirror walk:\n" + *fallback);
+    }
+    if (fallback->find("Already up to date") == std::string::npos) {
+        return std::unexpected("the fallback import was not a clean no-op:\n" +
+                               *fallback);
+    }
+    if (!fs::exists(manifest)) {
+        return std::unexpected("the fallback import did not rewrite the have "
+                               "manifest");
+    }
+
+    // Corrupt the binding: a manifest for the wrong snapshot must be ignored
+    // (full walk again), then replaced with a correctly bound one.
+    auto corrupted = writeFile(manifest, "snapshot 0000bogus\n");
+    if (!corrupted) return corrupted;
+    auto rebound = runGw(it, it.repoDir, {"import"});
+    if (!rebound) return std::unexpected(rebound.error());
+    if (rebound->find("Listing mirror files") == std::string::npos) {
+        return std::unexpected("import with a stale manifest binding did not "
+                               "fall back:\n" + *rebound);
+    }
+
+    // And with the rewritten manifest, the fast path is back.
+    auto fastAgain = runGw(it, it.repoDir, {"import"});
+    if (!fastAgain) return std::unexpected(fastAgain.error());
+    if (fastAgain->find("Have manifest for") == std::string::npos ||
+        fastAgain->find("Already up to date") == std::string::npos) {
+        return std::unexpected("the rewritten manifest did not restore the "
+                               "fast path:\n" + *fastAgain);
+    }
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -1609,6 +1697,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("worktree-mode import: dirty-tree ok, checkout "
                            "untouched",
                            [&] { return itWorktreeImport(it); });
+        steps.emplace_back("have-manifest fast path, fallback, and rebinding",
+                           [&] { return itHaveManifest(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
         steps.emplace_back("doctor catches each deliberate view "

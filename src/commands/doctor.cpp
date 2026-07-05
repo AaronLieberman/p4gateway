@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <iterator>
 #include <string>
 #include <unordered_set>
@@ -136,6 +137,36 @@ int cmdDoctor(const Args& args) {
             ++warnings;
         } else {
             std::printf("ok    no interrupted import pending\n");
+        }
+    }
+
+    // The have manifest is a pure cache (a stale or missing one only costs
+    // the next import a full mirror walk), so this is informational either
+    // way - but it tells the user whether imports are taking the fast path.
+    if (auto gitDirPath = git::gitDir(root)) {
+        const std::string depotRef = depotTrackingRef(*config);
+        const std::string manifestPath =
+            mirror::haveManifestPath(*gitDirPath, config->baselineBranch);
+        auto depotTip = git::revParse(depotRef, root);
+        std::ifstream manifestFile(manifestPath, std::ios::binary);
+        if (!depotTip || !manifestFile) {
+            std::printf("note  no have manifest yet - the next 'gw import' "
+                        "does a full mirror walk and writes one\n");
+        } else {
+            std::ostringstream text;
+            text << manifestFile.rdbuf();
+            std::string snapshot;
+            const auto entries =
+                mirror::parseHaveManifest(std::move(text).str(), snapshot);
+            if (snapshot == *depotTip) {
+                std::printf("ok    have manifest bound to the depot baseline "
+                            "(%zu file(s); imports take the fast path)\n",
+                            entries.size());
+            } else {
+                std::printf("note  have manifest is stale - the next "
+                            "'gw import' falls back to a full mirror walk and "
+                            "rewrites it\n");
+            }
         }
     }
 
@@ -369,9 +400,9 @@ int cmdDoctor(const Args& args) {
                     continue;
                 }
                 std::unordered_set<std::string> haveRel;
-                for (const auto& depotFile : *haveDepot) {
+                for (const auto& entry : *haveDepot) {
                     std::string rel =
-                        p4::depotRelativePath(rule->depotPath, depotFile);
+                        p4::depotRelativePath(rule->depotPath, entry.depotFile);
                     if (!rel.empty()) haveRel.insert(std::move(rel));
                 }
                 std::vector<std::string> mirrorTracked;

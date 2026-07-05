@@ -156,6 +156,14 @@ std::expected<std::vector<std::string>, std::string> lsFiles(
 
 std::expected<std::string, std::string> addAll(const std::string& cwd = {});
 
+// `git add -A --pathspec-from-file=<tmp> --pathspec-file-nul`: stage exactly
+// `paths` (repo-relative; modifications, additions, and deletions alike)
+// without rescanning the rest of the tree. The paths travel through a
+// NUL-separated temp file, so the list length never hits a command-line
+// limit. An empty list is a no-op. Used by import's have-manifest fast path.
+std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
+                                          const std::string& cwd = {});
+
 // True when there is nothing staged to commit.
 std::expected<bool, std::string> indexMatchesHead(const std::string& cwd = {});
 

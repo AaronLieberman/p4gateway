@@ -109,4 +109,48 @@ std::string importPendingMarkerPath(const std::string& gitDir);
 // together. Pure.
 std::string snapshotWorktreePath(const std::string& gitDir);
 
+// ---- the have manifest: incremental import's cache ----
+//
+// After each import, gw records the `p4 have` state (every depot file and its
+// have revision) that produced the snapshot, keyed by the snapshot's commit.
+// The next import diffs a fresh `p4 have` against it: a file whose rev is
+// unchanged was not rewritten by sync, so the mirror copy still matches the
+// snapshot and import skips it without a stat; only changed/added files are
+// copied and only vanished files deleted. Strictly a cache with a fallback -
+// a missing or snapshot-mismatched manifest (first import, torn write, moved
+// ref) falls back to the full mirror walk, and `--full` bypasses it -
+// correctness never depends on the manifest being present or fresh.
+
+// One manifest record: a depot file and its have revision.
+struct ManifestEntry {
+    std::string depotFile;  // //depot/...
+    std::string rev;        // e.g. "5"
+};
+
+// Path of the have manifest for `baseline`: `<gitDir>/p4gw/have-<baseline>`
+// (path separators in the branch name flattened). Same home as the snapshot
+// worktree and for the same reasons. Pure; unit-tested.
+std::string haveManifestPath(const std::string& gitDir,
+                             const std::string& baseline);
+
+// Serializes the manifest: a comment header, a `snapshot <sha>` binding line,
+// then one `<depotFile>#<rev>` line per entry. Pure; unit-tested.
+std::string renderHaveManifest(const std::string& snapshot,
+                               const std::vector<ManifestEntry>& entries);
+
+// Parses manifest text. Returns the snapshot SHA through `snapshot` and the
+// entries; a malformed body (no snapshot line) yields an empty snapshot, which
+// callers treat as "no manifest". Pure; unit-tested.
+std::vector<ManifestEntry> parseHaveManifest(const std::string& text,
+                                             std::string& snapshot);
+
+// Diffs two rel-path -> rev lists for one mapping into sync actions: a rel in
+// `now` that is absent from `then` or carries a different rev is a copy; a rel
+// only in `then` is a delete. A rel with the same rev in both is skipped
+// entirely - the whole point. Both lists are mapping-relative (the same paths
+// applySyncActions consumes). Pure; unit-tested.
+SyncActions diffHaveState(
+    const std::vector<std::pair<std::string, std::string>>& then,
+    const std::vector<std::pair<std::string, std::string>>& now);
+
 }  // namespace p4gw::mirror

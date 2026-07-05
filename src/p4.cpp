@@ -637,6 +637,36 @@ std::vector<OpenedFile> parseTaggedOpened(const std::string& ztagOutput) {
     return files;
 }
 
+std::vector<HaveEntry> parseTaggedHave(const std::string& ztagOutput) {
+    std::vector<HaveEntry> entries;
+    HaveEntry current;
+    bool have = false;
+    auto flush = [&]() {
+        if (have && !current.depotFile.empty()) entries.push_back(current);
+        current = HaveEntry{};
+        have = false;
+    };
+    // -ztag records are blank-line separated; a sentinel ends the last one.
+    std::istringstream lines(ztagOutput + "\n\n");
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            flush();
+            continue;
+        }
+        if (line.starts_with("... depotFile ")) {
+            current.depotFile = line.substr(14);
+            have = true;
+        } else if (line.starts_with("... haveRev ")) {
+            current.rev = line.substr(12);
+            have = true;
+        }
+    }
+    flush();
+    return entries;
+}
+
 std::vector<std::string> parseTaggedDepotFiles(const std::string& ztagOutput) {
     std::vector<std::string> files;
     std::istringstream lines(ztagOutput);
@@ -705,7 +735,7 @@ std::expected<std::vector<OpenedFile>, std::string> openedFilesTagged(
                                config.rules);
 }
 
-std::expected<std::vector<std::string>, std::string> haveFiles(
+std::expected<std::vector<HaveEntry>, std::string> haveFiles(
     const Config& config, const std::string& depotPath) {
     std::vector<std::string> args = clientArgs(config);
     args.insert(args.end(), {"-ztag", "have", depotPath});
@@ -724,7 +754,7 @@ std::expected<std::vector<std::string>, std::string> haveFiles(
         return std::unexpected(commandLine(args) + " failed:\n" +
                                result->combined());
     }
-    return parseTaggedDepotFiles(result->stdoutText);
+    return parseTaggedHave(result->stdoutText);
 }
 
 std::expected<void, std::string> printHeadToFile(const Config& config,
