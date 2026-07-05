@@ -93,7 +93,9 @@ pure logic without p4.
 ## Next up — prioritized
 
 The short list, in order. Items promoted from the milestones below or added
-by the 2026-07 design review.
+by the 2026-07 design review. Items 1–4 (the review round) are all done;
+items 5–8 are the second round, picked after comparing the landed commits
+against the remaining milestones.
 
 1. [x] `gw prepare --update <CL>`: refresh an existing pending CL after a
        rebase or review feedback instead of creating a new one. Reverts the
@@ -160,6 +162,34 @@ by the 2026-07 design review.
        are matched against stderr purely to excuse a non-zero exit — which
        also fixed a latent merged-stream bug where a reconcile chunk mixing
        clean and changed files had its real preview lines dropped.
+5. [ ] Trial `import_mode = worktree` on the real work repo for a few days
+       (a human step, not code). This is the gating item: it validates the
+       worktree on a 40k-file workspace (path lengths, AV interactions, the
+       one-time catch-up copy after mode flips) and decides whether the
+       have-manifest work below should assume worktree mode as the default
+       staging root.
+6. [ ] Incremental `import` via a persisted `p4 have` manifest — promote the
+       M4 design note to build next. Every open question is settled (print
+       fidelity verified live, the noclobber/tampering analysis done,
+       cache-with-fallback framing agreed); paired with the worktree, a
+       no-change import becomes one sub-second `p4 have`, a text diff, and a
+       no-op commit. Build after (or alongside) the worktree trial, since
+       both reshape `buildSnapshot` and the manifest should be keyed to the
+       staging root that wins.
+7. [ ] Pending-CL lifecycle bundle: `gw prepare --abandon <CL>` (`p4 revert
+       -c` + scoped `p4 sync -f` to restore the mirror — the natural partner
+       to `--update`; today abandoning is hand-revert + sync) plus the
+       friendly "depot changed under your pending CL" error that suggests
+       import → rebase → `prepare --update`. Small, same code neighborhood,
+       completes the CL story `--update` started. (Moved from M3.)
+8. [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
+       file list — cheap belt-and-suspenders on top of the reconcile
+       preview, plus an integtest assertion. (Moved from M2.)
+
+Deliberately deprioritized for now: `--dry-run` for `import` (worktree mode
+removed most of what it guarded — staging no longer touches the checkout at
+all), Windows polish, and the rest of M4 (filetypes, `+l` locks, rename
+chains, multiple roots, p4ignore derivation) stay wait-until-it-bites.
 
 ## M2 — Make it trustworthy
 
@@ -167,7 +197,10 @@ by the 2026-07 design review.
       (git diff → p4 ops, route check, opened-files guard) and prints the exact
       `p4` operations it would open, then stops before creating the changelist
       or touching the mirror.
-- [ ] `--dry-run` for `import` and the other mutating commands.
+- [ ] `--dry-run` for `import` and the other mutating commands. Deprioritized
+      (2026-07): worktree mode removed most of what an import dry-run guarded
+      — staging no longer touches the checkout at all — so this waits for a
+      concrete need.
 - [x] `--verbose` (global, before or after the command) echoes every spawned
       `git`/`p4` command line to stderr from the process layer, so it covers
       every command uniformly
@@ -180,8 +213,8 @@ by the 2026-07 design review.
       around each probe. The "maps into the Git repo" leak message is the
       one gap: it can't fire when the repo is the client root (as in the
       fixture) — the diversion check is the one that covers that case.
-- [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
-      file list (belt to the reconcile-preview suspenders)
+- [>] Cross-check `p4 opened -c <CL>` after prepare against the git diff
+      file list — moved to the prioritized list above
 
 ## M3 — `gw status` + quality of life
 
@@ -227,10 +260,8 @@ by the 2026-07 design review.
       mirror. `gw integtest run` covers it (shelf has the branch's files, no
       opens remain, the mirror is back at the depot head). **Needs a
       real-workspace check** on a live server.
-- [ ] `gw prepare --abandon <CL>`: `p4 revert -c` + scoped `p4 sync -f` to
-      restore the mirror to depot state
-- [ ] Helpful error for the "depot changed under my pending CL" case
-      (suggest import + rebase + re-prepare)
+- [>] `gw prepare --abandon <CL>` and the helpful "depot changed under my
+      pending CL" error — moved (as one bundle) to the prioritized list above
 - [ ] Windows polish: UTF-8 output, long-path awareness, exit codes audited
 
 ## M4 — Hardening (as needed, driven by real use)
