@@ -242,6 +242,19 @@ struct HaveEntry {
 // Parses `p4 -ztag have` output into per-file records (pure; unit-tested).
 std::vector<HaveEntry> parseTaggedHave(const std::string& ztagOutput);
 
+// Keeps only the have entries whose effective (later-wins) rule is exactly
+// `rule` - the include that owns them. `p4 have` on an include's depot path
+// also lists files the client view sends elsewhere: `exclude` carve-outs sync
+// in place (never into this mirror), and a deeper re-`include`'s files belong
+// to that mapping's own nested mirror. Treating either as this mapping's
+// content would read from - or delete at - paths outside the mirror, so the
+// have-manifest fast path must resolve every entry through the ordered rules
+// first (the mirror listing gives the full walk this guarantee for free).
+// Pure; unit-tested.
+std::vector<HaveEntry> filterHaveToRule(std::vector<HaveEntry> entries,
+                                        const std::vector<ViewRule>& rules,
+                                        const ViewRule* rule);
+
 // Depot files p4 has synced under `depotPath`, with their have revisions
 // (`p4 -ztag have <depotPath>`). These are the files the mirror is *supposed*
 // to contain; `gw import` uses the set to ignore strays p4 doesn't track, and

@@ -201,6 +201,39 @@ TEST(parse_tagged_have_empty_is_empty) {
     CHECK(p4gw::p4::parseTaggedHave("").empty());
 }
 
+TEST(filter_have_to_rule_drops_excluded_and_reincluded_entries) {
+    // The reported bug: `p4 have //...src/...` also lists files the client
+    // view diverts in place (the devtools exclude) - those never exist in the
+    // src mirror, so the manifest fast path must not try to copy or delete
+    // them. Files under a deeper re-include belong to that mapping instead.
+    const std::vector<p4gw::ViewRule> rules = {
+        rule(false, "//depot/project/main/src/..."),
+        rule(true, "//depot/project/main/src/devtools/..."),
+        rule(true, "//depot/project/main/src/lib/..."),
+        rule(false, "//depot/project/main/src/lib/public/win64/..."),
+    };
+    const std::vector<p4gw::p4::HaveEntry> have = {
+        {"//depot/project/main/src/core/main.cpp", "3"},
+        {"//depot/project/main/src/devtools/codegen/bin/cl", "7"},
+        {"//depot/project/main/src/lib/other/a.lib", "2"},
+        {"//depot/project/main/src/lib/public/win64/keep.lib", "4"},
+    };
+
+    const auto src = p4gw::p4::filterHaveToRule(have, rules, &rules[0]);
+    CHECK(src.size() == 1);
+    if (src.size() == 1) {
+        CHECK(src[0].depotFile == "//depot/project/main/src/core/main.cpp");
+        CHECK(src[0].rev == "3");
+    }
+
+    const auto win64 = p4gw::p4::filterHaveToRule(have, rules, &rules[3]);
+    CHECK(win64.size() == 1);
+    if (win64.size() == 1) {
+        CHECK(win64[0].depotFile ==
+              "//depot/project/main/src/lib/public/win64/keep.lib");
+    }
+}
+
 TEST(depot_relative_path_strips_subtree) {
     CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
                                       "//depot/project/src/sub/a.cpp") ==

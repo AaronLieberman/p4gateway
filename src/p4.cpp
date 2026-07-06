@@ -693,6 +693,19 @@ bool isAddAction(const std::string& action) {
     return action == "add" || action == "move/add" || action == "branch";
 }
 
+std::vector<HaveEntry> filterHaveToRule(std::vector<HaveEntry> entries,
+                                        const std::vector<ViewRule>& rules,
+                                        const ViewRule* rule) {
+    std::vector<HaveEntry> owned;
+    owned.reserve(entries.size());
+    for (auto& entry : entries) {
+        if (effectiveRuleForDepot(rules, entry.depotFile) == rule) {
+            owned.push_back(std::move(entry));
+        }
+    }
+    return owned;
+}
+
 std::vector<OpenedFile> filterExcludedOpens(
     const std::vector<OpenedFile>& opened,
     const std::vector<ViewRule>& rules) {

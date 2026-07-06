@@ -106,16 +106,27 @@ std::expected<std::string, std::string> buildSnapshot(
         progress("Querying p4 have for " + rule->depotPath + "...");
         auto haveDepot = p4::haveFiles(config, rule->depotPath);
         if (!haveDepot) return std::unexpected(haveDepot.error());
+
+        // The have listing covers the include's whole depot subtree, so it
+        // also names files the client view sends elsewhere: `exclude`
+        // carve-outs synced in place and deeper re-includes owned by their own
+        // mapping. Those never live in *this* mirror, so everything the
+        // manifest fast path consumes - the diff inputs and the manifest
+        // written for next time - keeps only the entries this rule effectively
+        // owns. (The full walk below intersects with the mirror listing, which
+        // enforces the same boundary physically, so its stray filter stays on
+        // the unfiltered set.)
+        const auto owned =
+            p4::filterHaveToRule(*haveDepot, config.rules, rule);
         std::vector<std::pair<std::string, std::string>> nowRel;
-        nowRel.reserve(haveDepot->size());
-        for (const auto& entry : *haveDepot) {
+        nowRel.reserve(owned.size());
+        for (const auto& entry : owned) {
             std::string rel =
                 p4::depotRelativePath(rule->depotPath, entry.depotFile);
             if (!rel.empty()) nowRel.emplace_back(std::move(rel), entry.rev);
         }
-        for (auto& entry : *haveDepot) {
-            newManifest.push_back(
-                {std::move(entry.depotFile), std::move(entry.rev)});
+        for (const auto& entry : owned) {
+            newManifest.push_back({entry.depotFile, entry.rev});
         }
 
         mirror::SyncActions actions;
@@ -124,9 +135,16 @@ std::expected<std::string, std::string> buildSnapshot(
             // that did not move was not rewritten by sync, so the mirror copy
             // still matches the snapshot the staging tree sits on - skip it
             // without so much as a stat. Deletes come from the manifest, so
-            // the mirror is never even listed.
+            // the mirror is never even listed. The stored entries pass through
+            // the same effective-rule filter as the fresh ones (with the
+            // *current* rules), so a manifest written before a config change
+            // can never generate actions outside this mapping's mirror.
             std::vector<std::pair<std::string, std::string>> thenRel;
             for (const auto& entry : manifestEntries) {
+                if (effectiveRuleForDepot(config.rules, entry.depotFile) !=
+                    rule) {
+                    continue;
+                }
                 std::string rel =
                     p4::depotRelativePath(rule->depotPath, entry.depotFile);
                 if (!rel.empty()) thenRel.emplace_back(std::move(rel), entry.rev);
@@ -154,9 +172,15 @@ std::expected<std::string, std::string> buildSnapshot(
             auto mirrorFiles = mirror::listFiles(mirrorDir);
             if (!mirrorFiles) return std::unexpected(mirrorFiles.error());
 
+            // Unfiltered on purpose: a nested re-include's mirror lives inside
+            // this one, so its files show up in this mirror listing and must
+            // stay in the intersection (dropping them here would delete and
+            // recopy the nested subtree on every full walk).
             std::unordered_set<std::string> haveRel;
-            for (const auto& [rel, rev] : nowRel) {
-                haveRel.insert(rel);
+            for (const auto& entry : *haveDepot) {
+                std::string rel =
+                    p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                if (!rel.empty()) haveRel.insert(std::move(rel));
             }
             std::vector<std::string> mirrorTracked;
             for (auto& path : *mirrorFiles) {
