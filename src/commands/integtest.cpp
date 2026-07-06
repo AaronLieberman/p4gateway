@@ -99,6 +99,9 @@ constexpr const char* kObliterateFiles[] = {
     "bin/tool.txt", "bin/helper.txt",
     "src/main.cpp", "src/util.cpp", "src/util.h", "src/blob.bin",
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
+    // itHaveManifestExclude's carve-out; obliterated in-step, listed here as a
+    // safety net so an aborted run's cleanup still removes it.
+    "src/devtools/tool.txt",
 };
 
 // Top-level names integtest itself creates under testRoot (== repoDir). The
@@ -107,7 +110,7 @@ constexpr const char* kObliterateFiles[] = {
 constexpr const char* kKnownLocalEntries[] = {
     "p4.ini", ".p4config",
     "p4gw.cfg", ".gitignore", ".gitattributes", ".git",
-    ".p4gw", "src", "bin",
+    ".p4gw", "src", "bin", "devtools",
     "readme.txt", "notes.txt",
 };
 
@@ -1220,6 +1223,28 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
     return {};
 }
 
+// Renders one client-view line the way `p4 client -o` prints it (leading tab,
+// -/+ prefix, spaces quoted). Shared by the steps that rewrite the spec.
+std::string renderViewLine(const p4::ViewLine& line) {
+    auto quoted = [](const std::string& path) {
+        return path.find(' ') == std::string::npos ? path : '"' + path + '"';
+    };
+    std::string s = "\t";
+    if (line.exclude) s += "-";
+    if (line.overlay) s += "+";
+    s += quoted(line.depot) + " " + quoted(line.client) + "\n";
+    return s;
+}
+
+// Rebuilds a client spec from a header (everything through the "View:" line) and
+// an ordered line list.
+std::string buildClientSpec(const std::string& header,
+                            const std::vector<p4::ViewLine>& lines) {
+    std::string spec = header + "View:\n";
+    for (const auto& line : lines) spec += renderViewLine(line);
+    return spec;
+}
+
 // Exercises the have-manifest fast path and its fallback: a depot change is
 // imported via the manifest diff (no mirror walk), a deleted manifest falls
 // back to the full walk and is rewritten, a corrupted binding is ignored the
@@ -1308,6 +1333,170 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
     return {};
 }
 
+// Regression guard for the manifest / excluded-carve-out bug: `p4 have` on an
+// include's depot path also lists files the client view diverts elsewhere (an
+// `exclude` subtree synced outside the mirror), and the fast path must resolve
+// every entry through the ordered rules before touching the mirror - otherwise
+// a changed carve-out file makes import try to copy it from a mirror path that
+// never existed. Adds a `src/devtools` carve-out diverted to a *root-level*
+// (auto-gitignored) client dir so the checkout stays clean, then proves the
+// entry never reaches the manifest or a copy. Restores config, spec, and depot
+// before returning. Runs on 'main', clean, after itHaveManifest.
+std::expected<void, std::string> itHaveManifestExclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+
+    // "//.../src/..." -> "//.../src/", then the carve-out's depot paths.
+    std::string srcBase = it.srcDepotPath;
+    srcBase.resize(srcBase.size() - 3);
+    const std::string devtoolsDepot = srcBase + "devtools/...";
+    const std::string devtoolsDepotFile = srcBase + "devtools/tool.txt";
+    // Diverted to a root-level client dir (a sibling of src/bin): the allowlist
+    // gitignore hides everything at the root, so this synced-in-place file
+    // leaves the working tree clean - yet its depot path is still under src, so
+    // `p4 have //.../src/...` lists it. That is exactly the bug's shape.
+    const fs::path inPlaceDir = fs::path(it.repoDir) / "devtools";
+    const std::string inPlaceFile = (inPlaceDir / "tool.txt").string();
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+
+    // (1) Add the carve-out view line (later-wins diverts devtools out of the
+    // mirror) and declare the matching exclude in p4gw.cfg.
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string divertClient =
+        p4::clientViewPath(clientName, clientRoot, inPlaceDir.string(), "/...");
+    if (divertClient.empty()) {
+        return std::unexpected("cannot compute the carve-out's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({devtoolsDepot, divertClient, false, false});
+    auto diverted =
+        p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!diverted) return std::unexpected(diverted.error());
+    auto excludedCfg = appendFile(cfg, "\nexclude = " + devtoolsDepot + "\n");
+    if (!excludedCfg) return excludedCfg;
+
+    // (2) Create the excluded depot file (synced in place at the root divert)
+    // and sync so it appears in the include's have listing.
+    auto wroteInPlace =
+        writeFile(fs::path(inPlaceFile), "// devtools carve-out, synced in "
+                                         "place, shipped by nobody\n");
+    if (!wroteInPlace) return wroteInPlace;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: devtools carve-out");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto added = trace(it, "p4 add " + inPlaceFile,
+                       p4::addFiles(it.p4, *addCl, {inPlaceFile}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // (3) Rewrite the manifest from a full walk now that the carve-out is
+    // synced. The written manifest must NOT list the diverted file: it lives
+    // outside this mirror, so recording it would make a later fast path try to
+    // copy or delete a path that does not exist. (With the bug present, the
+    // full walk stored it here and this assertion fails.)
+    std::error_code ec;
+    fs::remove(manifest, ec);
+    auto full = runGw(it, it.repoDir, {"import"});
+    if (!full) return std::unexpected(full.error());
+    auto manifestText = readFile(manifest);
+    if (!manifestText) return std::unexpected(manifestText.error());
+    if (manifestText->find(devtoolsDepotFile) != std::string::npos) {
+        return std::unexpected("the manifest recorded a file the view diverts "
+                               "out of the mirror:\n" + *manifestText);
+    }
+    // The excluded subtree never entered the imported baseline either.
+    auto baselineTree =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                 it.repoDir);
+    if (!baselineTree) return std::unexpected(baselineTree.error());
+    if (baselineTree->find("devtools") != std::string::npos) {
+        return std::unexpected("gw shipped a file through the exclude into the "
+                               "depot baseline:\n" + *baselineTree);
+    }
+
+    // (4) Bump the carve-out's revision (in place) alongside a real owned
+    // change, then take the fast path. Pre-fix, the changed carve-out drove a
+    // copy from the nonexistent mirror path and import failed; now it is
+    // filtered out and only the owned change flows.
+    auto bumpCl = p4::createChangelist(it.p4, "gw integtest: bump carve-out "
+                                              "and an owned file");
+    if (!bumpCl) return std::unexpected(bumpCl.error());
+    auto editedCarve = trace(it, "p4 edit " + inPlaceFile,
+                             p4::editFiles(it.p4, *bumpCl, {inPlaceFile}));
+    if (!editedCarve) return std::unexpected(editedCarve.error());
+    auto bumpedCarve = appendFile(fs::path(inPlaceFile), "// bumped\n");
+    if (!bumpedCarve) return bumpedCarve;
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+    auto editedMain = trace(it, "p4 edit " + mirrorMain,
+                            p4::editFiles(it.p4, *bumpCl, {mirrorMain}));
+    if (!editedMain) return std::unexpected(editedMain.error());
+    auto bumpedMain = appendFile(fs::path(mirrorMain), "// exclude-test owned "
+                                                       "change\n");
+    if (!bumpedMain) return bumpedMain;
+    auto bumpSubmit = trace(it, "p4 submit -c " + *bumpCl,
+                            p4::submit(it.p4, *bumpCl));
+    if (!bumpSubmit) return std::unexpected(bumpSubmit.error());
+    auto synced2 = trace(it, "p4 sync " + it.p4DepotPath,
+                         p4::sync(it.p4, it.p4DepotPath));
+    if (!synced2) return std::unexpected(synced2.error());
+
+    auto fast = runGw(it, it.repoDir, {"import"});
+    if (!fast) {
+        return std::unexpected("fast-path import failed on a changed excluded "
+                               "carve-out (the manifest bug):\n" + fast.error());
+    }
+    if (fast->find("Have manifest for") == std::string::npos ||
+        fast->find("Listing mirror files") != std::string::npos) {
+        return std::unexpected("import did not take the have-manifest fast "
+                               "path:\n" + *fast);
+    }
+    if (fast->find("1 changed, 0 deleted") == std::string::npos) {
+        return std::unexpected("the fast path did not report exactly the one "
+                               "owned change (the carve-out must be "
+                               "invisible):\n" + *fast);
+    }
+    auto mainNow = readFile(fs::path(it.srcWork) / "main.cpp");
+    if (!mainNow) return std::unexpected(mainNow.error());
+    if (mainNow->find("// exclude-test owned change") == std::string::npos) {
+        return std::unexpected("the fast-path import did not deliver the owned "
+                               "change");
+    }
+
+    // (5) Restore config, spec, and depot so later steps see the original
+    // fixture. Obliterate is guarded by the throwaway sentinel, as in cleanup.
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + devtoolsDepotFile,
+                             p4::obliterate(it.p4, devtoolsDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    fs::remove_all(inPlaceDir, ec);
+    fs::remove(manifest, ec);
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -1369,21 +1558,8 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
     const std::string header = originalSpec->substr(0, viewPos + 1);
     const auto view = p4::parseClientView(*originalSpec);
 
-    auto renderLine = [](const p4::ViewLine& line) {
-        auto quoted = [](const std::string& path) {
-            return path.find(' ') == std::string::npos ? path
-                                                       : '"' + path + '"';
-        };
-        std::string s = "\t";
-        if (line.exclude) s += "-";
-        if (line.overlay) s += "+";
-        s += quoted(line.depot) + " " + quoted(line.client) + "\n";
-        return s;
-    };
     auto buildSpec = [&](const std::vector<p4::ViewLine>& lines) {
-        std::string spec = header + "View:\n";
-        for (const auto& line : lines) spec += renderLine(line);
-        return spec;
+        return buildClientSpec(header, lines);
     };
 
     // The remap line under test, and every other line in original order. The
@@ -1699,6 +1875,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itWorktreeImport(it); });
         steps.emplace_back("have-manifest fast path, fallback, and rebinding",
                            [&] { return itHaveManifest(it); });
+        steps.emplace_back("have-manifest ignores an excluded, diverted "
+                           "carve-out",
+                           [&] { return itHaveManifestExclude(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
         steps.emplace_back("doctor catches each deliberate view "
