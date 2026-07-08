@@ -26,6 +26,49 @@ struct SnapshotStats {
     size_t deleted = 0;
 };
 
+// Overlays the user's tracked root meta files (.gitignore, .gitattributes)
+// from `root` onto the snapshot worktree at `stagingRoot`, returning whether
+// any actually differed. In worktree mode the staging tree is detached at the
+// OLD baseline, so its meta files are frozen there; if the user changed them
+// (added a re-include and re-ran `gw init`, edited an ignore rule) the
+// worktree's `git add` would apply stale ignore rules and silently drop
+// newly tracked files, and the new baseline would never record the update.
+// Copies only when content differs so a steady-state import never churns the
+// worktree. Checkout mode stages in `root` itself and calls this not at all.
+std::expected<bool, std::string> syncWorktreeMetaFiles(
+    const std::string& root, const std::string& stagingRoot) {
+    bool changed = false;
+    for (const char* meta : {".gitignore", ".gitattributes"}) {
+        const fs::path src = fs::path(root) / meta;
+        std::error_code ec;
+        if (!fs::exists(src, ec)) continue;  // nothing to propagate
+        std::ifstream in(src, std::ios::binary);
+        if (!in) return std::unexpected("cannot read " + src.string());
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        const std::string want = std::move(buf).str();
+
+        const fs::path dst = fs::path(stagingRoot) / meta;
+        std::string have;
+        bool haveExists = false;
+        if (std::ifstream cur(dst, std::ios::binary); cur) {
+            haveExists = true;
+            std::ostringstream cbuf;
+            cbuf << cur.rdbuf();
+            have = std::move(cbuf).str();
+        }
+        if (haveExists && have == want) continue;
+
+        std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+        if (!out) return std::unexpected("cannot write " + dst.string());
+        out << want;
+        out.flush();
+        if (!out) return std::unexpected("cannot write " + dst.string());
+        changed = true;
+    }
+    return changed;
+}
+
 // Builds and commits the depot snapshot at `stagingRoot` and advances
 // `depotRef` to it. `stagingRoot` is the user's own checkout in checkout mode
 // and the hidden worktree in worktree mode; either way it must already be
@@ -63,6 +106,19 @@ std::expected<std::string, std::string> buildSnapshot(
                 mirror::parseHaveManifest(std::move(text).str(), snapshot);
             manifestValid = !snapshot.empty() && snapshot == oldDepot;
         }
+    }
+
+    // Worktree mode stages in a tree detached at the old baseline, so bring its
+    // .gitignore/.gitattributes up to the user's current ones before staging.
+    // When they changed, a file that was always synced can become newly tracked
+    // without its p4 revision ever moving - which the rev-diff fast path cannot
+    // see - so fall back to the full mirror walk, which reconciles the whole
+    // mirror against the tracked set. (Checkout mode stages in `root`, where the
+    // meta files are already current, so this is a worktree-only concern.)
+    if (stagingRoot != root) {
+        auto metaChanged = syncWorktreeMetaFiles(root, stagingRoot);
+        if (!metaChanged) return std::unexpected(metaChanged.error());
+        if (*metaChanged) manifestValid = false;
     }
 
     // The full walk needs the tracked-file list to compute deletes; the

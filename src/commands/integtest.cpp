@@ -99,8 +99,8 @@ constexpr const char* kObliterateFiles[] = {
     "bin/tool.txt", "bin/helper.txt",
     "src/main.cpp", "src/util.cpp", "src/util.h", "src/blob.bin",
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
-    // itHaveManifestIgnored's gitignored build-output file.
-    "src/generated/out.txt",
+    // itHaveManifestIgnored's and itWorktreeGitignore's build-output files.
+    "src/generated/out.txt", "src/generated/w.txt",
     // itHaveManifestExclude's carve-out; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/devtools/tool.txt",
@@ -1592,6 +1592,116 @@ std::expected<void, std::string> itHaveManifestExclude(ItContext& it) {
     return {};
 }
 
+// Regression guard for the worktree-mode gitignore-staleness bug: the snapshot
+// worktree stages detached at the old baseline, so it carries that baseline's
+// .gitignore. When the user changes their allowlist - un-ignoring a subtree the
+// mirror already holds (adding a re-include and re-running `gw init`, editing an
+// ignore rule) - worktree imports (fast AND --full) staged against the stale
+// rules, silently tracking nothing. The file's p4 revision never moved, so the
+// rev-diff fast path can't see it either; the fix syncs the meta files into the
+// worktree and forces the full walk when they change. Flips to worktree mode,
+// leaves an ignored mirror file untracked, then un-ignores it and asserts the
+// next import commits it. Restores config and .gitignore. Runs on 'main', clean.
+std::expected<void, std::string> itWorktreeGitignore(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path gitignore = fs::path(it.repoDir) / ".gitignore";
+    const std::string trackedRel = "src/generated/w.txt";
+    const std::string mirrorGen =
+        (fs::path(it.mirrorDir) / "generated" / "w.txt").string();
+    auto inBaseline = [&](const std::string& tree, const std::string& rel) {
+        return tree.find(rel) != std::string::npos;
+    };
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto savedIgnore = readFile(gitignore);
+    if (!savedIgnore) return std::unexpected(savedIgnore.error());
+    if (savedIgnore->find("/src/generated/") == std::string::npos) {
+        return std::unexpected("fixture .gitignore lacks the '/src/generated/' "
+                               "rule this test relies on");
+    }
+
+    // Worktree mode, and a mirror file under the currently-ignored subtree.
+    auto appended = appendFile(cfg, "\nimport_mode = worktree\n");
+    if (!appended) return appended;
+    auto wrote = writeFile(fs::path(mirrorGen),
+                           "worktree gitignore test payload\n");
+    if (!wrote) return wrote;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: worktree gitignore");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto added = trace(it, "p4 add " + mirrorGen,
+                       p4::addFiles(it.p4, *addCl, {mirrorGen}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // Import while still ignored: the file must stay out of the baseline.
+    auto ignoredImport = runGw(it, it.repoDir, {"import"});
+    if (!ignoredImport) return std::unexpected(ignoredImport.error());
+    auto treeIgnored =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                 it.repoDir);
+    if (!treeIgnored) return std::unexpected(treeIgnored.error());
+    if (inBaseline(*treeIgnored, trackedRel)) {
+        return std::unexpected("an ignored mirror file entered the baseline "
+                               "before it was un-ignored");
+    }
+
+    // Un-ignore the subtree (as re-running `gw init` after a config edit would),
+    // then import: the worktree must pick up the new rule and commit the file.
+    std::string opened = *savedIgnore;
+    const std::string needle = "/src/generated/\n";
+    if (const auto pos = opened.find(needle); pos != std::string::npos) {
+        opened.erase(pos, needle.size());
+    }
+    auto unignored = writeFile(gitignore, opened);
+    if (!unignored) return unignored;
+
+    auto trackImport = runGw(it, it.repoDir, {"import"});
+    if (!trackImport) {
+        return std::unexpected("worktree import after un-ignoring failed:\n" +
+                               trackImport.error());
+    }
+    auto treeTracked =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                 it.repoDir);
+    if (!treeTracked) return std::unexpected(treeTracked.error());
+    if (!inBaseline(*treeTracked, trackedRel)) {
+        return std::unexpected("worktree import did not commit the newly "
+                               "un-ignored mirror file (the stale-gitignore "
+                               "bug):\n" + *treeTracked);
+    }
+    // The new baseline records the updated .gitignore, so the next worktree is
+    // no longer stale.
+    auto baselineIgnore =
+        git::run({"show", "refs/p4gw/main:.gitignore"}, it.repoDir);
+    if (!baselineIgnore) return std::unexpected(baselineIgnore.error());
+    if (baselineIgnore->find("/src/generated/") != std::string::npos) {
+        return std::unexpected("the baseline .gitignore was not updated to the "
+                               "user's current one");
+    }
+
+    // Restore config and .gitignore, drop the depot file.
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto restoredIgnore = writeFile(gitignore, *savedIgnore);
+    if (!restoredIgnore) return restoredIgnore;
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    const std::string genDepotFile = it.depotRoot + "/src/generated/w.txt";
+    auto obliterated = trace(it, "p4 obliterate -y " + genDepotFile,
+                             p4::obliterate(it.p4, genDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -1976,6 +2086,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("have-manifest ignores an excluded, diverted "
                            "carve-out",
                            [&] { return itHaveManifestExclude(it); });
+        steps.emplace_back("worktree import picks up an updated .gitignore",
+                           [&] { return itWorktreeGitignore(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
         steps.emplace_back("doctor catches each deliberate view "
