@@ -1653,10 +1653,18 @@ std::expected<void, std::string> itWorktreeGitignore(ItContext& it) {
 
     // Un-ignore the subtree (as re-running `gw init` after a config edit would),
     // then import: the worktree must pick up the new rule and commit the file.
+    // Drop the whole "/src/generated/" line, terminator and all, so it works
+    // whether the file uses LF or (on Windows) CRLF endings.
     std::string opened = *savedIgnore;
-    const std::string needle = "/src/generated/\n";
-    if (const auto pos = opened.find(needle); pos != std::string::npos) {
-        opened.erase(pos, needle.size());
+    if (const auto pos = opened.find("/src/generated/");
+        pos != std::string::npos) {
+        auto end = opened.find('\n', pos);
+        end = end == std::string::npos ? opened.size() : end + 1;
+        opened.erase(pos, end - pos);
+    }
+    if (opened.find("/src/generated/") != std::string::npos) {
+        return std::unexpected("test bug: failed to strip the generated ignore "
+                               "rule from .gitignore");
     }
     auto unignored = writeFile(gitignore, opened);
     if (!unignored) return unignored;

@@ -37,6 +37,14 @@ struct SnapshotStats {
 // worktree. Checkout mode stages in `root` itself and calls this not at all.
 std::expected<bool, std::string> syncWorktreeMetaFiles(
     const std::string& root, const std::string& stagingRoot) {
+    // Compare on rules, not bytes: the worktree copy is checked out through
+    // .gitattributes (often LF) while the user's is written verbatim (CRLF on
+    // Windows), so a raw compare would fire on every import. Stripping '\r'
+    // reacts only to a real change in the ignore/attribute rules.
+    auto normalized = [](std::string s) {
+        std::erase(s, '\r');
+        return s;
+    };
     bool changed = false;
     for (const char* meta : {".gitignore", ".gitattributes"}) {
         const fs::path src = fs::path(root) / meta;
@@ -57,7 +65,7 @@ std::expected<bool, std::string> syncWorktreeMetaFiles(
             cbuf << cur.rdbuf();
             have = std::move(cbuf).str();
         }
-        if (haveExists && have == want) continue;
+        if (haveExists && normalized(have) == normalized(want)) continue;
 
         std::ofstream out(dst, std::ios::binary | std::ios::trunc);
         if (!out) return std::unexpected("cannot write " + dst.string());
