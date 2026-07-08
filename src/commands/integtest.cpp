@@ -99,6 +99,8 @@ constexpr const char* kObliterateFiles[] = {
     "bin/tool.txt", "bin/helper.txt",
     "src/main.cpp", "src/util.cpp", "src/util.h", "src/blob.bin",
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
+    // itHaveManifestIgnored's gitignored build-output file.
+    "src/generated/out.txt",
     // itHaveManifestExclude's carve-out; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/devtools/tool.txt",
@@ -452,6 +454,13 @@ std::expected<void, std::string> itGwSetup(ItContext& it) {
         return std::unexpected("gw setup did not write " + it.repoDir +
                                "/p4gw.cfg");
     }
+    // Carry one `ignore` rule so the fixture has build-output-style content that
+    // p4 syncs into the mirror but Git must not track (real repos always do).
+    // itHaveManifestIgnored relies on this: `gw init` bakes it into the
+    // allowlist below, so a file synced to src/generated is gitignored.
+    auto ignored = appendFile(fs::path(it.repoDir) / "p4gw.cfg",
+                              "\nignore = /src/generated/\n");
+    if (!ignored) return ignored;
     // No hand-written .gitignore: `gw init` generates the allowlist that keeps
     // the only Git-tracked content the mapped src subtree, ignoring the
     // unmapped dirs (bin/, root files) that sync into the repo in place. That
@@ -1333,6 +1342,92 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
     return {};
 }
 
+// Regression guard: build output that p4 syncs into the mirror but an `ignore`
+// rule keeps out of Git must not break the fast path. The manifest diff still
+// surfaces such a file when its p4 revision changes (a real have entry), and
+// staging it by explicit pathspec would make `git add` refuse the whole batch
+// ("paths are ignored ... use -f"); the fast path must drop it, exactly as the
+// full walk's blanket `git add -A` does. The fixture config carries
+// `ignore = /src/generated/` (baked at setup), so a file synced there is
+// gitignored. Runs on 'main', clean, after itHaveManifest.
+std::expected<void, std::string> itHaveManifestIgnored(ItContext& it) {
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    const std::string trackedRel = "src/generated/out.txt";
+    const std::string mirrorGen =
+        (fs::path(it.mirrorDir) / "generated" / "out.txt").string();
+    auto isTracked = [&](const std::vector<std::string>& files) {
+        return std::find(files.begin(), files.end(), trackedRel) != files.end();
+    };
+
+    // Create the ignored build-output file in the mirror and submit it so it
+    // becomes a real have entry under the src include.
+    auto wrote =
+        writeFile(fs::path(mirrorGen), "generated output, ignored by Git\n");
+    if (!wrote) return wrote;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: generated output");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto added = trace(it, "p4 add " + mirrorGen,
+                       p4::addFiles(it.p4, *addCl, {mirrorGen}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // A full walk rewrites the manifest with the file present as a have entry -
+    // but Git must not track it (the allowlist gitignores src/generated).
+    std::error_code ec;
+    fs::remove(manifest, ec);
+    auto full = runGw(it, it.repoDir, {"import"});
+    if (!full) return std::unexpected(full.error());
+    auto tracked = git::lsFiles(it.repoDir);
+    if (!tracked) return std::unexpected(tracked.error());
+    if (isTracked(*tracked)) {
+        return std::unexpected("gw tracked an ignored build-output file: " +
+                               trackedRel);
+    }
+
+    // Bump the ignored file's revision and take the fast path. Pre-fix, the
+    // changed ignored file entered the explicit `git add` pathspec and import
+    // failed outright; now it is filtered out and import succeeds, still
+    // tracking nothing.
+    auto editCl =
+        p4::createChangelist(it.p4, "gw integtest: bump generated output");
+    if (!editCl) return std::unexpected(editCl.error());
+    auto edited = trace(it, "p4 edit " + mirrorGen,
+                        p4::editFiles(it.p4, *editCl, {mirrorGen}));
+    if (!edited) return std::unexpected(edited.error());
+    auto bumped = appendFile(fs::path(mirrorGen), "more output\n");
+    if (!bumped) return bumped;
+    auto editSubmit = trace(it, "p4 submit -c " + *editCl,
+                            p4::submit(it.p4, *editCl));
+    if (!editSubmit) return std::unexpected(editSubmit.error());
+    auto synced2 = trace(it, "p4 sync " + it.p4DepotPath,
+                         p4::sync(it.p4, it.p4DepotPath));
+    if (!synced2) return std::unexpected(synced2.error());
+
+    auto fast = runGw(it, it.repoDir, {"import"});
+    if (!fast) {
+        return std::unexpected("fast-path import failed on a changed ignored "
+                               "file (the explicit-add bug):\n" + fast.error());
+    }
+    if (fast->find("Have manifest for") == std::string::npos ||
+        fast->find("Listing mirror files") != std::string::npos) {
+        return std::unexpected("import did not take the have-manifest fast "
+                               "path:\n" + *fast);
+    }
+    auto trackedAfter = git::lsFiles(it.repoDir);
+    if (!trackedAfter) return std::unexpected(trackedAfter.error());
+    if (isTracked(*trackedAfter)) {
+        return std::unexpected("the fast path tracked an ignored build-output "
+                               "file");
+    }
+    return {};
+}
+
 // Regression guard for the manifest / excluded-carve-out bug: `p4 have` on an
 // include's depot path also lists files the client view diverts elsewhere (an
 // `exclude` subtree synced outside the mirror), and the fast path must resolve
@@ -1875,6 +1970,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itWorktreeImport(it); });
         steps.emplace_back("have-manifest fast path, fallback, and rebinding",
                            [&] { return itHaveManifest(it); });
+        steps.emplace_back("have-manifest fast path skips a gitignored mirror "
+                           "file",
+                           [&] { return itHaveManifestIgnored(it); });
         steps.emplace_back("have-manifest ignores an excluded, diverted "
                            "carve-out",
                            [&] { return itHaveManifestExclude(it); });

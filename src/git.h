@@ -156,11 +156,25 @@ std::expected<std::vector<std::string>, std::string> lsFiles(
 
 std::expected<std::string, std::string> addAll(const std::string& cwd = {});
 
+// Of `paths`, the subset git treats as ignored: matched by a .gitignore rule
+// and not already tracked - exactly what `git add -A` skips silently but an
+// explicit `git add <path>` refuses ("paths are ignored ... use -f"). Runs
+// `git check-ignore -z --stdin`, whose exit status is 0 when it printed at
+// least one path, 1 when none matched (not an error here), and >=128 on a real
+// failure. An empty input is a no-op. Repo-relative, forward-slash paths.
+std::expected<std::vector<std::string>, std::string> ignoredPaths(
+    const std::vector<std::string>& paths, const std::string& cwd = {});
+
 // `git add -A --pathspec-from-file=<tmp> --pathspec-file-nul`: stage exactly
 // `paths` (repo-relative; modifications, additions, and deletions alike)
 // without rescanning the rest of the tree. The paths travel through a
 // NUL-separated temp file, so the list length never hits a command-line
-// limit. An empty list is a no-op. Used by import's have-manifest fast path.
+// limit. Gitignored paths are dropped first (via ignoredPaths), because naming
+// one explicitly makes git refuse the whole batch - the have-manifest fast
+// path's diff surfaces the build output p4 syncs into the mirror but Git must
+// not track, and the full walk's `git add -A` skips exactly those. An empty
+// list (or one left empty after filtering) is a no-op. Used by import's
+// have-manifest fast path.
 std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
                                           const std::string& cwd = {});
 

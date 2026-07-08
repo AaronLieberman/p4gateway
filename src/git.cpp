@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 #include "subprocess.h"
 
@@ -242,16 +243,67 @@ std::expected<std::string, std::string> addAll(const std::string& cwd) {
     return run({"add", "-A"}, cwd);
 }
 
-std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
-                                          const std::string& cwd) {
-    if (paths.empty()) return {};
-    const std::string pathsFile = uniqueTempFile("p4gw_add_paths", ".txt");
+std::expected<std::vector<std::string>, std::string> ignoredPaths(
+    const std::vector<std::string>& paths, const std::string& cwd) {
+    if (paths.empty()) return std::vector<std::string>{};
+    const std::string pathsFile = uniqueTempFile("p4gw_check_ignore", ".txt");
     {
         std::ofstream file(pathsFile, std::ios::binary);
         if (!file) {
             return std::unexpected("cannot write temp file: " + pathsFile);
         }
         for (const auto& path : paths) {
+            file << path << '\0';
+        }
+    }
+    RunOptions options;
+    options.cwd = cwd;
+    options.stdinFile = pathsFile;
+    auto result = p4gw::run("git", {"check-ignore", "-z", "--stdin"}, options);
+    std::error_code ec;
+    std::filesystem::remove(pathsFile, ec);
+    if (!result) return std::unexpected(result.error());
+    // 0 = some paths ignored, 1 = none; anything else is a real failure.
+    if (result->exitCode != 0 && result->exitCode != 1) {
+        return std::unexpected("git check-ignore failed:\n" +
+                               result->combined());
+    }
+    std::vector<std::string> ignored;
+    const std::string& out = result->stdoutText;
+    for (size_t start = 0; start < out.size();) {
+        const size_t nul = out.find('\0', start);
+        const size_t end = nul == std::string::npos ? out.size() : nul;
+        if (end > start) ignored.emplace_back(out.substr(start, end - start));
+        start = end + 1;
+    }
+    return ignored;
+}
+
+std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
+                                          const std::string& cwd) {
+    if (paths.empty()) return {};
+    auto ignored = ignoredPaths(paths, cwd);
+    if (!ignored) return std::unexpected(ignored.error());
+    std::vector<std::string> filtered;
+    if (!ignored->empty()) {
+        const std::unordered_set<std::string> drop(ignored->begin(),
+                                                   ignored->end());
+        filtered.reserve(paths.size());
+        for (const auto& path : paths) {
+            if (!drop.contains(path)) filtered.push_back(path);
+        }
+    }
+    const std::vector<std::string>& toAdd =
+        ignored->empty() ? paths : filtered;
+    if (toAdd.empty()) return {};
+
+    const std::string pathsFile = uniqueTempFile("p4gw_add_paths", ".txt");
+    {
+        std::ofstream file(pathsFile, std::ios::binary);
+        if (!file) {
+            return std::unexpected("cannot write temp file: " + pathsFile);
+        }
+        for (const auto& path : toAdd) {
             file << path << '\0';
         }
     }
