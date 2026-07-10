@@ -19,6 +19,10 @@ jobs:
     env:
       # Pinned Perforce release; bump deliberately (and the cache re-fetches).
       P4_VERSION: r25.1
+      # Pinned git-branchless release. The integtest's final steps exercise gw's
+      # git-branchless-specific import behavior; CI just needs *a* branchless on
+      # PATH (any recent release), not the developer's exact version.
+      BRANCHLESS_VERSION: v0.11.1
       # Ambient connection settings. gw and p4 both read these from the
       # environment; the integtest driver runs with no -c client of its own.
       P4PORT: localhost:1666
@@ -55,6 +59,37 @@ jobs:
       # via its shell). GITHUB_PATH takes effect in subsequent steps, not this one.
       - name: Add Perforce binaries to PATH
         run: Add-Content -Path $env:GITHUB_PATH -Value "${{ runner.temp }}\p4bin"
+
+      # git-branchless ships a prebuilt single-binary zip per release; cache the
+      # extracted binary keyed on the pinned version (a cold cache is a ~6 MB
+      # download, not a source build).
+      - name: Cache git-branchless
+        id: cache-branchless
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\gbbin
+          key: git-branchless-${{ env.BRANCHLESS_VERSION }}-ntx64
+
+      - name: Download git-branchless
+        if: steps.cache-branchless.outputs.cache-hit != 'true'
+        run: |
+          $dir = "${{ runner.temp }}\gbbin"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ver = "$env:BRANCHLESS_VERSION"
+          $zip = "git-branchless-$ver-x86_64-pc-windows-msvc.zip"
+          $url = "https://github.com/arxanas/git-branchless/releases/download/$ver/$zip"
+          curl.exe -fsSL -o "$env:RUNNER_TEMP\gb.zip" "$url"
+          Expand-Archive -Path "$env:RUNNER_TEMP\gb.zip" -DestinationPath $dir -Force
+
+      # Add the directory holding git-branchless.exe to PATH (robust to whether
+      # the archive nests it in a subfolder). Runs on cache hit and miss alike.
+      - name: Add git-branchless to PATH
+        run: |
+          $exe = Get-ChildItem -Path "${{ runner.temp }}\gbbin" -Recurse -Filter git-branchless.exe |
+            Select-Object -First 1
+          if (-not $exe) { throw "git-branchless.exe not found under the extracted archive" }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.Directory.FullName
+          Write-Host "git-branchless at $($exe.FullName)"
 
       - name: Start throwaway p4d
         run: |

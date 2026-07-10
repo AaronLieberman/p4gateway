@@ -1976,6 +1976,177 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
     return {};
 }
 
+// Exercises gw's git-branchless-specific import behavior, which the rest of the
+// run (a plain-git repo) never touches. Skipped with a note when git-branchless
+// is not on PATH, so `gw integtest run` still passes without it; CI installs a
+// pinned release so these run there. Initializes branchless in the fixture repo,
+// checks three behaviors, then uninstalls - all after the plain-git steps.
+//   A) A detached HEAD's local commit is restacked via `git branchless sync`
+//      (not a plain rebase) and left detached at the rewrite, not on a branch.
+//   B) When the checked-out commit was itself already submitted, branchless
+//      obsoletes it and gw leaves HEAD detached at the new depot baseline.
+//   C) After `git branchless init --uninstall`, gw detects the repo as plain
+//      again and falls back to `git rebase`.
+std::expected<void, std::string> itBranchless(ItContext& it) {
+    if (!git::run({"branchless", "--version"}, it.repoDir)) {
+        std::printf("note  git-branchless is not on PATH - skipping the "
+                    "branchless behavior checks\n");
+        return {};
+    }
+
+    const fs::path util = fs::path(it.srcWork) / "util.cpp";
+    const fs::path main = fs::path(it.srcWork) / "main.cpp";
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+
+    auto detached = [&]() {
+        // symbolic-ref succeeds (a branch) or fails (detached).
+        return !git::run({"symbolic-ref", "-q", "HEAD"}, it.repoDir);
+    };
+    // Advance the depot baseline the way a teammate's submit would, so an import
+    // has something to bring forward.
+    auto teammate = [&](const std::string& marker)
+        -> std::expected<void, std::string> {
+        auto cl = p4::createChangelist(it.p4, "gw integtest: branchless teammate");
+        if (!cl) return std::unexpected(cl.error());
+        auto edited = trace(it, "p4 edit " + mirrorMain,
+                            p4::editFiles(it.p4, *cl, {mirrorMain}));
+        if (!edited) return std::unexpected(edited.error());
+        auto appended = appendFile(fs::path(mirrorMain), marker);
+        if (!appended) return appended;
+        auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
+        if (!submitted) return std::unexpected(submitted.error());
+        auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                            p4::sync(it.p4, it.p4DepotPath));
+        if (!synced) return std::unexpected(synced.error());
+        return {};
+    };
+
+    // Start from a clean main with no leftover feature branches, so branchless
+    // only ever restacks the commits this step creates.
+    auto onMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!onMain) return std::unexpected(onMain.error());
+    auto branches = git::run(
+        {"for-each-ref", "--format=%(refname:short)", "refs/heads"}, it.repoDir);
+    if (!branches) return std::unexpected(branches.error());
+    std::istringstream branchLines(*branches);
+    std::string branch;
+    while (std::getline(branchLines, branch)) {
+        if (!branch.empty() && branch != "main") {
+            auto dropped = git::run({"branch", "-D", branch}, it.repoDir);
+            if (!dropped) return std::unexpected(dropped.error());
+        }
+    }
+    auto init = git::run({"branchless", "init", "--main-branch", "main"},
+                         it.repoDir);
+    if (!init) {
+        return std::unexpected("git branchless init failed: " + init.error());
+    }
+
+    // --- A: detached local work is restacked (branchless sync) and stays
+    // detached at the rewrite. ---
+    auto swA = git::run({"switch", "--detach", "main"}, it.repoDir);
+    if (!swA) return std::unexpected(swA.error());
+    if (auto r = appendFile(util, "// branchless local A\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: local work A", it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    if (auto r = teammate("// branchless teammate A\n"); !r) return r;
+    auto importA = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importA) return std::unexpected(importA.error());
+    if (importA->find("Restacked your visible commits") == std::string::npos) {
+        return std::unexpected("branchless import did not take the branchless "
+                               "sync path:\n" + *importA);
+    }
+    if (!detached()) {
+        return std::unexpected("HEAD is on a branch after a branchless import "
+                               "of detached work; expected it to stay detached");
+    }
+    auto onBaseline = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!onBaseline) return std::unexpected(onBaseline.error());
+    if (!*onBaseline) {
+        return std::unexpected("the restacked HEAD is not on the new depot "
+                               "baseline");
+    }
+    auto utilA = readFile(util);
+    if (!utilA) return std::unexpected(utilA.error());
+    if (utilA->find("// branchless local A") == std::string::npos) {
+        return std::unexpected("the restacked commit lost its local change");
+    }
+
+    // --- B: the checked-out commit is itself already applied -> HEAD stays
+    // detached at the new baseline. ---
+    auto swB = git::run({"switch", "--detach", "refs/p4gw/main"}, it.repoDir);
+    if (!swB) return std::unexpected(swB.error());
+    if (auto r = appendFile(main, "// branchless merged\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: to be merged", it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    // Submit the identical change so the import absorbs it (making the local
+    // commit already-applied).
+    if (auto r = teammate("// branchless merged\n"); !r) return r;
+    auto importB = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importB) return std::unexpected(importB.error());
+    if (importB->find("detached at the new depot baseline") ==
+        std::string::npos) {
+        return std::unexpected("a merged-away detached HEAD was not reported as "
+                               "landing detached at the baseline:\n" + *importB);
+    }
+    if (!detached()) {
+        return std::unexpected("HEAD is on a branch after a merged-away import; "
+                               "expected it to stay detached");
+    }
+    auto headB = git::revParse("HEAD", it.repoDir);
+    auto baseB = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!headB) return std::unexpected(headB.error());
+    if (!baseB) return std::unexpected(baseB.error());
+    if (*headB != *baseB) {
+        return std::unexpected("HEAD did not land on the new depot baseline "
+                               "after the merged-away import");
+    }
+
+    // --- C: after uninstall, gw treats the repo as plain git again. ---
+    auto uninstall = git::run({"branchless", "init", "--uninstall"}, it.repoDir);
+    if (!uninstall) {
+        return std::unexpected("git branchless uninstall failed: " +
+                               uninstall.error());
+    }
+    auto swC = git::run({"switch", "--detach", "refs/p4gw/main"}, it.repoDir);
+    if (!swC) return std::unexpected(swC.error());
+    if (auto r = appendFile(util, "// post-uninstall local\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: post-uninstall", it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    if (auto r = teammate("// post-uninstall teammate\n"); !r) return r;
+    auto importC = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importC) return std::unexpected(importC.error());
+    if (importC->find("Rebased your detached work") == std::string::npos ||
+        importC->find("Restacked") != std::string::npos) {
+        return std::unexpected("after uninstall, import did not fall back to a "
+                               "plain rebase:\n" + *importC);
+    }
+
+    // Leave a clean main for cleanup (branchless is already uninstalled).
+    auto back = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!back) return std::unexpected(back.error());
+    auto after = git::run(
+        {"for-each-ref", "--format=%(refname:short)", "refs/heads"}, it.repoDir);
+    if (!after) return std::unexpected(after.error());
+    std::istringstream afterLines(*after);
+    while (std::getline(afterLines, branch)) {
+        if (!branch.empty() && branch != "main") {
+            (void)git::run({"branch", "-D", branch}, it.repoDir);
+        }
+    }
+    return {};
+}
+
 // Leaves both sides clean: reverts opens, sweeps any leftover changelists,
 // obliterates the explicitly-named depot files, and wipes the local tree. Runs
 // as the last step of a successful run (unless --leave) and as the whole job
@@ -2195,6 +2366,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("doctor catches each deliberate view "
                            "misconfiguration",
                            [&] { return itDoctorMisconfigs(it); });
+        steps.emplace_back("git-branchless: sync restack, detached preserved, "
+                           "uninstall",
+                           [&] { return itBranchless(it); });
         if (!it.leave) {
             steps.emplace_back("clean up the depot and local repo",
                                [&] { return itCleanup(it); });

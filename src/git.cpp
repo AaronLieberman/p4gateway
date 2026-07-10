@@ -335,24 +335,34 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
 }
 
 std::expected<bool, std::string> isBranchless(const std::string& cwd) {
-    // Detect by the presence of the <common-git-dir>/branchless data directory
-    // (event log + config) that `git branchless init` creates in this repo. This
-    // is the reliable, repo-local signal - and deliberately not a config probe:
-    // branchless keeps branchless.core.mainBranch in .git/branchless/config,
-    // which it pulls into the repo via an `include.path` in .git/config, but
-    // `git config --local`/`--worktree` do NOT expand includes (so a scoped
-    // probe misses it), while a scopeless probe would wrongly pick up a global
-    // git-branchless setup and make every repo look branchless. The directory
-    // lives in the common git dir, so it is found from linked worktrees too.
-    auto commonDir = p4gw::run("git", {"rev-parse", "--git-common-dir"}, cwd);
-    if (!commonDir) return std::unexpected(commonDir.error());
-    if (commonDir->exitCode != 0) return false;  // not a git repo
-    std::string dir = trimTrailing(commonDir->stdoutText);
-    if (dir.empty()) return false;
-    std::filesystem::path path(dir);
-    if (path.is_relative()) path = std::filesystem::path(cwd) / path;
-    std::error_code ec;
-    return std::filesystem::is_directory(path / "branchless", ec);
+    // Detect by the `include.path = branchless/config` line that
+    // `git branchless init` adds to the repo config (and `--uninstall` removes).
+    // It is the precise "branchless is active *here*" signal:
+    //   - it lives in the repo's own config file, so `--local`/`--worktree` read
+    //     it directly - no include expansion, which is why probing the
+    //     *included* branchless.core.mainBranch under an explicit scope failed;
+    //   - it is repo-local, so another repo's (or a global) branchless setup
+    //     never leaks in and makes an unrelated repo look branchless;
+    //   - it is gone after `--uninstall`, unlike the .git/branchless data
+    //     directory, which lingers and would keep a dir probe reading "true".
+    // Check both scopes: `extensions.worktreeConfig` can host the include in the
+    // per-worktree config (and `--worktree` falls back to `--local` when off).
+    for (const char* scope : {"--local", "--worktree"}) {
+        auto result = p4gw::run(
+            "git", {"config", scope, "--get-all", "include.path"}, cwd);
+        if (!result) return std::unexpected(result.error());
+        if (result->exitCode != 0) continue;  // no include.path in this scope
+        std::istringstream lines(result->stdoutText);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const std::string value = trimTrailing(line);
+            if (value == "branchless/config" ||
+                value.ends_with("/branchless/config")) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
