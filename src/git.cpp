@@ -335,25 +335,24 @@ std::expected<std::string, std::string> rebase(const std::string& onto,
 }
 
 std::expected<bool, std::string> isBranchless(const std::string& cwd) {
-    // `git branchless init` enables extensions.worktreeConfig and writes
-    // branchless.core.mainBranch into the per-worktree config
-    // (.git/config.worktree), which `git config --local` does NOT read. So check
-    // the worktree scope first, then local - but never global/system, so a
-    // global git-branchless setup (likely if you use it on other repos) doesn't
-    // make every repo gw touches look branchless. `--worktree` falls back to
-    // local when the extension is off, and errors (non-zero, handled as "unset")
-    // only with multiple worktrees and the extension off - then --local covers
-    // it.
-    for (const char* scope : {"--worktree", "--local"}) {
-        auto result = p4gw::run(
-            "git", {"config", scope, "--get", "branchless.core.mainBranch"},
-            cwd);
-        if (!result) return std::unexpected(result.error());
-        if (result->exitCode == 0 && !trimTrailing(result->stdoutText).empty()) {
-            return true;
-        }
-    }
-    return false;
+    // Detect by the presence of the <common-git-dir>/branchless data directory
+    // (event log + config) that `git branchless init` creates in this repo. This
+    // is the reliable, repo-local signal - and deliberately not a config probe:
+    // branchless keeps branchless.core.mainBranch in .git/branchless/config,
+    // which it pulls into the repo via an `include.path` in .git/config, but
+    // `git config --local`/`--worktree` do NOT expand includes (so a scoped
+    // probe misses it), while a scopeless probe would wrongly pick up a global
+    // git-branchless setup and make every repo look branchless. The directory
+    // lives in the common git dir, so it is found from linked worktrees too.
+    auto commonDir = p4gw::run("git", {"rev-parse", "--git-common-dir"}, cwd);
+    if (!commonDir) return std::unexpected(commonDir.error());
+    if (commonDir->exitCode != 0) return false;  // not a git repo
+    std::string dir = trimTrailing(commonDir->stdoutText);
+    if (dir.empty()) return false;
+    std::filesystem::path path(dir);
+    if (path.is_relative()) path = std::filesystem::path(cwd) / path;
+    std::error_code ec;
+    return std::filesystem::is_directory(path / "branchless", ec);
 }
 
 std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
