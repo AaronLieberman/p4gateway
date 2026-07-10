@@ -993,10 +993,13 @@ int cmdImport(const Args& args) {
                     if (!dropped) return fail(dropped.error());
                 } else {
                     // The whole carried line was already applied upstream, so
-                    // branchless obsoleted it and removed the ephemeral branch.
-                    // That work now lives in the baseline, where HEAD was left;
-                    // sweep the branch if it somehow lingers.
+                    // branchless obsoleted it and removed the ephemeral branch,
+                    // leaving HEAD on the baseline branch. The user was detached,
+                    // so detach at the new baseline too - their work now lives in
+                    // that commit. Sweep the branch if it somehow lingers.
                     (void)git::run({"branch", "-D", carrier}, root);
+                    auto det = git::switchDetached(newDepot, root);
+                    if (!det) return fail(det.error());
                     mergedAway = true;
                 }
             } else if (!worktreeMode && !originalBranch.empty()) {
@@ -1005,9 +1008,8 @@ int cmdImport(const Args& args) {
             }
             if (mergedAway) {
                 std::printf("Restacked your visible commits. The commit you had "
-                            "checked out was already in the depot state, so HEAD "
-                            "is on '%s'.\n",
-                            baseline.c_str());
+                            "checked out was already in the depot state; HEAD is "
+                            "detached at the new depot baseline.\n");
             } else {
                 std::printf("Restacked your visible commits onto the new depot "
                             "state.\n");
