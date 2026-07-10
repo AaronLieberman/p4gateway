@@ -62,3 +62,68 @@ TEST(ops_reject_rename_without_destination) {
     auto ops = p4gw::planP4Operations({{'R', "old.cpp", ""}});
     CHECK(!ops.has_value());
 }
+
+// ---- resolveSliceRange (prepare's positional -> commit range) ----
+
+using p4gw::resolveSliceRange;
+
+TEST(slice_default_is_whole_stack) {
+    auto r = resolveSliceRange("", /*stack=*/false, "refs/p4gw/main");
+    CHECK(r.has_value());
+    if (r) {
+        CHECK(r->base == "refs/p4gw/main");
+        CHECK(r->target == "HEAD");
+    }
+}
+
+TEST(slice_single_commit_ships_just_it) {
+    auto r = resolveSliceRange("abc123", false, "refs/p4gw/main");
+    CHECK(r.has_value());
+    if (r) {
+        CHECK(r->base == "abc123^");
+        CHECK(r->target == "abc123");
+    }
+}
+
+TEST(slice_stack_widens_a_single_commit_to_the_baseline) {
+    auto r = resolveSliceRange("abc123", /*stack=*/true, "refs/p4gw/main");
+    CHECK(r.has_value());
+    if (r) {
+        CHECK(r->base == "refs/p4gw/main");
+        CHECK(r->target == "abc123");
+    }
+}
+
+TEST(slice_explicit_range_is_verbatim) {
+    auto r = resolveSliceRange("a1..b2", false, "refs/p4gw/main");
+    CHECK(r.has_value());
+    if (r) {
+        CHECK(r->base == "a1");
+        CHECK(r->target == "b2");
+    }
+}
+
+TEST(slice_range_omitted_sides_default) {
+    auto left = resolveSliceRange("..b2", false, "refs/p4gw/main");
+    CHECK(left.has_value());
+    if (left) {
+        CHECK(left->base == "refs/p4gw/main");
+        CHECK(left->target == "b2");
+    }
+    auto right = resolveSliceRange("a1..", false, "refs/p4gw/main");
+    CHECK(right.has_value());
+    if (right) {
+        CHECK(right->base == "a1");
+        CHECK(right->target == "HEAD");
+    }
+}
+
+TEST(slice_rejects_symmetric_range) {
+    auto r = resolveSliceRange("a...b", false, "refs/p4gw/main");
+    CHECK(!r.has_value());
+}
+
+TEST(slice_rejects_stack_with_a_range) {
+    auto r = resolveSliceRange("a..b", /*stack=*/true, "refs/p4gw/main");
+    CHECK(!r.has_value());
+}

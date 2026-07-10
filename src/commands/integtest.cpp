@@ -622,6 +622,98 @@ std::expected<void, std::string> itPrintFidelity(ItContext& it) {
     return {};
 }
 
+// `gw prepare` slicing: a bare <commit> ships only that commit, --stack widens
+// it to the whole stack, and A..B ships a range. Verified through --dry-run
+// (side-effect-free), which prints the final, reclassified op list. Builds a
+// two-commit branch off main and restores main clean. The key cases: a file an
+// earlier commit created and the selected commit edited must ship as an ADD (P4
+// has no such file yet), and a file only the earlier commit touched must NOT
+// ship at all. Runs on 'main', clean, after itFirstImport.
+std::expected<void, std::string> itPrepareSlice(ItContext& it) {
+    const fs::path mainCpp = fs::path(it.srcWork) / "main.cpp";
+    const fs::path utilCpp = fs::path(it.srcWork) / "util.cpp";
+    const fs::path sliceA = fs::path(it.srcWork) / "slice_a.cpp";
+    const fs::path sliceB = fs::path(it.srcWork) / "slice_b.cpp";
+
+    auto switched = trace(it, "git switch -c it-slice",
+                          git::run({"switch", "-c", "it-slice"}, it.repoDir));
+    if (!switched) return std::unexpected(switched.error());
+
+    // Commit A: touch main.cpp and util.cpp, add slice_a.cpp.
+    if (auto r = appendFile(mainCpp, "// slice A\n"); !r) return r;
+    if (auto r = appendFile(utilCpp, "// slice A only\n"); !r) return r;
+    if (auto r = writeFile(sliceA, "// slice a, rev A\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest slice: commit A", it.repoDir); !r)
+        return std::unexpected(r.error());
+    auto shaA = git::revParse("HEAD", it.repoDir);
+    if (!shaA) return std::unexpected(shaA.error());
+
+    // Commit B: touch main.cpp again, edit slice_a.cpp, add slice_b.cpp. It does
+    // NOT touch util.cpp.
+    if (auto r = appendFile(mainCpp, "// slice B\n"); !r) return r;
+    if (auto r = writeFile(sliceA, "// slice a, rev B\n"); !r) return r;
+    if (auto r = writeFile(sliceB, "// slice b, rev B\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest slice: commit B", it.repoDir); !r)
+        return std::unexpected(r.error());
+    auto shaB = git::revParse("HEAD", it.repoDir);
+    if (!shaB) return std::unexpected(shaB.error());
+
+    auto restore = [&]() {
+        (void)git::run({"switch", "main"}, it.repoDir);
+        (void)git::run({"branch", "-D", "it-slice"}, it.repoDir);
+    };
+    auto bail = [&](std::string msg) -> std::expected<void, std::string> {
+        restore();
+        return std::unexpected(std::move(msg));
+    };
+
+    // Just commit B: slice_a.cpp is a git-modify but the depot has no such file
+    // (commit A is not being shipped), so it must reclassify to an add; util.cpp
+    // (touched only by A) must be absent.
+    auto only = runGw(it, it.repoDir, {"prepare", *shaB, "--dry-run"});
+    if (!only) return bail(only.error());
+    if (only->find("add     src/slice_a.cpp") == std::string::npos) {
+        return bail("prepare <commit> did not reclassify the earlier-created "
+                    "file to an add:\n" + *only);
+    }
+    if (only->find("edit    src/slice_a.cpp") != std::string::npos) {
+        return bail("prepare <commit> staged slice_a.cpp as an edit though the "
+                    "depot lacks it:\n" + *only);
+    }
+    if (only->find("add     src/slice_b.cpp") == std::string::npos ||
+        only->find("edit    src/main.cpp") == std::string::npos) {
+        return bail("prepare <commit> missed the commit's own files:\n" + *only);
+    }
+    if (only->find("src/util.cpp") != std::string::npos) {
+        return bail("prepare <commit> shipped a file only an earlier commit "
+                    "touched:\n" + *only);
+    }
+
+    // --stack widens to the whole stack: util.cpp (from commit A) is now in.
+    auto stacked = runGw(it, it.repoDir, {"prepare", *shaB, "--stack", "-n"});
+    if (!stacked) return bail(stacked.error());
+    if (stacked->find("edit    src/util.cpp") == std::string::npos) {
+        return bail("prepare --stack did not include the earlier commit's "
+                    "file:\n" + *stacked);
+    }
+
+    // An explicit A..B range equals "just B": util.cpp out, slice_b.cpp in.
+    auto range =
+        runGw(it, it.repoDir, {"prepare", *shaA + ".." + *shaB, "--dry-run"});
+    if (!range) return bail(range.error());
+    if (range->find("src/util.cpp") != std::string::npos ||
+        range->find("src/slice_b.cpp") == std::string::npos) {
+        return bail("prepare A..B did not match the expected slice:\n" + *range);
+    }
+
+    restore();
+    return {};
+}
+
 std::expected<void, std::string> itFeatureBranch(ItContext& it) {
     auto switched = trace(it, "git switch -c it-feature",
                           git::run({"switch", "-c", "it-feature"}, it.repoDir));
@@ -2065,6 +2157,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itFirstImport(it); });
         steps.emplace_back("p4 print matches synced bytes (text and binary)",
                            [&] { return itPrintFidelity(it); });
+        steps.emplace_back("gw prepare slices a single commit, range, and stack",
+                           [&] { return itPrepareSlice(it); });
         steps.emplace_back("feature branch: edit/add then delete/rename",
                            [&] { return itFeatureBranch(it); });
         steps.emplace_back("gw prepare --shelf shelves and leaves no opens",

@@ -58,18 +58,26 @@ std::string mirrorFilePath(const ResolvedMapping& route,
 }
 
 constexpr const char* kPrepareUsage =
-    "usage: gw prepare [<commit>] [options]\n"
+    "usage: gw prepare [<commit> | <base>..<target>] [options]\n"
     "\n"
-    "Turn the current branch's commits (everything since the depot baseline)\n"
-    "into a new pending P4 changelist: stage the branch's file state into the\n"
-    "mirror with explicit p4 edit/add/delete/move, then build the CL. gw never\n"
-    "submits - review and submit it from P4V.\n"
+    "Turn commits on the current branch into a new pending P4 changelist: stage\n"
+    "their file state into the mirror with explicit p4 edit/add/delete/move,\n"
+    "then build the CL. gw never submits - review and submit it from P4V.\n"
+    "\n"
+    "By default the whole stack (everything since the depot baseline) ships. Name\n"
+    "a slice to ship only part of it - this pairs well with --shelf, one shelf\n"
+    "per commit. If two slices touch the same file the shelves overlap; resolve\n"
+    "that in P4 at submit time (after review), which P4's per-shelf model allows.\n"
     "\n"
     "arguments:\n"
-    "  <commit>              Prepare only the slice of the stack up to <commit>\n"
-    "                        (default: HEAD), so you can ship part of a branch\n"
+    "  (none)               Ship the whole stack: baseline..HEAD\n"
+    "  <commit>             Ship only that one commit's changes (commit^..commit)\n"
+    "  <base>..<target>     Ship the range base..target (either side may be\n"
+    "                       omitted: '..c' is baseline..c, 'a..' is a..HEAD)\n"
     "\n"
     "options:\n"
+    "      --stack           With a single <commit>, ship the whole stack up\n"
+    "                        through it (baseline..commit) instead of just it\n"
     "  -m, --message <text>  Describe the changelist with <text> instead of the\n"
     "                        branch's commit messages\n"
     "  -n, --dry-run         Show the p4 operations a real run would perform and\n"
@@ -180,8 +188,9 @@ int cmdPrepare(const Args& args) {
     bool update = false;
     std::string updateCl;
     std::string messageOverride;
-    std::string target = "HEAD";
-    bool targetSet = false;
+    std::string spec;       // the positional range/commit ("" == whole stack)
+    bool specSet = false;
+    bool stack = false;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--help" || args[i] == "-h") {
             std::printf("%s", kPrepareUsage);
@@ -190,6 +199,8 @@ int cmdPrepare(const Args& args) {
             fullVerify = true;
         } else if (args[i] == "--shelf") {
             shelf = true;
+        } else if (args[i] == "--stack") {
+            stack = true;
         } else if (args[i] == "--dry-run" || args[i] == "-n") {
             dryRun = true;
         } else if (args[i] == "--update" && i + 1 < args.size()) {
@@ -203,9 +214,9 @@ int cmdPrepare(const Args& args) {
         } else if ((args[i] == "--message" || args[i] == "-m") &&
                    i + 1 < args.size()) {
             messageOverride = args[++i];
-        } else if (!args[i].empty() && args[i][0] != '-' && !targetSet) {
-            target = args[i];
-            targetSet = true;
+        } else if (!args[i].empty() && args[i][0] != '-' && !specSet) {
+            spec = args[i];
+            specSet = true;
         } else {
             std::fprintf(stderr, "gw prepare: unknown option '%s'\n",
                          args[i].c_str());
@@ -250,25 +261,76 @@ int cmdPrepare(const Args& args) {
                      "first\n");
         return 1;
     }
-    if (targetSet && !git::revParse(target, root)) {
-        std::fprintf(stderr,
-                     "gw prepare: '%s' is not a valid commit\n", target.c_str());
+    // Resolve the positional argument into the base..target commit range. The
+    // diff (and the CL) covers base..target; content is staged from target.
+    auto slice = resolveSliceRange(spec, stack, depotRef);
+    if (!slice) {
+        std::fprintf(stderr, "gw prepare: %s\n", slice.error().c_str());
         return 1;
     }
-    auto ancestor = git::isAncestor(depotRef, target, root);
-    if (!ancestor) {
-        std::fprintf(stderr, "gw prepare: %s\n", ancestor.error().c_str());
+    // A human label for the range in messages: the raw spec, or a phrase for the
+    // implicit ends.
+    const std::string sliceLabel =
+        spec.empty() ? "the depot baseline through HEAD"
+                     : (stack ? "the depot baseline through " + spec : spec);
+
+    auto targetSha = git::revParse(slice->target, root);
+    if (!targetSha) {
+        std::fprintf(stderr, "gw prepare: '%s' is not a valid commit\n",
+                     slice->target.c_str());
         return 1;
     }
-    if (!*ancestor) {
+    auto baseSha = git::revParse(slice->base, root);
+    if (!baseSha) {
+        std::fprintf(stderr, "gw prepare: '%s' is not a valid commit\n",
+                     slice->base.c_str());
+        return 1;
+    }
+    const std::string base = *baseSha;
+    const std::string target = *targetSha;
+
+    // target must sit on the depot baseline (rebase onto it if not).
+    auto onBaseline = git::isAncestor(depotRef, target, root);
+    if (!onBaseline) {
+        std::fprintf(stderr, "gw prepare: %s\n", onBaseline.error().c_str());
+        return 1;
+    }
+    if (!*onBaseline) {
         std::fprintf(stderr,
                      "gw prepare: %s is not based on the latest depot state - "
                      "run 'gw import --rebase' to rebase onto it first\n",
-                     targetSet ? target.c_str() : "HEAD");
+                     slice->target.c_str());
+        return 1;
+    }
+    // base must lie within baseline..target: at or after the baseline, and an
+    // ancestor of target. This rejects naming the baseline commit itself (its
+    // parent falls below the baseline) and any reversed or empty range.
+    auto baseOnBaseline = git::isAncestor(depotRef, base, root);
+    if (!baseOnBaseline) {
+        std::fprintf(stderr, "gw prepare: %s\n", baseOnBaseline.error().c_str());
+        return 1;
+    }
+    if (!*baseOnBaseline) {
+        std::fprintf(stderr,
+                     "gw prepare: %s is at or below the depot baseline - there "
+                     "is nothing above it to prepare\n",
+                     slice->base.c_str());
+        return 1;
+    }
+    auto forwardRange = git::isAncestor(base, target, root);
+    if (!forwardRange) {
+        std::fprintf(stderr, "gw prepare: %s\n", forwardRange.error().c_str());
+        return 1;
+    }
+    if (!*forwardRange) {
+        std::fprintf(stderr,
+                     "gw prepare: %s is not an ancestor of %s - the range is "
+                     "empty or reversed\n",
+                     slice->base.c_str(), slice->target.c_str());
         return 1;
     }
 
-    auto changes = git::diffNameStatus(depotRef, target, root);
+    auto changes = git::diffNameStatus(base, target, root);
     if (!changes) {
         std::fprintf(stderr, "gw prepare: %s\n", changes.error().c_str());
         return 1;
@@ -279,9 +341,8 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
     if (ops->empty()) {
-        std::printf("Nothing to prepare: no file changes between the depot "
-                    "baseline and %s.\n",
-                    targetSet ? target.c_str() : "HEAD");
+        std::printf("Nothing to prepare: no file changes in %s.\n",
+                    sliceLabel.c_str());
         return 0;
     }
 
@@ -296,10 +357,11 @@ int cmdPrepare(const Args& args) {
         std::string fromMirror;
         std::string toMirror;
         std::string repoTo;      // target:repoTo content for the destination
+        std::string repoFrom;    // repo-relative source, for the preview
     };
     std::vector<Staged> edits;
     std::vector<Staged> adds;
-    std::vector<std::string> deletes;  // local mirror paths (p4 clears them)
+    std::vector<Staged> deletes;  // repoRel + local mirror path (p4 clears it)
     std::vector<MoveOp> moves;
     std::vector<std::string> unmapped;
     std::vector<std::pair<std::string, std::string>> crossBoundary;
@@ -320,7 +382,7 @@ int cmdPrepare(const Args& args) {
         }
         case P4Op::Kind::Delete: {
             const auto* route = routeFor(resolved, config->rules, op.path);
-            if (route) deletes.push_back(mirrorFilePath(*route, op.path));
+            if (route) deletes.push_back({op.path, mirrorFilePath(*route, op.path)});
             else unmapped.push_back(op.path);
             break;
         }
@@ -329,7 +391,8 @@ int cmdPrepare(const Args& args) {
             const auto* to = routeFor(resolved, config->rules, op.newPath);
             if (from && to && from->rule == to->rule) {
                 moves.push_back({mirrorFilePath(*from, op.path),
-                                 mirrorFilePath(*to, op.newPath), op.newPath});
+                                 mirrorFilePath(*to, op.newPath), op.newPath,
+                                 op.path});
             } else if (!from && !to) {
                 // A pure-Git rename, outside every mapping: nothing for P4.
                 unmapped.push_back(op.path);
@@ -403,6 +466,50 @@ int cmdPrepare(const Args& args) {
         }
     }
 
+    // The git diff is relative to `base`, but P4 ops are relative to the depot
+    // (what the mirror holds). For a slice (base past the baseline) a file that
+    // an earlier, unshipped commit created or renamed shows up here as a
+    // modify/delete though P4 has no such file - so reclassify each op against
+    // what the mirror actually contains: an edit of a file absent from the
+    // mirror is really an add, an add of one already present is an edit, a
+    // delete of an absent file is a no-op, and a move whose source is absent is
+    // an add of the destination. On the whole-stack path base *is* the depot, so
+    // git's status already agrees and this pass changes nothing.
+    std::vector<std::string> phantomDeletes;  // deleted, but never in the depot
+    {
+        auto present = [](const std::string& p) {
+            std::error_code ec;
+            return fs::exists(p, ec);
+        };
+        std::vector<MoveOp> realMoves;
+        for (auto& m : moves) {
+            if (present(m.fromMirror)) realMoves.push_back(std::move(m));
+            else adds.push_back({m.repoTo, m.toMirror});  // source not in depot
+        }
+        moves = std::move(realMoves);
+
+        std::vector<Staged> realEdits;
+        for (auto& e : edits) {
+            if (present(e.mirrorPath)) realEdits.push_back(std::move(e));
+            else adds.push_back(std::move(e));  // new to P4, not an edit
+        }
+        edits = std::move(realEdits);
+
+        std::vector<Staged> realAdds;
+        for (auto& a : adds) {
+            if (present(a.mirrorPath)) edits.push_back(std::move(a));  // already tracked
+            else realAdds.push_back(std::move(a));
+        }
+        adds = std::move(realAdds);
+
+        std::vector<Staged> realDeletes;
+        for (auto& d : deletes) {
+            if (present(d.mirrorPath)) realDeletes.push_back(std::move(d));
+            else phantomDeletes.push_back(std::move(d.repoRel));
+        }
+        deletes = std::move(realDeletes);
+    }
+
     // Drop edits whose staged content already matches the mirror: a file
     // changed and then reverted within the branch still shows up in the
     // endpoint git diff, but opening it would put a no-op into the changelist.
@@ -433,6 +540,10 @@ int cmdPrepare(const Args& args) {
         if (!unchanged.empty()) {
             std::printf("Nothing to prepare: the changed files match the depot "
                         "already (changed then reverted within the branch).\n");
+        } else if (!phantomDeletes.empty()) {
+            std::printf("Nothing to prepare: the only changes delete files the "
+                        "depot never had (added by earlier commits not being "
+                        "shipped).\n");
         } else {
             std::printf("Nothing to prepare: the changed files are all outside "
                         "the configured p4 mappings (pure Git).\n");
@@ -443,32 +554,22 @@ int cmdPrepare(const Args& args) {
     // Prints the p4 operations this prepare maps to (and the pure-Git files it
     // skips). Shared by the --dry-run preview and the post-apply confirmation,
     // so both read identically.
-    auto isUnchanged = [&](const std::string& path) {
-        return std::find(unchanged.begin(), unchanged.end(), path) !=
-               unchanged.end();
-    };
     auto printPlannedOps = [&]() {
-        for (const auto& op : *ops) {
-            const bool srcMapped = routeFor(resolved, config->rules, op.path) != nullptr;
-            switch (op.kind) {
-            case P4Op::Kind::Edit:
-                if (srcMapped && !isUnchanged(op.path)) {
-                    std::printf("  edit    %s\n", op.path.c_str());
-                }
-                break;
-            case P4Op::Kind::Add:
-                if (srcMapped) std::printf("  add     %s\n", op.path.c_str());
-                break;
-            case P4Op::Kind::Delete:
-                if (srcMapped) std::printf("  delete  %s\n", op.path.c_str());
-                break;
-            case P4Op::Kind::Move:
-                if (srcMapped || routeFor(resolved, config->rules, op.newPath)) {
-                    std::printf("  move    %s -> %s\n", op.path.c_str(),
-                                op.newPath.c_str());
-                }
-                break;
-            }
+        // Printed from the final, reclassified op lists (a slice can turn a
+        // git edit into a P4 add, etc.), so the preview matches what runs. The
+        // lists already exclude unmapped and no-op-edit files - reported below.
+        for (const auto& d : deletes) {
+            std::printf("  delete  %s\n", d.repoRel.c_str());
+        }
+        for (const auto& e : edits) {
+            std::printf("  edit    %s\n", e.repoRel.c_str());
+        }
+        for (const auto& m : moves) {
+            std::printf("  move    %s -> %s\n", m.repoFrom.c_str(),
+                        m.repoTo.c_str());
+        }
+        for (const auto& a : adds) {
+            std::printf("  add     %s\n", a.repoRel.c_str());
         }
         if (!unmapped.empty()) {
             std::printf("\n%zu changed file(s) are outside any p4 mapping and "
@@ -488,13 +589,22 @@ int cmdPrepare(const Args& args) {
                 std::printf("  same    %s\n", path.c_str());
             }
         }
+        if (!phantomDeletes.empty()) {
+            std::printf("\n%zu file(s) the slice deletes were added by earlier "
+                        "commits not being shipped, so the depot never had them "
+                        "- nothing to delete in P4:\n",
+                        phantomDeletes.size());
+            for (const auto& path : phantomDeletes) {
+                std::printf("  n/a     %s\n", path.c_str());
+            }
+        }
     };
 
     // --update leaves the existing CL's description untouched, so there is
     // nothing to build; a new CL is described by -m or the branch's commits.
     std::string description = messageOverride;
     if (!update && description.empty()) {
-        auto messages = git::commitMessages(depotRef, target, root);
+        auto messages = git::commitMessages(base, target, root);
         if (!messages) {
             std::fprintf(stderr, "gw prepare: %s\n", messages.error().c_str());
             return 1;
@@ -591,7 +701,7 @@ int cmdPrepare(const Args& args) {
     };
 
     if (!deletes.empty()) {
-        auto result = p4::deleteFiles(*config, *cl, deletes);
+        auto result = p4::deleteFiles(*config, *cl, mirrorPathsOf(deletes));
         if (!result) return fail(result.error());
     }
     if (!edits.empty()) {
@@ -657,7 +767,7 @@ int cmdPrepare(const Args& args) {
         std::vector<std::string> touched;
         for (const auto& s : edits) touched.push_back(s.mirrorPath);
         for (const auto& s : adds) touched.push_back(s.mirrorPath);
-        for (const auto& d : deletes) touched.push_back(d);
+        for (const auto& d : deletes) touched.push_back(d.mirrorPath);
         for (const auto& m : moves) {
             touched.push_back(m.fromMirror);
             touched.push_back(m.toMirror);

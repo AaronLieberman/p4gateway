@@ -59,4 +59,29 @@ std::expected<std::vector<P4Op>, std::string> planP4Operations(
     return ops;
 }
 
+std::expected<SliceRange, std::string> resolveSliceRange(
+    const std::string& spec, bool stack, const std::string& depotRef) {
+    if (spec.empty()) {
+        return SliceRange{depotRef, "HEAD"};  // whole stack (--stack is a no-op)
+    }
+    if (spec.find("...") != std::string::npos) {
+        return std::unexpected(
+            "symmetric ranges ('" + spec +
+            "') are not supported; use 'base..target'");
+    }
+    if (const auto dots = spec.find(".."); dots != std::string::npos) {
+        if (stack) {
+            return std::unexpected(
+                "--stack cannot be combined with an explicit range ('" + spec +
+                "')");
+        }
+        const std::string left = spec.substr(0, dots);
+        const std::string right = spec.substr(dots + 2);
+        return SliceRange{left.empty() ? depotRef : left,
+                          right.empty() ? std::string("HEAD") : right};
+    }
+    // A single commit: just it, or (with --stack) the whole stack up through it.
+    return SliceRange{stack ? depotRef : spec + "^", spec};
+}
+
 }  // namespace p4gw
