@@ -2109,6 +2109,32 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
                                "after the merged-away import");
     }
 
+    // --- D: detached ON the baseline (no work of its own) fast-forwards to the
+    // new baseline, rather than being stranded on the prior one. ---
+    auto swD = git::run({"switch", "--detach", "refs/p4gw/main"}, it.repoDir);
+    if (!swD) return std::unexpected(swD.error());
+    auto priorBase = git::revParse("HEAD", it.repoDir);
+    if (!priorBase) return std::unexpected(priorBase.error());
+    if (auto r = teammate("// branchless fast-forward\n"); !r) return r;
+    auto importD = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importD) return std::unexpected(importD.error());
+    auto headD = git::revParse("HEAD", it.repoDir);
+    auto baseD = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!headD) return std::unexpected(headD.error());
+    if (!baseD) return std::unexpected(baseD.error());
+    if (*headD == *priorBase) {
+        return std::unexpected("import left HEAD on the prior baseline instead "
+                               "of fast-forwarding to the new one");
+    }
+    if (*headD != *baseD) {
+        return std::unexpected("a detached-on-baseline import did not "
+                               "fast-forward HEAD to the new baseline");
+    }
+    if (!detached()) {
+        return std::unexpected("HEAD is on a branch after a fast-forward "
+                               "import; expected it to stay detached");
+    }
+
     // --- C: after uninstall, gw treats the repo as plain git again. ---
     auto uninstall = git::run({"branchless", "init", "--uninstall"}, it.repoDir);
     if (!uninstall) {

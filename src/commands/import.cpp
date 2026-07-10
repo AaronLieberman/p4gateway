@@ -945,14 +945,25 @@ int cmdImport(const Args& args) {
         // one case that genuinely needs a branchless command. A plain detached
         // HEAD has no such stack model, so rebase the one line HEAD points at.
         if (branchless) {
+            // Does HEAD carry local work of its own, or is it sitting at/behind
+            // the baseline (e.g. detached on the depot ref, tracking it like
+            // origin/main)? If it has no divergent work, there is nothing to
+            // carry - fast-forward it to the new baseline after the sync (which
+            // still restacks the user's *other* stacks). isAncestor(originalHead,
+            // newDepot) is true exactly when HEAD is already contained in the new
+            // baseline's history.
+            auto headBehind = git::isAncestor(originalHead, newDepot, root);
+            if (!headBehind) return fail(headBehind.error());
+
             // `git branchless sync` keeps a *branch* checkout on its branch, but
             // a detached HEAD sitting on a rewritten commit is left on the main
-            // branch, not carried to the rewrite. So ride a detached HEAD
-            // through the sync on an ephemeral branch and detach at its restacked
-            // tip afterward; a real branch just rides along on its own.
+            // branch, not carried to the rewrite. So ride a detached HEAD with
+            // divergent work through the sync on an ephemeral branch and detach
+            // at its restacked tip afterward; a real branch just rides along on
+            // its own.
             const std::string carrier = "gw-import-restack";
-            const bool useCarrier =
-                !worktreeMode && originalBranch.empty() && !originalHead.empty();
+            const bool useCarrier = !worktreeMode && originalBranch.empty() &&
+                                    !originalHead.empty() && !*headBehind;
             if (useCarrier) {
                 // `-c` (not `-C`) refuses to clobber an existing branch, so a
                 // name collision - or a leftover from an interrupted sync - is a
@@ -1005,6 +1016,12 @@ int cmdImport(const Args& args) {
             } else if (!worktreeMode && !originalBranch.empty()) {
                 auto back = git::switchBranch(originalBranch, root);
                 if (!back) return fail(back.error());
+            } else if (!worktreeMode) {
+                // Detached with no divergent work (at/behind the baseline):
+                // fast-forward HEAD to the new baseline, the way being on the
+                // depot ref and pulling would.
+                auto det = git::switchDetached(newDepot, root);
+                if (!det) return fail(det.error());
             }
             if (mergedAway) {
                 std::printf("Restacked your visible commits. The commit you had "
