@@ -656,16 +656,16 @@ int cmdImport(const Args& args) {
             return 1;
         }
         originalHead = *head;
-        // Branchless works detached by design; for the named-branch flow we
-        // also need the branch name, but a detached HEAD is no longer an error.
-        if (!branchless) {
-            auto branch = git::currentBranch(root);
-            if (!branch) {
-                std::fprintf(stderr, "gw import: %s\n", branch.error().c_str());
-                return 1;
-            }
-            if (*branch != "HEAD") originalBranch = *branch;
+        // Track the branch name whenever HEAD is on one, so import returns the
+        // user exactly where they were. Branchless users work detached *or* on a
+        // branch, and import must preserve whichever it found (a detached HEAD is
+        // not an error).
+        auto branch = git::currentBranch(root);
+        if (!branch) {
+            std::fprintf(stderr, "gw import: %s\n", branch.error().c_str());
+            return 1;
         }
+        if (*branch != "HEAD") originalBranch = *branch;
     }
 
     // From here failures may have moved HEAD off the user's branch or half-
@@ -864,14 +864,19 @@ int cmdImport(const Args& args) {
     const bool workingDetached =
         branchless || (originalBranch.empty() && !originalHead.empty());
     if (workingDetached) {
-        // Return HEAD to where the user was working (detached) before the
-        // restack. The recorded commit still exists; a branchless sync marks it
-        // obsolete (recoverable with `git undo`), a plain rebase leaves the
-        // pre-rebase commit reachable via the reflog. Worktree mode never moved
-        // HEAD, so there is nothing to return.
-        if (!worktreeMode && !originalHead.empty()) {
-            auto back = git::switchDetached(originalHead, root);
-            if (!back) return fail(back.error());
+        // Return HEAD to exactly where the user was - on their branch, or
+        // detached at their commit. The recorded commit still exists; a
+        // branchless sync marks it obsolete (recoverable with `git undo`), a
+        // plain rebase leaves the pre-rebase commit reachable via the reflog.
+        // Worktree mode never moved HEAD, so there is nothing to return.
+        if (!worktreeMode) {
+            if (!originalBranch.empty()) {
+                auto back = git::switchBranch(originalBranch, root);
+                if (!back) return fail(back.error());
+            } else if (!originalHead.empty()) {
+                auto back = git::switchDetached(originalHead, root);
+                if (!back) return fail(back.error());
+            }
         }
 
         // A first import against an empty mirror never created any commit.
@@ -889,22 +894,26 @@ int cmdImport(const Args& args) {
         }
 
         // Keep the convenience baseline branch tracking the depot: create it if
-        // missing, fast-forward it when it carries no local commits.
-        auto baselineExists = git::branchExists(baseline, root);
-        if (!baselineExists) return fail(baselineExists.error());
-        if (*baselineExists) {
-            auto branchFf =
-                git::isAncestor("refs/heads/" + baseline, newDepot, root);
-            if (!branchFf) return fail(branchFf.error());
-            if (*branchFf) {
-                auto moved =
+        // missing, fast-forward it when it carries no local commits. Skip it
+        // when the user is *on* that branch - moving its ref would drag HEAD,
+        // and the restack below brings it up to date instead.
+        if (originalBranch != baseline) {
+            auto baselineExists = git::branchExists(baseline, root);
+            if (!baselineExists) return fail(baselineExists.error());
+            if (*baselineExists) {
+                auto branchFf =
+                    git::isAncestor("refs/heads/" + baseline, newDepot, root);
+                if (!branchFf) return fail(branchFf.error());
+                if (*branchFf) {
+                    auto moved =
+                        git::updateRef("refs/heads/" + baseline, newDepot, root);
+                    if (!moved) return fail(moved.error());
+                }
+            } else {
+                auto created =
                     git::updateRef("refs/heads/" + baseline, newDepot, root);
-                if (!moved) return fail(moved.error());
+                if (!created) return fail(created.error());
             }
-        } else {
-            auto created =
-                git::updateRef("refs/heads/" + baseline, newDepot, root);
-            if (!created) return fail(created.error());
         }
 
         // Dirty tree (worktree mode): the baseline is imported and the
@@ -936,6 +945,22 @@ int cmdImport(const Args& args) {
         // one case that genuinely needs a branchless command. A plain detached
         // HEAD has no such stack model, so rebase the one line HEAD points at.
         if (branchless) {
+            // `git branchless sync` keeps a *branch* checkout on its branch, but
+            // a detached HEAD sitting on a rewritten commit is left on the main
+            // branch, not carried to the rewrite. So ride a detached HEAD
+            // through the sync on an ephemeral branch and detach at its restacked
+            // tip afterward; a real branch just rides along on its own.
+            const std::string carrier = "gw-import-restack";
+            const bool useCarrier =
+                !worktreeMode && originalBranch.empty() && !originalHead.empty();
+            if (useCarrier) {
+                // `-c` (not `-C`) refuses to clobber an existing branch, so a
+                // name collision - or a leftover from an interrupted sync - is a
+                // clear error, never silent data loss.
+                auto made = git::run({"switch", "-c", carrier, originalHead},
+                                     root);
+                if (!made) return fail(made.error());
+            }
             auto synced = git::branchlessSync(root);
             if (!synced) {
                 std::fflush(stdout);  // keep messages ordered with stderr
@@ -944,10 +969,49 @@ int cmdImport(const Args& args) {
                 std::fprintf(stderr,
                              "Resolve the conflicts, then 'git rebase "
                              "--continue' (or 'git rebase --abort' to undo).\n");
+                if (useCarrier) {
+                    std::fprintf(stderr,
+                                 "note: your work rides the temporary branch "
+                                 "'%s'; after resolving, run 'git switch "
+                                 "--detach %s && git branch -D %s'.\n",
+                                 carrier.c_str(), carrier.c_str(),
+                                 carrier.c_str());
+                }
                 return 1;
             }
-            std::printf("Restacked your visible commits onto the new depot "
-                        "state.\n");
+            // Put HEAD back deterministically (sync repositions it - a detached
+            // HEAD on a rewritten or dropped commit is left on main): detach at
+            // the ephemeral branch's restacked tip and drop it, or return to the
+            // user's real branch.
+            bool mergedAway = false;
+            if (useCarrier) {
+                auto tip = git::revParse(carrier, root);
+                if (tip) {
+                    auto det = git::switchDetached(*tip, root);
+                    if (!det) return fail(det.error());
+                    auto dropped = git::run({"branch", "-D", carrier}, root);
+                    if (!dropped) return fail(dropped.error());
+                } else {
+                    // The whole carried line was already applied upstream, so
+                    // branchless obsoleted it and removed the ephemeral branch.
+                    // That work now lives in the baseline, where HEAD was left;
+                    // sweep the branch if it somehow lingers.
+                    (void)git::run({"branch", "-D", carrier}, root);
+                    mergedAway = true;
+                }
+            } else if (!worktreeMode && !originalBranch.empty()) {
+                auto back = git::switchBranch(originalBranch, root);
+                if (!back) return fail(back.error());
+            }
+            if (mergedAway) {
+                std::printf("Restacked your visible commits. The commit you had "
+                            "checked out was already in the depot state, so HEAD "
+                            "is on '%s'.\n",
+                            baseline.c_str());
+            } else {
+                std::printf("Restacked your visible commits onto the new depot "
+                            "state.\n");
+            }
         } else {
             auto rebased = git::rebase(newDepot, root);
             if (!rebased) {
