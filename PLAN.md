@@ -207,6 +207,21 @@ removed most of what it guarded — staging no longer touches the checkout at
 all), Windows polish, and the rest of M4 (filetypes, `+l` locks, rename
 chains, multiple roots, p4ignore derivation) stay wait-until-it-bites.
 
+Deferred idea — **isolated `prepare --shelf`** (build a shelf without touching
+the mirror, working even with files already open in P4). Perforce has no
+"reverse `p4 print` to a shelf": a shelf's only content source is opened files
+in a client workspace, so today's `--shelf` stages into the mirror, shelves,
+then reverts (net-zero on disk) and refuses when files under the mapping are
+open. True isolation requires building the shelf in a *separate* p4 workspace —
+a dedicated hidden shelving client rooted in a scratch dir: sync just the
+changed files there, lay down the git content, open + `p4 shelve`, revert,
+leave the shelf. Reuses `writeClientSpec`/`clientViewPath` and per-client `-c`
+invocation. Motivating case is shelving a slice *alongside a gw pending CL*
+where the files overlap — which only full isolation solves (the lighter
+"relax the guard, isolate to gw's own CL" variant doesn't). Tradeoff that
+parked it (2026-07): the extra hidden client isn't wanted yet, and the shelf
+would be owned by it (submit means unshelving into the normal client from P4V).
+
 ## M2 — Make it trustworthy
 
 - [x] `--dry-run`: `gw prepare --dry-run` does all its read-only planning
