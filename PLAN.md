@@ -192,14 +192,16 @@ against the remaining milestones.
        line), deleted-manifest fallback + rewrite, corrupted-binding
        fallback, and the fast path returning. `gw doctor` reports the
        manifest's binding state.
-7. [~] Pending-CL lifecycle bundle. **Done:** `gw prepare --abandon <CL>` —
+7. [x] Pending-CL lifecycle bundle. `gw prepare --abandon <CL>` —
        reverts the CL's opens (the existing scoped `revertChangelist`, `p4
        revert -w`, which restores the mirror to the depot head), drops any
        shelf, and deletes the changelist; a standalone cleanup mode that stages
        nothing. Covered by itPrepareAbandon (pending CL + shelved CL).
-       **Remaining:** the friendly "depot changed under your pending CL" error
-       that suggests import → rebase → `prepare --update` (fuzzier — needs a way
-       to detect a CL prepared against a now-stale depot baseline).
+       (A "depot changed under your pending CL" warning was considered and
+       dropped: the head is always moving, so import↔prepare drift is expected;
+       when the prepared files actually conflict the user resolves it on the P4
+       side — `p4 sync` → resolve → `gw import` → `prepare --update`, or abandon
+       the CL in P4 → `p4 sync` → `gw import` → `prepare`. Not gw's job.)
 8. [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
        file list — cheap belt-and-suspenders on top of the reconcile
        preview, plus an integtest assertion. (Moved from M2.)
@@ -293,8 +295,9 @@ would be owned by it (submit means unshelving into the normal client from P4V).
       mirror. `gw integtest run` covers it (shelf has the branch's files, no
       opens remain, the mirror is back at the depot head). **Needs a
       real-workspace check** on a live server.
-- [>] `gw prepare --abandon <CL>` and the helpful "depot changed under my
-      pending CL" error — moved (as one bundle) to the prioritized list above
+- [x] `gw prepare --abandon <CL>` — moved to the prioritized list above and
+      done. (The paired "depot changed under my pending CL" error was dropped:
+      it's a normal P4 concern the user resolves on the P4 side.)
 - [ ] Windows polish: UTF-8 output, long-path awareness, exit codes audited
 
 ## M4 — Hardening (as needed, driven by real use)
