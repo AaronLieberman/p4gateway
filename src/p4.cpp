@@ -914,6 +914,11 @@ std::expected<std::string, std::string> shelve(const Config& config,
     return run(config, {"shelve", "-c", cl});
 }
 
+std::expected<std::string, std::string> shelveReplace(const Config& config,
+                                                      const std::string& cl) {
+    return run(config, {"shelve", "-r", "-c", cl});
+}
+
 std::expected<std::string, std::string> deleteShelve(const Config& config,
                                                      const std::string& cl) {
     return run(config, {"shelve", "-d", "-c", cl});

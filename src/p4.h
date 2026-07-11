@@ -331,6 +331,13 @@ std::expected<std::string, std::string> writeClientSpec(const Config& config,
 std::expected<std::string, std::string> shelve(const Config& config,
                                                const std::string& cl);
 
+// `p4 shelve -r -c <cl>`: replace the shelf on `cl` with the files currently
+// open in it - re-shelving the opened files and dropping any previously shelved
+// file that is no longer open. Used by `gw prepare --shelf --update` to refresh
+// an existing shelf in place.
+std::expected<std::string, std::string> shelveReplace(const Config& config,
+                                                      const std::string& cl);
+
 // `p4 shelve -d -c <cl>`: discard the shelved files from `cl`.
 std::expected<std::string, std::string> deleteShelve(const Config& config,
                                                      const std::string& cl);

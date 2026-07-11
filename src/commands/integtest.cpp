@@ -827,6 +827,115 @@ std::expected<void, std::string> itPrepareShelf(ItContext& it) {
     return {};
 }
 
+// `gw prepare --shelf --update <CL>` refreshes an existing shelf in place: it
+// re-stages the branch and replaces the CL's shelved files (p4 shelve -r),
+// keeping the same changelist. Builds a one-file shelf, grows the branch to two
+// changed files, updates the shelf, and asserts it was replaced (two files, no
+// new CL, no leftover opens). Self-contained on a throwaway branch off main.
+std::expected<void, std::string> itPrepareShelfUpdate(ItContext& it) {
+    const fs::path util = fs::path(it.srcWork) / "util.cpp";
+    const fs::path extra = fs::path(it.srcWork) / "shelfupd.cpp";
+
+    auto onMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!onMain) return std::unexpected(onMain.error());
+    auto branch = git::run({"switch", "-c", "it-shelfupd"}, it.repoDir);
+    if (!branch) return std::unexpected(branch.error());
+
+    auto extractCl = [](const std::string& out) -> std::string {
+        const std::string marker = "Created pending changelist ";
+        auto pos = out.find(marker);
+        if (pos == std::string::npos) return {};
+        pos += marker.size();
+        auto end = pos;
+        while (end < out.size() &&
+               std::isdigit(static_cast<unsigned char>(out[end]))) {
+            ++end;
+        }
+        return out.substr(pos, end - pos);
+    };
+
+    // v1: one changed file -> a one-file shelf.
+    if (auto r = appendFile(util, "// shelf-update v1\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: shelf-update v1", it.repoDir); !r) {
+        return std::unexpected(r.error());
+    }
+    auto created = runGw(it, it.repoDir, {"prepare", "--shelf"});
+    if (!created) return std::unexpected(created.error());
+    const std::string cl = extractCl(*created);
+    if (cl.empty()) {
+        return std::unexpected("prepare --shelf output has no changelist "
+                               "number:\n" + *created);
+    }
+    auto d1 = trace(it, "p4 describe -S " + cl, p4::describeShelved(it.p4, cl));
+    if (!d1) return std::unexpected(d1.error());
+    auto s1 = parseShelveDescribe(*d1);
+    if (!s1) return std::unexpected(s1.error());
+    if (s1->files.size() != 1) {
+        return std::unexpected("expected 1 shelved file initially, got " +
+                               std::to_string(s1->files.size()));
+    }
+
+    // Grow the branch: edit util.cpp again and add a second file.
+    if (auto r = appendFile(util, "// shelf-update v2\n"); !r) return r;
+    if (auto r = writeFile(extra, "// added on shelf update\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: shelf-update v2", it.repoDir); !r) {
+        return std::unexpected(r.error());
+    }
+
+    auto updated = runGw(it, it.repoDir, {"prepare", "--shelf", "--update", cl});
+    if (!updated) return std::unexpected(updated.error());
+    if (updated->find("Updated shelf on changelist " + cl) ==
+        std::string::npos) {
+        return std::unexpected("prepare --shelf --update did not report an "
+                               "updated shelf:\n" + *updated);
+    }
+    if (updated->find("Created pending changelist") != std::string::npos) {
+        return std::unexpected("prepare --shelf --update created a new "
+                               "changelist instead of reusing " + cl + ":\n" +
+                               *updated);
+    }
+
+    auto opened = p4::openedFilesTagged(it.p4);
+    if (!opened) return std::unexpected(opened.error());
+    if (!opened->empty()) {
+        return std::unexpected("prepare --shelf --update left files open");
+    }
+    // The shelf was replaced: it now holds both files (not the stale single one).
+    auto d2 = trace(it, "p4 describe -S " + cl, p4::describeShelved(it.p4, cl));
+    if (!d2) return std::unexpected(d2.error());
+    auto s2 = parseShelveDescribe(*d2);
+    if (!s2) return std::unexpected(s2.error());
+    if (s2->files.size() != 2) {
+        return std::unexpected("expected the updated shelf to hold 2 files, "
+                               "got " + std::to_string(s2->files.size()));
+    }
+    bool hasUtil = false;
+    bool hasExtra = false;
+    for (const auto& f : s2->files) {
+        if (f.depotFile.find("util.cpp") != std::string::npos) hasUtil = true;
+        if (f.depotFile.find("shelfupd.cpp") != std::string::npos) {
+            hasExtra = true;
+        }
+    }
+    if (!hasUtil || !hasExtra) {
+        return std::unexpected("the updated shelf is missing an expected "
+                               "file:\n" + *d2);
+    }
+
+    // Clean up: discard the shelf and its changelist, back to main, drop branch.
+    auto discarded = trace(it, "p4 shelve -d -c " + cl,
+                           p4::deleteShelve(it.p4, cl));
+    if (!discarded) return std::unexpected(discarded.error());
+    auto deletedCl = p4::deleteChangelist(it.p4, cl);
+    if (!deletedCl) return std::unexpected(deletedCl.error());
+    auto back = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!back) return std::unexpected(back.error());
+    (void)git::run({"branch", "-D", "it-shelfupd"}, it.repoDir);
+    return {};
+}
+
 std::expected<void, std::string> itPrepare(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"prepare", "--verify"});
     if (!out) return std::unexpected(out.error());
@@ -2366,6 +2475,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itPrepareUpdate(it); });
         steps.emplace_back("submit, then gw import --rebase melts the branch",
                            [&] { return itSubmitAndAbsorb(it); });
+        steps.emplace_back("gw prepare --shelf --update replaces a shelf in "
+                           "place",
+                           [&] { return itPrepareShelfUpdate(it); });
         steps.emplace_back("teammate change absorbed with import --rebase",
                            [&] { return itTeammateChange(it); });
         steps.emplace_back("opened mirror files: import reads depot, prepare "

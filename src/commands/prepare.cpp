@@ -82,13 +82,16 @@ constexpr const char* kPrepareUsage =
     "                        branch's commit messages\n"
     "  -n, --dry-run         Show the p4 operations a real run would perform and\n"
     "                        exit, touching neither P4 nor the mirror\n"
-    "      --update <CL>     Refresh the existing pending changelist <CL> to match\n"
-    "                        the branch instead of creating a new one (reverts its\n"
+    "      --update <CL>     Refresh the existing changelist <CL> to match the\n"
+    "                        branch instead of creating a new one (reverts its\n"
     "                        current opens first, then re-stages); keeps the CL's\n"
-    "                        number and description\n"
+    "                        number and description. With --shelf, refreshes that\n"
+    "                        CL's shelf in place instead\n"
     "      --shelf           Build a P4 shelf instead of a pending changelist:\n"
     "                        stage, shelve, then revert the opens so only the\n"
-    "                        shelf remains and the mirror is left untouched\n"
+    "                        shelf remains and the mirror is left untouched.\n"
+    "                        Combine with --update <CL> to replace an existing\n"
+    "                        shelf\n"
     "      --verify          After staging, run a full 'p4 reconcile -n' over the\n"
     "                        whole subtree to catch unexpected mirror changes\n"
     "                        (scales with subtree size, not this change)\n"
@@ -223,13 +226,6 @@ int cmdPrepare(const Args& args) {
             std::fprintf(stderr, "%s", kPrepareUsage);
             return 1;
         }
-    }
-
-    if (update && shelf) {
-        std::fprintf(stderr,
-                     "gw prepare: --update and --shelf cannot be combined - "
-                     "--update refreshes a pending changelist, not a shelf.\n");
-        return 1;
     }
 
     std::string root;
@@ -647,7 +643,11 @@ int cmdPrepare(const Args& args) {
     // planning, the opened-files guard). Show exactly which p4 operations a
     // real run would open, and touch neither P4 nor the mirror.
     if (dryRun) {
-        if (update) {
+        if (update && shelf) {
+            std::printf("[dry-run] would revert changelist %s's current opens, "
+                        "re-stage into it, replace its shelf, then revert:\n",
+                        updateCl.c_str());
+        } else if (update) {
             std::printf("[dry-run] would revert changelist %s's current opens, "
                         "then re-stage into it and open:\n", updateCl.c_str());
         } else if (shelf) {
@@ -660,9 +660,10 @@ int cmdPrepare(const Args& args) {
         printPlannedOps();
         std::printf("\n[dry-run] no changes made. Rerun without --dry-run to "
                     "%s.\n",
-                    update ? "refresh the changelist"
-                    : shelf ? "create the shelf"
-                            : "create the changelist and open these files");
+                    update && shelf ? "refresh the shelf"
+                    : update        ? "refresh the changelist"
+                    : shelf         ? "create the shelf"
+                              : "create the changelist and open these files");
         return 0;
     }
 
@@ -671,7 +672,9 @@ int cmdPrepare(const Args& args) {
     std::expected<std::string, std::string> cl;
     if (update) {
         cl = updateCl;
-        std::printf("Refreshing pending changelist %s\n", updateCl.c_str());
+        std::printf("Refreshing %s %s\n",
+                    shelf ? "the shelf on changelist" : "pending changelist",
+                    updateCl.c_str());
     } else {
         cl = p4::createChangelist(*config, description);
         if (!cl) {
@@ -786,8 +789,11 @@ int cmdPrepare(const Args& args) {
         // left clean: the mirror returns to the depot head and the changelist
         // keeps only the shelf (no open files). Staging had to touch the mirror
         // to give p4 something to shelve, but the revert undoes it, so the net
-        // effect on the working tree is nothing.
-        auto shelved = p4::shelve(*config, *cl);
+        // effect on the working tree is nothing. --update replaces the existing
+        // shelf in place (-r): the opened files become the new shelf and any
+        // previously shelved file that is no longer changed is dropped.
+        auto shelved = update ? p4::shelveReplace(*config, *cl)
+                              : p4::shelve(*config, *cl);
         if (!shelved) return fail(shelved.error());
         auto reverted = p4::revertChangelist(*config, *cl);
         if (!reverted) {
@@ -803,11 +809,12 @@ int cmdPrepare(const Args& args) {
                          cl->c_str());
             return 1;
         }
-        std::printf("\nShelved changelist %s is ready - unshelve or review it "
+        std::printf("\n%s changelist %s is ready - unshelve or review it "
                     "from P4V (or: p4 unshelve -s %s).\nThe mirror and working "
                     "tree are unchanged. Reconstruct it in Git any time with "
                     "'gw shelf import %s'.\n",
-                    cl->c_str(), cl->c_str(), cl->c_str());
+                    update ? "Updated shelf on" : "Shelved", cl->c_str(),
+                    cl->c_str(), cl->c_str());
         return 0;
     }
 
