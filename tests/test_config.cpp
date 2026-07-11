@@ -308,11 +308,11 @@ TEST(config_defaults_baseline_branch) {
     }
 }
 
-TEST(config_defaults_import_mode_to_checkout) {
+TEST(config_defaults_import_mode_to_worktree) {
     auto config = loadFromString("include = //depot/yourproject/src/... .p4gw\n");
     CHECK(config.has_value());
     if (config) {
-        CHECK(config->importMode == p4gw::ImportMode::kCheckout);
+        CHECK(config->importMode == p4gw::ImportMode::kWorktree);
     }
 }
 

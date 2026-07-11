@@ -155,14 +155,14 @@ int cmdSetup(const Args& args) {
             file << "client = " << client << "\n";
         }
         file << "\n"
-                "# How 'gw import' builds the depot snapshot. 'checkout' (the\n"
-                "# default) stages it in your own working tree and needs a clean\n"
-                "# tree. 'worktree' stages it in a hidden git worktree instead,\n"
-                "# so import never touches your checkout and works even with a\n"
-                "# dirty tree (it just skips bringing your branch up until the\n"
-                "# tree is clean). Uses about one extra copy of the source on\n"
-                "# disk.\n"
-                "#import_mode = worktree\n";
+                "# How 'gw import' builds the depot snapshot. 'worktree' (the\n"
+                "# default) stages it in a hidden git worktree, so import never\n"
+                "# touches your checkout and works even with a dirty tree (it\n"
+                "# just skips bringing your branch up until the tree is clean).\n"
+                "# It uses about one extra copy of the source on disk. 'checkout'\n"
+                "# stages the snapshot in your own working tree instead and needs\n"
+                "# a clean tree.\n"
+                "#import_mode = checkout\n";
     }
     std::printf("Wrote %s\n", target.string().c_str());
 

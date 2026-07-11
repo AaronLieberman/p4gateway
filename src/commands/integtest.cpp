@@ -1408,7 +1408,15 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
     const fs::path util = fs::path(it.srcWork) / "util.cpp";
     const fs::path main = fs::path(it.srcWork) / "main.cpp";
 
-    // (a) Checkout mode still refuses a dirty tree. Dirty util.cpp, then import.
+    // Save the pristine config to restore at the end (and to rebuild from
+    // between the two modes we exercise).
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+
+    // (a) Checkout mode still refuses a dirty tree. Worktree is now the
+    // default, so opt into checkout explicitly. Dirty util.cpp, then import.
+    auto checkoutCfg = appendFile(cfg, "\nimport_mode = checkout\n");
+    if (!checkoutCfg) return checkoutCfg;
     auto dirtied = appendFile(util, "// local uncommitted edit\n");
     if (!dirtied) return dirtied;
     auto refused = runGw(it, it.repoDir, {"import"});
@@ -1421,10 +1429,9 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
                                "reason:\n" + refused.error());
     }
 
-    // (b) Switch to worktree mode (save the config to restore at the end).
-    auto savedCfg = readFile(cfg);
-    if (!savedCfg) return std::unexpected(savedCfg.error());
-    auto appended = appendFile(cfg, "\nimport_mode = worktree\n");
+    // (b) Switch to worktree mode (rewrite from the pristine config so only the
+    // one import_mode line is present).
+    auto appended = writeFile(cfg, *savedCfg + "\nimport_mode = worktree\n");
     if (!appended) return appended;
 
     // (c) A teammate-style depot change to import.
@@ -1536,7 +1543,7 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
                                "matches in worktree mode:\n" + *verify);
     }
 
-    // (g) Restore checkout mode; end on 'main', clean, for itFinalChecks.
+    // (g) Restore the pristine config; end on 'main', clean, for itFinalChecks.
     auto wrote = writeFile(cfg, *savedCfg);
     if (!wrote) return wrote;
     return {};
