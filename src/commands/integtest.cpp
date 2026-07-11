@@ -1002,9 +1002,9 @@ std::expected<void, std::string> itPrepareAbandon(ItContext& it) {
         return std::unexpected("--abandon did not restore the mirror to the "
                                "depot head");
     }
-    if (p4::describeShelved(it.p4, cl)) {
-        return std::unexpected("--abandon did not delete changelist " + cl);
-    }
+    // The changelist is gone: gw only reports success after `p4 change -d`,
+    // which refuses a changelist that still has opens - so the delete
+    // succeeding is itself the proof the opens were reverted first.
 
     // --- Abandon a shelved changelist (shelf gets dropped too). ---
     auto shelfPrep = runGw(it, it.repoDir, {"prepare", "--shelf"});
@@ -1014,15 +1014,24 @@ std::expected<void, std::string> itPrepareAbandon(ItContext& it) {
         return std::unexpected("prepare --shelf output has no changelist "
                                "number:\n" + *shelfPrep);
     }
-    if (!p4::describeShelved(it.p4, shelfCl)) {
-        return std::unexpected("the shelved changelist is not describable "
-                               "before abandon");
+    // Confirm it really carries a shelf before we abandon it.
+    auto describe = trace(it, "p4 describe -S " + shelfCl,
+                          p4::describeShelved(it.p4, shelfCl));
+    if (!describe) return std::unexpected(describe.error());
+    auto shelfInfo = parseShelveDescribe(*describe);
+    if (!shelfInfo) return std::unexpected(shelfInfo.error());
+    if (shelfInfo->files.empty()) {
+        return std::unexpected("prepare --shelf produced no shelved files to "
+                               "abandon");
     }
+    // Abandon succeeds only if `p4 change -d` deleted the CL, which p4 refuses
+    // while a shelf remains - so success proves the shelf was dropped too.
     auto shelfAbandon = runGw(it, it.repoDir, {"prepare", "--abandon", shelfCl});
     if (!shelfAbandon) return std::unexpected(shelfAbandon.error());
-    if (p4::describeShelved(it.p4, shelfCl)) {
-        return std::unexpected("--abandon did not delete the shelved "
-                               "changelist " + shelfCl);
+    if (shelfAbandon->find("Abandoned changelist " + shelfCl) ==
+        std::string::npos) {
+        return std::unexpected("--abandon did not report abandoning the "
+                               "shelved changelist:\n" + *shelfAbandon);
     }
     auto openedShelf = p4::openedFilesTagged(it.p4);
     if (!openedShelf) return std::unexpected(openedShelf.error());
