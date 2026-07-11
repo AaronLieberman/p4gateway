@@ -936,6 +936,106 @@ std::expected<void, std::string> itPrepareShelfUpdate(ItContext& it) {
     return {};
 }
 
+// `gw prepare --abandon <CL>` throws a changelist away: reverts its opens
+// (restoring the mirror to the depot head), drops any shelf, and deletes it.
+// Covers both a plain pending CL and a shelved CL, on a throwaway branch.
+std::expected<void, std::string> itPrepareAbandon(ItContext& it) {
+    const fs::path util = fs::path(it.srcWork) / "util.cpp";
+    const fs::path mirrorUtil = fs::path(it.mirrorDir) / "util.cpp";
+
+    auto extractCl = [](const std::string& out) -> std::string {
+        const std::string marker = "Created pending changelist ";
+        auto pos = out.find(marker);
+        if (pos == std::string::npos) return {};
+        pos += marker.size();
+        auto end = pos;
+        while (end < out.size() &&
+               std::isdigit(static_cast<unsigned char>(out[end]))) {
+            ++end;
+        }
+        return out.substr(pos, end - pos);
+    };
+
+    auto onMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!onMain) return std::unexpected(onMain.error());
+    auto branch = git::run({"switch", "-c", "it-abandon"}, it.repoDir);
+    if (!branch) return std::unexpected(branch.error());
+    if (auto r = appendFile(util, "// abandon-me\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: to be abandoned", it.repoDir); !r) {
+        return std::unexpected(r.error());
+    }
+
+    // --- Abandon a plain pending changelist (with opens). ---
+    auto prepared = runGw(it, it.repoDir, {"prepare"});
+    if (!prepared) return std::unexpected(prepared.error());
+    const std::string cl = extractCl(*prepared);
+    if (cl.empty()) {
+        return std::unexpected("prepare output has no changelist number:\n" +
+                               *prepared);
+    }
+    auto opened = p4::openedFilesTagged(it.p4);
+    if (!opened) return std::unexpected(opened.error());
+    if (opened->empty()) {
+        return std::unexpected("prepare opened no files to abandon");
+    }
+    auto mirrorBefore = readFile(mirrorUtil);
+    if (!mirrorBefore) return std::unexpected(mirrorBefore.error());
+    if (mirrorBefore->find("// abandon-me") == std::string::npos) {
+        return std::unexpected("prepare did not stage the edit into the mirror");
+    }
+
+    auto abandoned = runGw(it, it.repoDir, {"prepare", "--abandon", cl});
+    if (!abandoned) return std::unexpected(abandoned.error());
+    if (abandoned->find("Abandoned changelist " + cl) == std::string::npos) {
+        return std::unexpected("--abandon did not report abandoning the "
+                               "changelist:\n" + *abandoned);
+    }
+    auto openedAfter = p4::openedFilesTagged(it.p4);
+    if (!openedAfter) return std::unexpected(openedAfter.error());
+    if (!openedAfter->empty()) {
+        return std::unexpected("--abandon left files open");
+    }
+    auto mirrorAfter = readFile(mirrorUtil);
+    if (!mirrorAfter) return std::unexpected(mirrorAfter.error());
+    if (mirrorAfter->find("// abandon-me") != std::string::npos) {
+        return std::unexpected("--abandon did not restore the mirror to the "
+                               "depot head");
+    }
+    if (p4::describeShelved(it.p4, cl)) {
+        return std::unexpected("--abandon did not delete changelist " + cl);
+    }
+
+    // --- Abandon a shelved changelist (shelf gets dropped too). ---
+    auto shelfPrep = runGw(it, it.repoDir, {"prepare", "--shelf"});
+    if (!shelfPrep) return std::unexpected(shelfPrep.error());
+    const std::string shelfCl = extractCl(*shelfPrep);
+    if (shelfCl.empty()) {
+        return std::unexpected("prepare --shelf output has no changelist "
+                               "number:\n" + *shelfPrep);
+    }
+    if (!p4::describeShelved(it.p4, shelfCl)) {
+        return std::unexpected("the shelved changelist is not describable "
+                               "before abandon");
+    }
+    auto shelfAbandon = runGw(it, it.repoDir, {"prepare", "--abandon", shelfCl});
+    if (!shelfAbandon) return std::unexpected(shelfAbandon.error());
+    if (p4::describeShelved(it.p4, shelfCl)) {
+        return std::unexpected("--abandon did not delete the shelved "
+                               "changelist " + shelfCl);
+    }
+    auto openedShelf = p4::openedFilesTagged(it.p4);
+    if (!openedShelf) return std::unexpected(openedShelf.error());
+    if (!openedShelf->empty()) {
+        return std::unexpected("--abandon of a shelf left files open");
+    }
+
+    auto back = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!back) return std::unexpected(back.error());
+    (void)git::run({"branch", "-D", "it-abandon"}, it.repoDir);
+    return {};
+}
+
 std::expected<void, std::string> itPrepare(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"prepare", "--verify"});
     if (!out) return std::unexpected(out.error());
@@ -2478,6 +2578,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("gw prepare --shelf --update replaces a shelf in "
                            "place",
                            [&] { return itPrepareShelfUpdate(it); });
+        steps.emplace_back("gw prepare --abandon reverts and deletes a CL",
+                           [&] { return itPrepareAbandon(it); });
         steps.emplace_back("teammate change absorbed with import --rebase",
                            [&] { return itTeammateChange(it); });
         steps.emplace_back("opened mirror files: import reads depot, prepare "

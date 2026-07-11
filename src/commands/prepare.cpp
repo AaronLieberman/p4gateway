@@ -87,6 +87,10 @@ constexpr const char* kPrepareUsage =
     "                        current opens first, then re-stages); keeps the CL's\n"
     "                        number and description. With --shelf, refreshes that\n"
     "                        CL's shelf in place instead\n"
+    "      --abandon <CL>    Throw away pending changelist <CL>: revert its\n"
+    "                        opens, drop any shelf, and delete it, restoring the\n"
+    "                        mirror to the depot head. Stages nothing (the\n"
+    "                        cleanup partner to --update); takes no other args\n"
     "      --shelf           Build a P4 shelf instead of a pending changelist:\n"
     "                        stage, shelve, then revert the opens so only the\n"
     "                        shelf remains and the mirror is left untouched.\n"
@@ -190,6 +194,8 @@ int cmdPrepare(const Args& args) {
     bool shelf = false;
     bool update = false;
     std::string updateCl;
+    bool abandon = false;
+    std::string abandonCl;
     std::string messageOverride;
     std::string spec;       // the positional range/commit ("" == whole stack)
     bool specSet = false;
@@ -214,6 +220,14 @@ int cmdPrepare(const Args& args) {
                          "gw prepare: --update requires a changelist number "
                          "(e.g. 'gw prepare --update 12345')\n");
             return 1;
+        } else if (args[i] == "--abandon" && i + 1 < args.size()) {
+            abandon = true;
+            abandonCl = args[++i];
+        } else if (args[i] == "--abandon") {
+            std::fprintf(stderr,
+                         "gw prepare: --abandon requires a changelist number "
+                         "(e.g. 'gw prepare --abandon 12345')\n");
+            return 1;
         } else if ((args[i] == "--message" || args[i] == "-m") &&
                    i + 1 < args.size()) {
             messageOverride = args[++i];
@@ -226,6 +240,18 @@ int cmdPrepare(const Args& args) {
             std::fprintf(stderr, "%s", kPrepareUsage);
             return 1;
         }
+    }
+
+    // --abandon is a standalone cleanup mode: it stages nothing, so it cannot
+    // combine with the options that drive staging.
+    if (abandon &&
+        (update || shelf || specSet || stack || fullVerify ||
+         !messageOverride.empty())) {
+        std::fprintf(stderr,
+                     "gw prepare: --abandon takes only a changelist number "
+                     "(optionally --dry-run) - it cannot combine with "
+                     "--update/--shelf/--verify/--message or a commit.\n");
+        return 1;
     }
 
     std::string root;
@@ -245,6 +271,40 @@ int cmdPrepare(const Args& args) {
             return 1;
         }
         resolved.push_back({rule, mirrorDir});
+    }
+
+    // --abandon: throw a pending changelist away and restore the mirror - the
+    // cleanup partner to --update. It stages nothing and needs no git baseline,
+    // so it short-circuits the whole diff/stage pipeline: revert the CL's opens
+    // (restoring the mirror to the depot head), drop any shelf on it, and remove
+    // the changelist.
+    if (abandon) {
+        if (dryRun) {
+            std::printf("[dry-run] would revert changelist %s's opens, drop any "
+                        "shelf on it, and remove the changelist - leaving the "
+                        "mirror at the depot head.\n",
+                        abandonCl.c_str());
+            return 0;
+        }
+        auto reverted = p4::revertChangelist(*config, abandonCl);
+        if (!reverted) {
+            std::fprintf(stderr, "gw prepare: %s\n", reverted.error().c_str());
+            return 1;
+        }
+        // Drop a shelf if the CL has one. Best-effort: 'p4 shelve -d' errors
+        // harmlessly on a CL that has no shelf, and a genuine failure surfaces
+        // when the change delete below refuses a still-shelved changelist.
+        (void)p4::deleteShelve(*config, abandonCl);
+        auto deleted = p4::deleteChangelist(*config, abandonCl);
+        if (!deleted) {
+            std::fprintf(stderr, "gw prepare: %s\n", deleted.error().c_str());
+            return 1;
+        }
+        std::printf("Abandoned changelist %s: reverted its opens, dropped any "
+                    "shelf, and removed the changelist. The mirror is back at "
+                    "the depot head.\n",
+                    abandonCl.c_str());
+        return 0;
     }
 
     // Everything ships relative to the pristine depot baseline - the hidden

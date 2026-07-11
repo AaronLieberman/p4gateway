@@ -192,12 +192,14 @@ against the remaining milestones.
        line), deleted-manifest fallback + rewrite, corrupted-binding
        fallback, and the fast path returning. `gw doctor` reports the
        manifest's binding state.
-7. [ ] Pending-CL lifecycle bundle: `gw prepare --abandon <CL>` (`p4 revert
-       -c` + scoped `p4 sync -f` to restore the mirror — the natural partner
-       to `--update`; today abandoning is hand-revert + sync) plus the
-       friendly "depot changed under your pending CL" error that suggests
-       import → rebase → `prepare --update`. Small, same code neighborhood,
-       completes the CL story `--update` started. (Moved from M3.)
+7. [~] Pending-CL lifecycle bundle. **Done:** `gw prepare --abandon <CL>` —
+       reverts the CL's opens (the existing scoped `revertChangelist`, `p4
+       revert -w`, which restores the mirror to the depot head), drops any
+       shelf, and deletes the changelist; a standalone cleanup mode that stages
+       nothing. Covered by itPrepareAbandon (pending CL + shelved CL).
+       **Remaining:** the friendly "depot changed under your pending CL" error
+       that suggests import → rebase → `prepare --update` (fuzzier — needs a way
+       to detect a CL prepared against a now-stale depot baseline).
 8. [ ] Cross-check `p4 opened -c <CL>` after prepare against the git diff
        file list — cheap belt-and-suspenders on top of the reconcile
        preview, plus an integtest assertion. (Moved from M2.)
