@@ -963,7 +963,11 @@ int cmdImport(const Args& args) {
             // at its restacked tip afterward; a real branch just rides along on
             // its own.
             const std::string carrier = "gw-import-restack";
-            const bool useCarrier = !worktreeMode && originalBranch.empty() &&
+            // Mode-independent: both modes reach here with HEAD detached at
+            // originalHead (checkout mode restored it after staging; worktree
+            // mode never moved it), and branchless sync repositions HEAD the
+            // same way regardless of where the snapshot was staged.
+            const bool useCarrier = originalBranch.empty() &&
                                     !originalHead.empty() && !*headBehind;
             if (useCarrier) {
                 // `-c` (not `-C`) refuses to clobber an existing branch, so a
@@ -1014,10 +1018,10 @@ int cmdImport(const Args& args) {
                     if (!det) return fail(det.error());
                     mergedAway = true;
                 }
-            } else if (!worktreeMode && !originalBranch.empty()) {
+            } else if (!originalBranch.empty()) {
                 auto back = git::switchBranch(originalBranch, root);
                 if (!back) return fail(back.error());
-            } else if (!worktreeMode) {
+            } else {
                 // Detached with no divergent work (at/behind the baseline):
                 // fast-forward HEAD to the new baseline, the way being on the
                 // depot ref and pulling would.
