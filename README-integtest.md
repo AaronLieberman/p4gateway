@@ -188,12 +188,17 @@ and — on success — cleans up after itself by obliterating the depot files an
 wiping the local tree. Because it resets at the start, it is safe to run
 repeatedly; there is no separate `init` step anymore.
 
-The final step exercises gw's [git-branchless](https://github.com/arxanas/git-branchless)
+A late step exercises gw's [git-branchless](https://github.com/arxanas/git-branchless)
 behavior (branchless-mode `import --rebase`, detached-HEAD preservation,
 uninstall). It is **skipped with a note** when `git branchless` isn't on your
 PATH, so you don't need branchless installed to run the suite — install it
 (`cargo install --locked git-branchless`, or a release binary) only if you want
 that coverage locally. CI installs a pinned release, so it always runs there.
+
+The last workflow step flips `import_mode` to `checkout` and back: most of
+the suite runs in the default worktree mode, so this is what keeps the
+checkout-mode staging path (and the worktree's self-heal after a mode flip)
+covered.
 
 `integtest run` **deletes everything under the current directory** except
 `p4.ini`/`.p4config`, so never keep anything of value there. If it finds a file

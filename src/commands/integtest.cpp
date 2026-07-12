@@ -2398,6 +2398,163 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     return {};
 }
 
+// Exercises checkout-mode staging end-to-end now that worktree is the
+// default: flips import_mode to checkout on a repo that has been importing
+// in worktree mode (a leftover snapshot worktree sits on disk throughout),
+// runs a clean fast-forward import and a --rebase one there, then flips back
+// to the worktree default and asserts the now-stale snapshot worktree
+// self-heals. Starts and ends on 'main', clean.
+std::expected<void, std::string> itCheckoutMode(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path repoMain = fs::path(it.srcWork) / "main.cpp";
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+
+    // Submit a teammate-style depot edit appending `tag`, then sync.
+    auto teammate = [&](const std::string& tag)
+        -> std::expected<void, std::string> {
+        auto cl = p4::createChangelist(it.p4, "gw integtest: checkout-mode");
+        if (!cl) return std::unexpected(cl.error());
+        auto opened = trace(it, "p4 edit " + mirrorMain,
+                            p4::editFiles(it.p4, *cl, {mirrorMain}));
+        if (!opened) return std::unexpected(opened.error());
+        if (auto r = appendFile(mirrorMain, tag); !r) return r;
+        auto submitted = trace(it, "p4 submit -c " + *cl,
+                               p4::submit(it.p4, *cl));
+        if (!submitted) return std::unexpected(submitted.error());
+        auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                            p4::sync(it.p4, it.p4DepotPath));
+        if (!synced) return std::unexpected(synced.error());
+        return {};
+    };
+
+    // The earlier worktree-mode steps left a snapshot worktree behind; the
+    // point of this step is that checkout mode works alongside it and the
+    // flip back self-heals it, so make sure it is actually there.
+    const fs::path wtDir = fs::path(it.repoDir) / ".git" / "p4gw" / "worktree";
+    if (!fs::exists(wtDir)) {
+        return std::unexpected("expected a snapshot worktree left over from "
+                               "the worktree-mode steps");
+    }
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto flipped = appendFile(cfg, "\nimport_mode = checkout\n");
+    if (!flipped) return flipped;
+
+    // (a) Clean-tree fast-forward on 'main': the full checkout staging path
+    // (detach onto the old baseline, overlay, commit, switch back) must run
+    // and leave the user exactly where they were, brought up to date.
+    if (auto r = teammate("// checkout-ff change\n"); !r) return r;
+    auto ffOut = runGw(it, it.repoDir, {"import"});
+    if (!ffOut) return std::unexpected(ffOut.error());
+    if (ffOut->find("You are on 'main'") == std::string::npos) {
+        return std::unexpected("checkout-mode ff import did not end on "
+                               "'main':\n" + *ffOut);
+    }
+    auto branch = git::currentBranch(it.repoDir);
+    if (!branch) return std::unexpected(branch.error());
+    if (*branch != "main") {
+        return std::unexpected("checkout-mode import left HEAD on '" +
+                               *branch + "', not back on 'main'");
+    }
+    auto baselineTip = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!baselineTip) return std::unexpected(baselineTip.error());
+    auto mainTip = git::revParse("refs/heads/main", it.repoDir);
+    if (!mainTip) return std::unexpected(mainTip.error());
+    if (*mainTip != *baselineTip) {
+        return std::unexpected("checkout-mode import did not fast-forward "
+                               "'main' to the depot baseline");
+    }
+    auto ffContent = readFile(repoMain);
+    if (!ffContent) return std::unexpected(ffContent.error());
+    if (ffContent->find("// checkout-ff change") == std::string::npos) {
+        return std::unexpected("the depot change did not reach the checkout "
+                               "after the checkout-mode import");
+    }
+    auto dirty = git::isDirty(it.repoDir);
+    if (!dirty) return std::unexpected(dirty.error());
+    if (*dirty) {
+        return std::unexpected("checkout-mode import left staging residue in "
+                               "the working tree");
+    }
+    // The stale snapshot worktree must not trip doctor in checkout mode.
+    auto doc = runGw(it, it.repoDir, {"doctor"});
+    if (!doc) return std::unexpected(doc.error());
+
+    // (b) --rebase with a local commit on a feature branch.
+    auto sw = git::run({"switch", "-c", "it-checkout"}, it.repoDir);
+    if (!sw) return std::unexpected(sw.error());
+    if (auto r = appendFile(fs::path(it.srcWork) / "util.cpp",
+                            "// checkout-mode local edit\n"); !r) {
+        return r;
+    }
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: checkout-mode local change",
+                             it.repoDir); !r) {
+        return std::unexpected(r.error());
+    }
+    if (auto r = teammate("// checkout-rebase change\n"); !r) return r;
+    auto rebaseOut = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!rebaseOut) return std::unexpected(rebaseOut.error());
+    if (rebaseOut->find("Rebased 'it-checkout' onto the new depot state") ==
+        std::string::npos) {
+        return std::unexpected("checkout-mode import --rebase did not report "
+                               "the rebase:\n" + *rebaseOut);
+    }
+    branch = git::currentBranch(it.repoDir);
+    if (!branch) return std::unexpected(branch.error());
+    if (*branch != "it-checkout") {
+        return std::unexpected("checkout-mode --rebase left HEAD on '" +
+                               *branch + "', not back on 'it-checkout'");
+    }
+    auto rebased = readFile(repoMain);
+    if (!rebased) return std::unexpected(rebased.error());
+    if (rebased->find("// checkout-rebase change") == std::string::npos) {
+        return std::unexpected("the depot change is missing after the "
+                               "checkout-mode rebase");
+    }
+    auto ahead = git::run({"rev-list", "--count", "main..HEAD"}, it.repoDir);
+    if (!ahead) return std::unexpected(ahead.error());
+    if (*ahead != "1") {
+        return std::unexpected("expected exactly 1 commit ahead of main after "
+                               "the checkout-mode rebase, got " + *ahead);
+    }
+    auto back = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!back) return std::unexpected(back.error());
+    (void)git::run({"branch", "-D", "it-checkout"}, it.repoDir);
+
+    // (c) Flip back to the worktree default: the snapshot worktree is now
+    // stale (the baseline advanced twice while checkout mode ran), so the
+    // next import must self-heal it rather than trust its stamps.
+    if (auto r = writeFile(cfg, *savedCfg); !r) return r;
+    if (auto r = teammate("// flip-back change\n"); !r) return r;
+    auto healOut = runGw(it, it.repoDir, {"import"});
+    if (!healOut) return std::unexpected(healOut.error());
+    auto healed = readFile(repoMain);
+    if (!healed) return std::unexpected(healed.error());
+    if (healed->find("// flip-back change") == std::string::npos) {
+        return std::unexpected("the depot change did not arrive after "
+                               "flipping back to worktree mode");
+    }
+    // The worktree staged this import: its HEAD tracks the new baseline.
+    auto wtHead = git::revParse("HEAD", wtDir.string());
+    if (!wtHead) return std::unexpected(wtHead.error());
+    baselineTip = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!baselineTip) return std::unexpected(baselineTip.error());
+    if (*wtHead != *baselineTip) {
+        return std::unexpected("the snapshot worktree did not self-heal onto "
+                               "the new baseline after the mode flip");
+    }
+    auto verify = runGw(it, it.repoDir, {"doctor", "--verify"});
+    if (!verify) return std::unexpected(verify.error());
+    if (verify->find("snapshot worktree healthy") == std::string::npos) {
+        return std::unexpected("doctor does not report the snapshot worktree "
+                               "healthy after the mode flip:\n" + *verify);
+    }
+    return {};
+}
+
 // Leaves both sides clean: reverts opens, sweeps any leftover changelists,
 // obliterates the explicitly-named depot files, and wipes the local tree. Runs
 // as the last step of a successful run (unless --leave) and as the whole job
@@ -2625,6 +2782,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("git-branchless: sync restack, detached preserved, "
                            "uninstall",
                            [&] { return itBranchless(it); });
+        steps.emplace_back("checkout-mode import: ff, rebase, and worktree "
+                           "flip-back self-heal",
+                           [&] { return itCheckoutMode(it); });
         if (!it.leave) {
             steps.emplace_back("clean up the depot and local repo",
                                [&] { return itCleanup(it); });

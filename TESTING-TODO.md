@@ -41,27 +41,25 @@ the default mode). What still runs **checkout** staging:
 **Gap: checkout mode's steady-state import path (detach onto the old
 baseline, overlay, commit, switch back, restore on failure) is no longer
 exercised anywhere.** Before the flip it was the whole suite; now it's
-nothing. Items 1–2 below close this.
+nothing. The two high-priority items below closed this (done 2026-07).
+
+## Done
+
+1. **Checkout-mode round trip** — `itCheckoutMode` (registered last, after
+   the branchless step): flips `import_mode` to checkout, runs a clean-tree
+   fast-forward import on `main` (asserts the branch ff'd to the baseline,
+   the change reached the checkout, HEAD ended back on the branch, and no
+   staging residue was left) and an `import --rebase` with a local commit on
+   a feature branch (asserts the rebase message, exactly one commit ahead,
+   HEAD back on the branch).
+2. **Mode-flip hygiene** — same step: the stale snapshot worktree is
+   asserted present throughout checkout mode, `gw doctor` passes alongside
+   it, and after flipping back to the worktree default (with the baseline
+   now two imports ahead of the worktree's pinned HEAD) the next import
+   self-heals — the worktree's HEAD ends at the new baseline and
+   `doctor --verify` reports it healthy.
 
 ## Todo list
-
-### High
-
-1. **Checkout-mode round trip.** New step late in the suite (after the
-   worktree steps): write `import_mode = checkout`, submit a teammate-style
-   depot change, sync, `gw import` on a clean tree — assert the branch
-   fast-forwards, the change reaches the checkout, and HEAD ends back on the
-   branch (the staging detach + switch-back actually ran). Then a local
-   commit + another depot change + `gw import --rebase` in checkout mode.
-   Restore the config after. This is the "make sure checkout still works"
-   coverage and also proves **mode flipping on a live repo**: worktree →
-   checkout (stale snapshot worktree left behind must not break anything)
-   and back.
-2. **Mode-flip hygiene.** As part of (or right after) item 1: with the stale
-   snapshot worktree still on disk in checkout mode, assert `gw doctor` is
-   still clean/informative and a subsequent worktree-mode import self-heals
-   (reset or recreate + full copy) rather than trusting stale stamps. The
-   self-heal code exists; nothing exercises the flip-back-and-forth sequence.
 
 ### Medium
 
