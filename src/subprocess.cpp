@@ -1,6 +1,7 @@
 #include "subprocess.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -432,19 +433,33 @@ std::string uniqueTempFile(const std::string& prefix,
 std::expected<RunResult, std::string> run(const std::string& exe,
                                           const std::vector<std::string>& args,
                                           const RunOptions& options) {
-    if (g_verbose) {
-        // Echo the command quoted so it can be copy-pasted to rerun by hand.
-        std::string display = quoteArg(exe);
-        for (const auto& arg : args) {
-            display += ' ';
-            display += quoteArg(arg);
-        }
-        if (!options.cwd.empty()) {
-            display += "   (in " + options.cwd + ")";
-        }
-        std::fprintf(stderr, "+ %s\n", display.c_str());
+    if (!g_verbose) {
+        return spawnChild(exe, args, options);
     }
-    return spawnChild(exe, args, options);
+    // Echo the command quoted so it can be copy-pasted to rerun by hand, and
+    // follow it with the elapsed time once it finishes - the pair brackets
+    // each child, so a slow command is visible as the gap before its arrow.
+    std::string display = quoteArg(exe);
+    for (const auto& arg : args) {
+        display += ' ';
+        display += quoteArg(arg);
+    }
+    if (!options.cwd.empty()) {
+        display += "   (in " + options.cwd + ")";
+    }
+    std::fprintf(stderr, "+ %s\n", display.c_str());
+    const auto start = std::chrono::steady_clock::now();
+    auto result = spawnChild(exe, args, options);
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+    if (result) {
+        std::fprintf(stderr, "+ -> exit %d in %.2fs\n", result->exitCode,
+                     seconds);
+    } else {
+        std::fprintf(stderr, "+ -> failed to start after %.2fs\n", seconds);
+    }
+    return result;
 }
 
 #ifdef _WIN32
