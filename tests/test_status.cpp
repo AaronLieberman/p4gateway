@@ -17,25 +17,12 @@ StatusInfo featureBranch() {
     info.branch = "fix-anim-blend";
     info.baselineBranch = "main";
     info.baselineExists = true;
-    info.lastImportedCl = "48213";
+    info.lastImportRelativeDate = "2 hours ago";
     info.p4Reachable = true;
     return info;
 }
 
 }  // namespace
-
-TEST(parse_imported_cl_extracts_number) {
-    CHECK(p4gw::parseImportedCl("Import depot state at CL 48213") == "48213");
-}
-
-TEST(parse_imported_cl_handles_no_cl) {
-    CHECK(p4gw::parseImportedCl("Import depot state").empty());
-    CHECK(p4gw::parseImportedCl("some unrelated commit").empty());
-}
-
-TEST(parse_imported_cl_stops_at_non_digit) {
-    CHECK(p4gw::parseImportedCl("Import depot state at CL 99 (note)") == "99");
-}
 
 TEST(next_step_fresh_repo_points_at_import) {
     StatusInfo info;
@@ -88,6 +75,19 @@ TEST(next_step_nothing_to_ship_suggests_import) {
     CHECK(contains(p4gw::nextStep(info), "gw import --rebase"));
 }
 
+TEST(next_step_detached_is_not_nagged_about_head) {
+    // A detached HEAD is a normal working state here - status should advise on
+    // ahead/behind/dirty, not tell the user to switch to a branch.
+    StatusInfo info = featureBranch();
+    info.branch = "HEAD";
+    info.detached = true;
+    info.ahead = 2;
+    const std::string step = p4gw::nextStep(info);
+    CHECK(!contains(step, "detached"));
+    CHECK(!contains(step, "git switch <branch>"));
+    CHECK(contains(step, "gw prepare"));
+}
+
 TEST(render_shows_core_rows) {
     StatusInfo info = featureBranch();
     info.ahead = 3;
@@ -97,10 +97,17 @@ TEST(render_shows_core_rows) {
     CHECK(contains(out, "main - 3 ahead"));
     CHECK(contains(out, "Working tree"));
     CHECK(contains(out, "clean"));
-    CHECK(contains(out, "CL 48213"));
+    CHECK(contains(out, "Last import"));
+    CHECK(contains(out, "2 hours ago"));
     CHECK(contains(out, "Pending CL"));
     CHECK(contains(out, "none"));
     CHECK(contains(out, "Next:"));
+}
+
+TEST(render_last_import_unknown_when_date_missing) {
+    StatusInfo info = featureBranch();
+    info.lastImportRelativeDate.clear();
+    CHECK(contains(p4gw::renderStatus(info), "imported (time unknown)"));
 }
 
 TEST(render_reports_p4_unreachable) {

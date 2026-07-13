@@ -20,20 +20,15 @@ struct StatusInfo {
     bool dirty = false;             // working tree has uncommitted changes
     int changeCount = 0;            // number of changed/untracked paths
 
-    // Changelist of the last `gw import`, parsed from the baseline commit;
-    // empty when unknown or never imported.
-    std::string lastImportedCl;
+    // When the last `gw import` ran, as git's relative date of the baseline
+    // commit (e.g. "2 hours ago"); empty when unknown or never imported.
+    std::string lastImportRelativeDate;
 
     // ---- P4 side (may be unavailable) ----
     bool p4Reachable = false;       // did `p4 opened` succeed?
     bool hasPending = false;        // gw-opened files exist under depot_path
     int pendingCount = 0;           // number of opened files
 };
-
-// Extracts the changelist number from a baseline commit subject written by
-// `gw import` ("Import depot state at CL 48213"). Returns "" if the subject
-// carries no CL number.
-std::string parseImportedCl(const std::string& baselineSubject);
 
 // The single most relevant next action for the user, given their state.
 // Intentionally one suggestion, not a menu - the point is to orient a new

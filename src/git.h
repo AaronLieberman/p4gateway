@@ -150,6 +150,11 @@ std::expected<std::vector<std::string>, std::string> statusLines(
 std::expected<std::string, std::string> commitSubject(const std::string& ref,
                                                       const std::string& cwd = {});
 
+// Committer date of the commit at `ref` as a human relative string
+// (git's %cr, e.g. "2 hours ago"). Used by status for the last-import line.
+std::expected<std::string, std::string> commitRelativeDate(
+    const std::string& ref, const std::string& cwd = {});
+
 // All tracked files, repo-relative with forward slashes.
 std::expected<std::vector<std::string>, std::string> lsFiles(
     const std::string& cwd = {});

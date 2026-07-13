@@ -220,6 +220,11 @@ std::expected<std::string, std::string> commitSubject(const std::string& ref,
     return run({"log", "-1", "--format=%s", ref}, cwd);
 }
 
+std::expected<std::string, std::string> commitRelativeDate(
+    const std::string& ref, const std::string& cwd) {
+    return run({"log", "-1", "--format=%cr", ref}, cwd);
+}
+
 std::expected<std::vector<std::string>, std::string> lsFiles(
     const std::string& cwd) {
     auto output = run({"ls-files"}, cwd);

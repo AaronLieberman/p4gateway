@@ -27,8 +27,8 @@ constexpr const char* kStatusUsage =
     "usage: gw status\n"
     "\n"
     "Show where Git and P4 stand at a glance: the current branch and how it\n"
-    "relates to the depot baseline, working-tree cleanliness, the last imported\n"
-    "changelist, any pending changelist, and the single most useful next step.\n"
+    "relates to the depot baseline, working-tree cleanliness, when the last\n"
+    "import ran, any pending changelist, and the single most useful next step.\n"
     "The Git side works offline; the P4 line degrades to a note when P4 can't\n"
     "be reached, so status never hard-fails on a down connection.\n"
     "\n"
@@ -40,9 +40,9 @@ constexpr const char* kStatusUsage =
 
 // A one-screen read on where Git and P4 stand, written for someone still
 // learning the mirror workflow: current branch, how it relates to the
-// baseline, working-tree cleanliness, the last imported changelist, and any
+// baseline, working-tree cleanliness, when the last import ran, and any
 // pending changelist - capped off with the single most useful next step.
-// The Git side and last-import CL work offline; the pending-CL line degrades
+// The Git side and last-import time work offline; the pending-CL line degrades
 // to a note when P4 can't be reached, so `gw status` never hard-fails on a
 // down connection.
 int cmdStatus(const Args& args) {
@@ -108,8 +108,8 @@ int cmdStatus(const Args& args) {
     }
 
     if (info.baselineExists) {
-        if (auto subject = git::commitSubject(depotRef, root)) {
-            info.lastImportedCl = parseImportedCl(*subject);
+        if (auto when = git::commitRelativeDate(depotRef, root)) {
+            info.lastImportRelativeDate = *when;
         }
     }
 

@@ -41,28 +41,10 @@ std::string baselineSummary(const StatusInfo& info) {
 
 }  // namespace
 
-std::string parseImportedCl(const std::string& baselineSubject) {
-    constexpr const char* kMarker = " at CL ";
-    const auto pos = baselineSubject.find(kMarker);
-    if (pos == std::string::npos) return {};
-    std::string cl;
-    for (size_t i = pos + std::string(kMarker).size();
-         i < baselineSubject.size(); ++i) {
-        const char c = baselineSubject[i];
-        if (c < '0' || c > '9') break;
-        cl += c;
-    }
-    return cl;
-}
-
 std::string nextStep(const StatusInfo& info) {
     if (!info.hasCommits) {
         return "Sync from Perforce, then run  gw import  to create the " +
                info.baselineBranch + " baseline.";
-    }
-    if (info.detached) {
-        return "You're on a detached HEAD. Switch to a branch:  "
-               "git switch <branch>";
     }
     if (info.onBaseline) {
         return "You're on the baseline. Start work with:  "
@@ -111,10 +93,10 @@ std::string renderStatus(const StatusInfo& info) {
     std::string lastImport;
     if (!info.baselineExists) {
         lastImport = "none yet";
-    } else if (!info.lastImportedCl.empty()) {
-        lastImport = "CL " + info.lastImportedCl;
+    } else if (!info.lastImportRelativeDate.empty()) {
+        lastImport = info.lastImportRelativeDate;
     } else {
-        lastImport = "imported (CL unknown)";
+        lastImport = "imported (time unknown)";
     }
     appendRow(out, "Last import", lastImport);
 

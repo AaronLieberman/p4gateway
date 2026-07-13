@@ -66,8 +66,8 @@ nothing. The two high-priority items below closed this (done 2026-07).
 3. **`gw status` step.** No integtest step runs `gw status` at all — the
    PLAN M3 note ("pending-CL count parsing against live `p4 opened`") is
    still open. Assert: on a clean baseline (branch/ahead-behind/no-dirty,
-   last-import CL), with a dirty file, with local commits, and with a gw
-   pending CL open (count + next-step suggestion).
+   last-import time shown), with a dirty file, with local commits, and with
+   a gw pending CL open (count + next-step suggestion).
 4. **Shelf import: binary + conflict paths.** `itShelfImport` covers only
    the happy path (text edit + add against head, clean merge). Add: a binary
    file in the shelf (taken wholesale), and a shelf based on an older depot
