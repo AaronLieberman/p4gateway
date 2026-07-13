@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "statusview.h"
 #include "test_framework.h"
 

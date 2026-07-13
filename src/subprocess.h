@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The subprocess runner - the only place gw spawns child processes.

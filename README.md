@@ -292,3 +292,7 @@ A subtree need not sync as one solid block. Two patterns are supported:
   ordered and resolved later-wins, exactly like the p4 view they parallel, the
   deeper include overrides the exclude for just that subtree; gw tracks it,
   ships it, and the surrounding `src/lib/` stays carved out.
+
+## License
+
+[MIT](LICENSE) © 2026 Aaron Lieberman

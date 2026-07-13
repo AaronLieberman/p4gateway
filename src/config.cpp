@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "config.h"
 
 #include <algorithm>

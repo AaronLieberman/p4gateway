@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Minimal zero-dependency test harness. Define tests with TEST(name) and

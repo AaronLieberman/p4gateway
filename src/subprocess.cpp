@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "subprocess.h"
 
 #include <atomic>
