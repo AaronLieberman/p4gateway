@@ -23,7 +23,7 @@ file, so one added line is enough):
 //depot/yourproject/src/...   //client/src/.p4gw/...
 ```
 
-Every sync — `p4 sync`, P4V, the team's own sync tool, at any time, in any
+Every sync — `p4 sync`, P4V, a team sync tool, at any time, in any
 state — lands in the mirror. The directory at the canonical `src/` path is
 *purely* a Git repo that P4 never touches, while builds still see files in
 the right place. gw moves state across the boundary explicitly:
@@ -209,7 +209,7 @@ cover the pure logic without p4.
       user isn't on that branch). First import ever falls back to
       checkout-mode staging (a worktree needs a commit to detach at).
       `gw doctor` reports worktree health and `--verify` compares against
-      the worktree. After a week's trial on the real work repo (2026-07),
+      the worktree. After trialing this on a large shared depot,
       worktree is the default import mode; `import_mode = checkout` remains
       as the opt-out. The shared snapshot-build code (`buildSnapshot`) is
       exercised by both modes.
@@ -241,7 +241,7 @@ cover the pure logic without p4.
       `p4 print` are verified byte-faithful by the integtest print-fidelity
       step (text CRLF + binary, real Windows workspace, 2026-07). Untested
       corners: a client LineEnd that differs from the platform convention
-      (e.g. 'unix' on Windows — not this shop's configuration) and `+k`
+      (e.g. 'unix' on Windows — an uncommon configuration) and `+k`
       keyword files, which the fixture doesn't carry. Pure logic
       (render/parse/diff, path flattening, `parseTaggedHave`) is unit-tested;
       `gw integtest run` covers the fast path (exact changed/deleted counts,
@@ -326,7 +326,7 @@ TESTING-TODO.md.
 - **The remap line disappearing from the client spec** (hand edits, spec
   regeneration) would make the next sync write into the Git repo again.
   `gw doctor`'s view check is the mitigation; run it when anything smells
-  off. The team sync tool is known not to rewrite the spec.
+  off. Well-behaved sync tooling does not rewrite the client spec.
 - **Line endings**: the mirror is written with the client `LineEnd` and
   committed by git on import, then written back from blobs on prepare. `gw
   init` commits a `.gitattributes` (`* -text`) so git stores every blob
