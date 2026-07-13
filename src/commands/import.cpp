@@ -355,13 +355,15 @@ std::expected<std::string, std::string> buildSnapshot(
     // ref to it. newDepot stays at oldDepot when the mirror already matched.
     std::string newDepot = oldDepot;
     if (!*clean) {
-        // Best-effort label: the company tool syncs different paths to
-        // different CLs, so this is informational, not a guarantee.
-        std::string message = "Import depot state";
-        auto cl = p4::latestSubmittedCl(config);
-        if (cl && !cl->empty()) {
-            message += " at CL " + *cl;
-        }
+        // Summarize what this import actually did - locally derived, so no p4
+        // query. A CL number was tried once but dropped: a `p4 changes #have`
+        // intersect costs seconds on a big depot, and after prepare -> submit
+        // -> import (no resync) it reports your own submitted CL, not the
+        // synced baseline - misleading exactly when you'd trust it. The commit
+        // date carries the "when"; status renders that.
+        std::string message = "Import depot state (" +
+                              std::to_string(stats.copied) + " file(s) updated, " +
+                              std::to_string(stats.deleted) + " deleted)";
         auto committed = git::commit(message, stagingRoot);
         if (!committed) return std::unexpected(committed.error());
         auto tip = git::revParse("HEAD", stagingRoot);

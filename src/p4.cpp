@@ -514,27 +514,6 @@ std::expected<std::string, std::string> reconcilePreviewFiles(
     return combined;
 }
 
-std::expected<std::string, std::string> latestSubmittedCl(const Config& config) {
-    std::vector<std::string> args{"changes", "-m1", "-s", "submitted"};
-    for (const auto* rule : includeRules(config.rules)) {
-        args.push_back(rule->depotPath + "#have");
-    }
-    auto result = run(config, args);
-    if (!result) {
-        return std::unexpected(result.error());
-    }
-    // Expected: "Change 481467 on 2026/06/10 by user@client '...'"
-    if (!result->starts_with("Change ")) {
-        return std::string{};
-    }
-    const auto numberStart = 7;
-    auto numberEnd = result->find(' ', numberStart);
-    if (numberEnd == std::string::npos) {
-        return std::string{};
-    }
-    return result->substr(numberStart, numberEnd - numberStart);
-}
-
 std::expected<std::string, std::string> openedFiles(const Config& config) {
     // Delegate to the tagged query so excluded-subtree opens are filtered out
     // the same way prepare/import see them - otherwise status would over-count a

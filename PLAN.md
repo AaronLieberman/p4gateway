@@ -77,7 +77,8 @@ worst external failure (the remap line vanishing from the client spec) is a
       connection — then git init if needed (`--force-git-init` starts the
       repo over) + starter `.gitignore`; never edits the client spec
 - [x] `gw import`: build the depot snapshot from the mirror, commit
-      (best-effort CL label), advance the hidden ref `refs/p4gw/main`
+      (message summarizes the change: "Import depot state (N updated, M
+      deleted)"), advance the hidden ref `refs/p4gw/main`
       (orphan baseline on the very first import; legacy repos seed the ref
       from the baseline branch's last import commit), then fast-forward /
       `--rebase` the current branch and the convenience branch
@@ -136,11 +137,12 @@ cover the pure logic without p4.
 ### M3 — `gw status` + quality of life ✅
 
 - [x] `status`: branch, ahead/behind-of-baseline counts, dirty-file count,
-      last imported CL (parsed from the baseline commit), pending CLs created
-      by gw, and a single "next step" suggestion. Read-only; the Git side and
-      last-import CL work offline, the pending-CL line degrades to a note when
-      P4 is unreachable. Pure decision/format logic in `statusview` is unit
-      tested. Not yet exercised by `gw integtest run` — see TESTING-TODO.md.
+      when the last import ran (the baseline commit's relative date), pending
+      CLs created by gw, and a single "next step" suggestion. Read-only; the
+      Git side and last-import time work offline, the pending-CL line degrades
+      to a note when P4 is unreachable. Pure decision/format logic in
+      `statusview` is unit tested. Not yet exercised by `gw integtest run` —
+      see TESTING-TODO.md.
 - [x] `gw shelf import <CL>`: recreate a shelved changelist as a branch off
       `main`, replaying the shelf's delta with a git 3-way merge (base =
       `p4 print //depot/f#rev`, theirs = `p4 print //depot/f@=CL`, ours =

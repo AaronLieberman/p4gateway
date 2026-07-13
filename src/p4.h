@@ -152,10 +152,6 @@ std::expected<std::string, std::string> reconcilePreviewFiles(
 // mismatch. Pure; unit-tested.
 bool reconcileReportsClean(const std::string& output);
 
-// Highest submitted changelist among the synced revisions of the subtree
-// (`p4 changes -m1 -s submitted <depot_path>#have`); empty if none.
-std::expected<std::string, std::string> latestSubmittedCl(const Config& config);
-
 // `p4 opened` scoped to the configured depot path; empty if nothing is open.
 std::expected<std::string, std::string> openedFiles(const Config& config);
 
