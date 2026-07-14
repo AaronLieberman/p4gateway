@@ -41,8 +41,9 @@ offline; `gw init` verifies the client view against it via p4 (hard failure
 on a wrong mapping) and creates the Git repo.
 **There is no history import and no bidirectional bridge** — P4 only ever
 sees filesystem state, which is the whole trick. Read README.md for the
-user-facing workflow and PLAN.md for the implementation roadmap before
-making significant changes.
+pitch, INSTRUCTIONS.md for the user-facing workflow and command/config
+reference, SETUP.md for first-time setup, and PLAN.md for the implementation
+roadmap before making significant changes.
 
 ## Build and test
 
