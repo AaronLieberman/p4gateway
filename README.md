@@ -5,10 +5,11 @@
 `gw` is a small Windows command-line tool for developers stuck on a huge
 Perforce depot who would rather spend their day in Git.
 
-One line added to your P4 client view remaps the subtree you work on (say
-`src/`) into a *mirror* directory off to the side. Your real `src/` becomes a
-normal Git repo that Perforce never touches, and `gw` moves state across that
-boundary:
+Your P4 client view remaps your source code (say `src/`) into a *mirror*
+directory off to the side. Your real `src/` becomes a normal Git repo that
+Perforce never touches, with `gw` moving state across that boundary. Your
+content stays in place, so all the rest of your tooling continues to work
+just as before.
 
 ```
       you work here               gw's staging area              the team
@@ -22,14 +23,12 @@ boundary:
 
 Two commands do the work:
 
-- **`gw import`** absorbs a sync: it commits the depot's current state to a
-  `main` baseline branch and rebases your work on top. Think
-  `git pull --rebase`, with the depot as the remote.
-- **`gw prepare`** ships a branch: it writes the branch's files into the
-  mirror, opens them with the right `p4 edit/add/delete/move` (Git knows
-  exactly what changed), and builds a pending changelist whose description
-  comes from your commit messages. You review and submit it from P4V, same
-  as always.
+- **`gw import`** brings your p4 sync into the Git repo and rebases your
+  work on top. It's just like `git pull --rebase`, with the p4 depot as the
+  remote.
+- **`gw prepare`** goes the other way: it turns your branch into a pending
+  changelist — Git knows exactly what changed, and your commit messages
+  become the description. You review and submit it from P4V, same as always.
 
 Everything in between is plain Git — branch, commit, rebase, bisect — and
 none of it is visible to Perforce. There's no history import and no
