@@ -65,7 +65,10 @@ environment doctor — see [INSTRUCTIONS.md](INSTRUCTIONS.md).
 branch juggling with a *smartlog* — one view of all your in-flight work as
 stacks of commits:
 
-<img src="https://raw.githubusercontent.com/arxanas/git-branchless/master/media/git-sl.png" alt="git-branchless smartlog showing stacked commits" width="600">
+<img src="docs/media/git-branchless-smartlog.png" alt="git-branchless smartlog showing stacked commits" width="600">
+
+<sub>Smartlog screenshot from the
+[git-branchless](https://github.com/arxanas/git-branchless) project.</sub>
 
 That's a natural fit here, where every stack is really pending work on top
 of the depot baseline. `gw` detects branchless automatically, and
