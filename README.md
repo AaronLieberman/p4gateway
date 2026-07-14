@@ -40,17 +40,38 @@ of the multi-terabyte depot is never touched.
 
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
+
 gw import --rebase               # absorb it: commit to main, rebase your branch
+
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
+
 gw prepare                       # ship it: builds the pending CL
+
 <review and submit in P4V>
-gw import                        # absorb your own submit into main
+
+gw import                        # absorb your own submit into main, plus
+                                 # anything else you synced
 ```
 
 That's the whole loop. When you need more — handing work off as a shelf,
 refreshing a pending CL after review feedback, a status screen, an
 environment doctor — see [INSTRUCTIONS.md](INSTRUCTIONS.md).
+
+## Better with git-branchless
+
+`gw` pairs really well with
+[git-branchless](https://github.com/arxanas/git-branchless), which replaces
+branch juggling with a *smartlog* — one view of all your in-flight work as
+stacks of commits:
+
+<img src="https://raw.githubusercontent.com/arxanas/git-branchless/master/media/git-sl.png" alt="git-branchless smartlog showing stacked commits" width="600">
+
+That's a natural fit here, where every stack is really pending work on top
+of the depot baseline. `gw` detects branchless automatically, and
+`gw import --rebase` restacks *all* of your stacks onto the fresh depot
+state — not just the branch you happen to be on. Details in
+[INSTRUCTIONS.md](INSTRUCTIONS.md#using-git-branchless).
 
 ## Getting started
 

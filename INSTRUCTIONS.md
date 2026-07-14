@@ -35,12 +35,18 @@ your depot.
 
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
+
 gw import --rebase               # absorb it: commit to main, rebase your branch
+
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
+
 gw prepare                       # ship it: builds the pending CL
+
 <review and submit in P4V>
-gw import                        # absorb your own submit into main
+
+gw import                        # absorb your own submit into main, plus
+                                 # anything else you synced
 ```
 
 ### Refreshing a pending changelist
