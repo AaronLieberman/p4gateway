@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(p4gateway
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Git-to-Perforce gateway: work in Git, ship Perforce changelists"
     LANGUAGES CXX
 )
