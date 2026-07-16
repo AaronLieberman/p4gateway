@@ -1264,9 +1264,41 @@ std::expected<void, std::string> itTeammateChange(ItContext& it) {
 }
 
 std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
-    // Simulate a stray / mid-prepare open: open util.cpp in the mirror for
-    // edit and give its working copy un-submitted content. import must ignore
-    // that copy (reading the depot head), and prepare must refuse to run.
+    // The branch here (it-feature2) has one commit ahead of the baseline that
+    // edits src/util.cpp only, so a whole-stack prepare would open exactly
+    // util.cpp - the anchor for both halves of this check.
+
+    // Disjoint open: a stray open on main.cpp, which this branch does NOT touch,
+    // must NOT block prepare - the opened-files guard is scoped to the files a
+    // run would itself reopen, so a sibling's unrelated open is left alone.
+    auto clOther = p4::createChangelist(it.p4, "gw integtest: unrelated open");
+    if (!clOther) return std::unexpected(clOther.error());
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+    auto openedOther = trace(it, "p4 edit " + mirrorMain,
+                             p4::editFiles(it.p4, *clOther, {mirrorMain}));
+    if (!openedOther) return std::unexpected(openedOther.error());
+
+    auto dryRun = runGw(it, it.repoDir, {"prepare", "--dry-run"});
+    if (!dryRun) {
+        return std::unexpected("gw prepare --dry-run should not be blocked by an "
+                               "open on the unrelated main.cpp, but it failed:\n" +
+                               dryRun.error());
+    }
+    if (dryRun->find("edit    src/util.cpp") == std::string::npos) {
+        return std::unexpected("gw prepare --dry-run did not plan the branch's "
+                               "own util.cpp edit:\n" + *dryRun);
+    }
+    auto revertedOther = trace(it, "p4 revert -c " + *clOther,
+                               p4::revertChangelist(it.p4, *clOther));
+    if (!revertedOther) return std::unexpected(revertedOther.error());
+    auto deletedOther = p4::deleteChangelist(it.p4, *clOther);
+    if (!deletedOther) return std::unexpected(deletedOther.error());
+
+    // Overlapping open: open util.cpp - the file this branch DOES touch - in the
+    // mirror for edit and give its working copy un-submitted content. import
+    // must ignore that copy (reading the depot head), and prepare must refuse to
+    // run because it would reopen the same file and move it between changelists.
     auto cl = p4::createChangelist(it.p4, "gw integtest: stray open");
     if (!cl) return std::unexpected(cl.error());
     const std::string mirrorUtil =
@@ -1277,7 +1309,7 @@ std::expected<void, std::string> itOpenedFilesPreflight(ItContext& it) {
     auto edited = appendFile(mirrorUtil, "// UNSUBMITTED stray edit\n");
     if (!edited) return edited;
 
-    // prepare would double-open these files, so it must refuse.
+    // prepare would double-open util.cpp, so it must refuse.
     auto prepare = runGw(it, it.repoDir, {"prepare"});
     if (prepare) {
         return std::unexpected("gw prepare should have failed with files open "

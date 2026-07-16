@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -57,6 +58,26 @@ std::string mirrorFilePath(const ResolvedMapping& route,
         sub.empty() ? repoRel : repoRel.substr(sub.size() + 1);
     return (fs::path(route.mirrorDir) / fs::path(within)).make_preferred()
         .string();
+}
+
+// Local mirror path the opened depot file `depotFile` maps to, or empty when no
+// include governs it (an `exclude` carve-out, or a path under no rule). Built
+// the same way as mirrorFilePath so the returned string is directly comparable
+// to the mirror paths prepare stages: the opened-files guard intersects the two
+// sets to find the files a run would actually reopen.
+std::string mirrorPathForDepotFile(const std::vector<ResolvedMapping>& resolved,
+                                   const std::vector<ViewRule>& rules,
+                                   const std::string& depotFile) {
+    const ViewRule* eff = effectiveRuleForDepot(rules, depotFile);
+    if (eff == nullptr || eff->exclude) return {};
+    for (const auto& r : resolved) {
+        if (r.rule != eff) continue;
+        const std::string within =
+            p4::depotRelativePath(eff->depotPath, depotFile);
+        return (fs::path(r.mirrorDir) / fs::path(within)).make_preferred()
+            .string();
+    }
+    return {};
 }
 
 constexpr const char* kPrepareUsage =
@@ -485,14 +506,51 @@ int cmdPrepare(const Args& args) {
         return 1;
     }
 
+    // The set of local mirror paths this prepare would open (an edit/add/delete
+    // opens its file; a move opens both ends). The opened-files guards below
+    // intersect it with what p4 already has open, so only a genuine overlap -
+    // a file this run would reopen and thereby yank between changelists - blocks
+    // the run. A slice that shares no files with a pending CL prepares freely
+    // into its own changelist. Called at each guard so it reflects the op lists
+    // as they stand there (the --update re-check runs before the mirror
+    // reclassification, the main guard after it).
+    auto intendedOpens = [&]() {
+        std::unordered_set<std::string> paths;
+        for (const auto& e : edits) paths.insert(e.mirrorPath);
+        for (const auto& a : adds) paths.insert(a.mirrorPath);
+        for (const auto& d : deletes) paths.insert(d.mirrorPath);
+        for (const auto& m : moves) {
+            paths.insert(m.fromMirror);
+            paths.insert(m.toMirror);
+        }
+        return paths;
+    };
+    auto openedConflicts = [&](const std::vector<p4::OpenedFile>& opened) {
+        const std::unordered_set<std::string> intended = intendedOpens();
+        std::vector<p4::OpenedFile> conflicts;
+        for (const auto& o : opened) {
+            const std::string mirror =
+                mirrorPathForDepotFile(resolved, config->rules, o.depotFile);
+            if (!mirror.empty() && intended.count(mirror)) {
+                conflicts.push_back(o);
+            }
+        }
+        return conflicts;
+    };
+
     // --update targets an existing pending CL, so restore the mirror to the
     // depot head *now* by reverting that CL's opens: the CL currently holds the
     // previous prepare's staged content, and both the byte comparison below and
     // the staging further down assume the mirror sits at depot head. Reverting
     // first also frees the CL to be repopulated. The re-check afterwards catches
-    // opens left in *other* changelists - restaging would move them into this
-    // CL, the same harm the create path's guard prevents - so refuse. The CL
-    // keeps its number and description. --dry-run mutates nothing, so it skips
+    // opens left in *other* changelists that this change would itself re-stage -
+    // restaging would move exactly those into this CL, the same harm the create
+    // path's guard prevents - so refuse; opens on files this change does not
+    // touch are left alone. The CL keeps its number and description. It runs
+    // before the mirror reclassification below, so the intended-open set it
+    // tests is a slight superset (a file an earlier commit added but this slice
+    // then deletes still counts here), which only ever errs toward refusing.
+    // --dry-run mutates nothing, so it skips
     // the revert; its preview is then computed against the mirror's current
     // (pre-revert) content and may differ slightly from a live run.
     if (update && !dryRun) {
@@ -506,12 +564,13 @@ int cmdPrepare(const Args& args) {
             std::fprintf(stderr, "gw prepare: %s\n", stillOpen.error().c_str());
             return 1;
         }
-        if (!stillOpen->empty()) {
+        auto conflicts = openedConflicts(*stillOpen);
+        if (!conflicts.empty()) {
             std::fprintf(stderr,
-                         "gw prepare: %zu file(s) are open in another changelist "
-                         "under the configured mappings:\n",
-                         stillOpen->size());
-            for (const auto& o : *stillOpen) {
+                         "gw prepare: %zu file(s) this change touches are open "
+                         "in another changelist under the configured mappings:\n",
+                         conflicts.size());
+            for (const auto& o : conflicts) {
                 std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
                              o.depotFile.c_str());
             }
@@ -670,32 +729,36 @@ int cmdPrepare(const Args& args) {
         description = *messages;
     }
 
-    // Refuse to run if files are already open in the mirror (a previous
-    // prepare's still-pending CL, a stray p4 edit). Opening them again would
-    // silently move them between changelists; the user must resolve the
-    // existing opens first. --update opts in to exactly this: it targets the
-    // named CL, reverting its opens below to restore the mirror before
-    // re-staging, so the guard is deferred to a post-revert re-check that only
-    // trips on opens left in *other* changelists.
+    // Refuse to run if a file this prepare would itself open is already open in
+    // the mirror (a previous prepare's still-pending CL, a stray p4 edit):
+    // opening it again would silently move it between changelists, so the user
+    // must resolve that open first. Only the files this change touches matter -
+    // an unrelated open (a sibling slice's own pending CL) is left alone, so
+    // independent commits can each be prepared into their own changelist.
+    // --update opts in to exactly this: it targets the named CL, reverting its
+    // opens below to restore the mirror before re-staging, so the guard is
+    // deferred to a post-revert re-check that only trips on overlapping opens
+    // left in *other* changelists.
     if (!update) {
         auto opened = p4::openedFilesTagged(*config);
         if (!opened) {
             std::fprintf(stderr, "gw prepare: %s\n", opened.error().c_str());
             return 1;
         }
-        if (!opened->empty()) {
+        auto conflicts = openedConflicts(*opened);
+        if (!conflicts.empty()) {
             std::fprintf(stderr,
-                         "gw prepare: %zu file(s) are already open in P4 under "
-                         "the configured mappings:\n",
-                         opened->size());
-            for (const auto& o : *opened) {
+                         "gw prepare: %zu file(s) this change touches are "
+                         "already open in P4 under the configured mappings:\n",
+                         conflicts.size());
+            for (const auto& o : conflicts) {
                 std::fprintf(stderr, "  %s %s\n", o.action.c_str(),
                              o.depotFile.c_str());
             }
             std::fprintf(stderr,
                          "Opening them again would move them between "
-                         "changelists. Submit or revert\nthe existing "
-                         "changelist first (see 'gw status'), then rerun "
+                         "changelists. Submit or revert the\nchangelist that "
+                         "holds them first (see 'gw status'), then rerun "
                          "'gw prepare'.\n");
             return 1;
         }
