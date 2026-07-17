@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -257,6 +258,59 @@ int cmdDoctor(const Args& args) {
                         "commits and\n      make 'gw import --rebase' conflict "
                         "on CRLF/LF. Add '* -text' (or rerun 'gw init')\n");
             ++warnings;
+        }
+    }
+
+    // Ripgrep blind spot. rg honors .gitignore by default, and the allowlist
+    // .gitignore gw writes ignores everything unmapped - so unmapped depot
+    // content synced in place (bin/, content/) silently vanishes from every
+    // rg search. The cure is rg's --no-ignore-vcs, which skips the VCS ignore
+    // files while still honoring the .ignore/.rgignore denylists; the one
+    // place gw can verify it is a RIPGREP_CONFIG_PATH config file, so a shell
+    // alias or wrapper legitimately escapes this check. Only relevant when rg
+    // is installed and the repo's .gitignore really is the allowlist style.
+    {
+        const fs::path gitignorePath = fs::path(root) / ".gitignore";
+        bool allowlist = false;
+        if (fs::exists(gitignorePath)) {
+            std::ifstream in(gitignorePath);
+            std::string content((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+            allowlist = gitignoreIsAllowlist(content);
+        }
+        const bool rgFound = [&] {
+            if (!allowlist) return false;  // don't probe for rg needlessly
+            auto rgVersion = run("rg", {"--version"});
+            return rgVersion && rgVersion->exitCode == 0;
+        }();
+        if (allowlist && rgFound) {
+            const char* rcPath = std::getenv("RIPGREP_CONFIG_PATH");
+            bool covered = false;
+            if (rcPath != nullptr && *rcPath != '\0') {
+                std::ifstream rc(rcPath);
+                if (rc) {
+                    std::string rcContent(
+                        (std::istreambuf_iterator<char>(rc)),
+                        std::istreambuf_iterator<char>());
+                    covered = ripgrepConfigDisablesVcsIgnore(rcContent);
+                }
+            }
+            if (covered) {
+                std::printf("ok    ripgrep config passes --no-ignore-vcs, so "
+                            "unmapped depot content stays searchable\n");
+            } else {
+                std::printf(
+                    "WARN  ripgrep is installed but nothing passes it "
+                    "--no-ignore-vcs - rg honors the\n      allowlist "
+                    ".gitignore, so unmapped depot content synced in place "
+                    "(bin/,\n      content/) is invisible to rg searches. Put "
+                    "'--no-ignore-vcs' on a line of a\n      config file and "
+                    "point RIPGREP_CONFIG_PATH at it; rg then still honors "
+                    "the\n      .ignore/.rgignore denylists. (Passing the "
+                    "flag via a shell alias or\n      wrapper instead? "
+                    "Ignore this warning.)\n");
+                ++warnings;
+            }
         }
     }
 

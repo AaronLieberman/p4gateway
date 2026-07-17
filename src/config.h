@@ -171,6 +171,22 @@ std::string buildGitattributes();
 // one left to core.autocrlf. Pure; unit-tested.
 bool gitattributesPinsEol(const std::string& content);
 
+// Whether a `.gitignore` body is the allowlist style `gw init` writes - a
+// bare `/*` line that ignores everything and re-includes only the mapped
+// subtrees. Used by doctor: an allowlist hides unmapped depot content synced
+// in place from every tool that honors .gitignore (notably ripgrep), which
+// the denylist style does not. Pure; unit-tested.
+bool gitignoreIsAllowlist(const std::string& content);
+
+// Whether a ripgrep config file body (the file RIPGREP_CONFIG_PATH points
+// at; one argument per line, `#` comments) leaves `--no-ignore-vcs` in
+// effect, so rg skips .gitignore while still honoring the .ignore/.rgignore
+// denylists. Recognizes the broader --no-ignore and -u/--unrestricted too,
+// and the rg 14 negations (--ignore-vcs, --ignore) with later-flag-wins
+// semantics, collapsed to one boolean - exact for the one-flag config
+// doctor recommends. Pure; unit-tested.
+bool ripgrepConfigDisablesVcsIgnore(const std::string& content);
+
 // The hidden Git ref that tracks pristine depot state - the `origin/main`
 // analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".
 // It lives outside refs/heads/ so it never shows up in `git branch`; `gw

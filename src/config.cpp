@@ -558,6 +558,40 @@ bool gitattributesPinsEol(const std::string& content) {
     return false;
 }
 
+bool gitignoreIsAllowlist(const std::string& content) {
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        // The allowlist's signature is the bare '/*' root-ignore line; a
+        // trimmed '/*' cannot be a comment, so no comment handling needed.
+        if (trim(line) == "/*") return true;
+    }
+    return false;
+}
+
+bool ripgrepConfigDisablesVcsIgnore(const std::string& content) {
+    // ripgrep's config format: one argument per line; blank lines and lines
+    // whose first non-whitespace byte is '#' are skipped. Later flags win on
+    // the assembled command line, so scan in order and keep the last word.
+    bool disables = false;
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string arg = trim(line);
+        if (arg.empty() || arg[0] == '#') continue;
+        if (arg == "--no-ignore-vcs" || arg == "--no-ignore" ||
+            arg == "--unrestricted" || arg == "-u" || arg == "-uu" ||
+            arg == "-uuu") {
+            disables = true;
+        } else if (arg == "--ignore-vcs" || arg == "--ignore") {
+            disables = false;
+        }
+    }
+    return disables;
+}
+
 std::string depotTrackingRef(const Config& config) {
     return "refs/p4gw/" + config.baselineBranch;
 }

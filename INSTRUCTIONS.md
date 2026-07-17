@@ -221,6 +221,16 @@ byte-for-byte against its working-tree copy and reports files `gw import`
 would wrongly skip (stale size+mtime stamps); fix those with
 `gw import --full`.
 
+If ripgrep is installed and the repo uses the allowlist `.gitignore`, doctor
+also warns when nothing passes rg `--no-ignore-vcs`: rg honors `.gitignore`
+by default, so the allowlist makes unmapped depot content synced in place
+(`bin/`, `content/`) invisible to searches. The fix it suggests — a config
+file containing `--no-ignore-vcs`, pointed at by `RIPGREP_CONFIG_PATH` —
+makes rg skip the VCS ignore files while still honoring the shared
+`.ignore`/`.rgignore` denylists, so your searches see the same tree as a
+plain P4 user's. (The check can only see `RIPGREP_CONFIG_PATH`; if you pass
+the flag via a shell alias or wrapper, ignore the warning.)
+
 ## Using git-branchless
 
 If the repo is managed by [git-branchless](https://github.com/arxanas/git-branchless),

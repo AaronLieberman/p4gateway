@@ -553,3 +553,39 @@ TEST(gitattributes_pin_rejects_non_catchall_or_unrelated) {
     // '-text' must be a whole attribute token, not a substring of another.
     CHECK(!p4gw::gitattributesPinsEol("* mytext\n"));
 }
+
+TEST(gitignore_allowlist_detection) {
+    // The starter allowlist opens with the bare '/*' root-ignore line; the
+    // whole-repo mapping falls back to a denylist without one.
+    CHECK(p4gw::gitignoreIsAllowlist(p4gw::buildGitignore({inc("src")})));
+    CHECK(!p4gw::gitignoreIsAllowlist(p4gw::buildGitignore({inc("")})));
+    // Whitespace and CRLF around the line are tolerated.
+    CHECK(p4gw::gitignoreIsAllowlist("# header\r\n  /*  \r\n!/src/\n"));
+    // '/*' must be the whole pattern, not a prefix of another.
+    CHECK(!p4gw::gitignoreIsAllowlist("/*.obj\n/src/*\n"));
+    CHECK(!p4gw::gitignoreIsAllowlist(""));
+}
+
+TEST(ripgrep_config_detects_no_ignore_vcs) {
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("--no-ignore-vcs\n"));
+    // The broader flags imply skipping VCS ignore files too.
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("--smart-case\n--no-ignore\n"));
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("-u\n"));
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("--unrestricted\n"));
+    // Whitespace, CRLF, and a missing trailing newline are tolerated.
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("  --no-ignore-vcs  \r\n"));
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore("--no-ignore-vcs"));
+    // Later flags win, as on the assembled rg command line.
+    CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore(
+        "--no-ignore-vcs\n--ignore-vcs\n"));
+    CHECK(p4gw::ripgrepConfigDisablesVcsIgnore(
+        "--ignore-vcs\n--no-ignore-vcs\n"));
+}
+
+TEST(ripgrep_config_rejects_comments_and_unrelated) {
+    CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore(""));
+    CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore("# --no-ignore-vcs\n"));
+    CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore("--smart-case\n--hidden\n"));
+    // The flag must be the whole argument, not a substring of one.
+    CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore("--no-ignore-vcs-extra\n"));
+}
