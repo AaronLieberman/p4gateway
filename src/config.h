@@ -77,6 +77,11 @@ struct Config {
     // kWorktree stages in a hidden worktree and never touches the checkout;
     // `import_mode = checkout` opts back into the original in-checkout staging.
     ImportMode importMode = ImportMode::kWorktree;
+
+    // Whether gw maintains the managed block in the repo's `.rgignore` (see
+    // buildRgignoreSection) and doctor checks for it. `rgignore = off` in
+    // p4gw.cfg opts out: gw never touches `.rgignore` and doctor stays quiet.
+    bool manageRgignore = true;
 };
 
 // The `include` rules of `rules`, in declaration order. Most consumers only
@@ -177,6 +182,53 @@ bool gitattributesPinsEol(const std::string& content);
 // in place from every tool that honors .gitignore (notably ripgrep), which
 // the denylist style does not. Pure; unit-tested.
 bool gitignoreIsAllowlist(const std::string& content);
+
+// The marker lines bracketing the gw-managed block in `.rgignore`. gw only
+// ever rewrites the lines between them, so hand-written rules outside the
+// block survive every refresh.
+inline constexpr const char* kRgignoreBeginMarker =
+    "# >>> gw managed - do not edit inside this block, 'gw init'/'gw import' "
+    "rewrite it >>>";
+inline constexpr const char* kRgignoreEndMarker = "# <<< gw managed <<<";
+
+// Body of the gw-managed `.rgignore` block. ripgrep honors .gitignore, so the
+// allowlist hides unmapped depot content synced in place (bin/, content/) from
+// every search; `.rgignore` outranks both .gitignore and .ignore per path, so
+// this block reopens exactly what the allowlist hides - non-hidden root
+// entries, the unmapped peers inside re-include chains, and the plain
+// carve-outs - via `[!.]*` globs that spare dot entries (.git, the .p4gw
+// mirror stay hidden). Because those reopens also outrank the denylists, the
+// p4gw.cfg `ignore` patterns and the repo's `.ignore` body (passed in) are
+// re-asserted after them. Empty when the rules yield the denylist .gitignore
+// (whole-repo include), which hides nothing rg should see. Pure; unit-tested.
+std::string buildRgignoreSection(const std::vector<ViewRule>& rules,
+                                 const std::vector<std::string>& ignorePatterns,
+                                 const std::string& dotIgnoreBody);
+
+// Splices `sectionBody` into an `.rgignore` file's content as the gw-managed
+// block: replaces an existing marker-delimited block in place, prepends the
+// block to a file that has none (so later hand-written lines still win), or
+// removes the block when `sectionBody` is empty. Content outside the markers
+// is never touched. Errors when a begin marker has no matching end marker -
+// rewriting through it could eat hand-written rules. Pure; unit-tested.
+std::expected<std::string, std::string> upsertRgignore(
+    const std::string& existing, const std::string& sectionBody);
+
+// Rebuilds the gw-managed `.rgignore` block for the repo at `root` and writes
+// the file when its content changes: reads `.gitignore` (the block only
+// applies to the allowlist style - for anything else it is removed), builds
+// the section from the rules plus the repo's `.ignore` body, and splices it
+// in. No-op when `manageRgignore` is off. Returns whether the file was
+// written. The file sits under the allowlist's root `/*`, so git never tracks
+// it and it never reaches P4.
+std::expected<bool, std::string> refreshRgignore(const Config& config,
+                                                 const std::string& root);
+
+// Whether an `.rgignore` body reopens the root entries the allowlist
+// .gitignore hides - the gw-managed block (its begin marker) or a hand-rolled
+// `!/*` / `!/[!.]*` line. Used by doctor to tell a covered repo from one
+// whose searches silently skip unmapped depot content. Pure; unit-tested.
+bool rgignoreReopensRoot(const std::string& content);
 
 // Whether a ripgrep config file body (the file RIPGREP_CONFIG_PATH points
 // at; one argument per line, `#` comments) leaves `--no-ignore-vcs` in

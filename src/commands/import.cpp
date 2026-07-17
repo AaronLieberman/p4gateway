@@ -1084,6 +1084,17 @@ int cmdImport(const Args& args) {
                     "baseline.\n");
     }
 
+    // Keep the managed .rgignore block fresh: it re-asserts the repo's .ignore
+    // patterns, which can change between imports. The file is untracked (under
+    // the allowlist's '/*'), so this never dirties the tree; only the
+    // marker-delimited block is rewritten. Best-effort - a failure is a note.
+    if (auto rg = refreshRgignore(*config, root); !rg) {
+        std::printf("note: could not update .rgignore (%s)\n",
+                    rg.error().c_str());
+    } else if (*rg) {
+        std::printf("Refreshed the managed .rgignore block\n");
+    }
+
     // Dirty tree (worktree mode): the depot baseline was imported, but a
     // fast-forward would touch the user's uncommitted work. Still advance the
     // convenience baseline branch when the user isn't on it (a ref move never

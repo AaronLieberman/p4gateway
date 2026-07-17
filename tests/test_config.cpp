@@ -589,3 +589,170 @@ TEST(ripgrep_config_rejects_comments_and_unrelated) {
     // The flag must be the whole argument, not a substring of one.
     CHECK(!p4gw::ripgrepConfigDisablesVcsIgnore("--no-ignore-vcs-extra\n"));
 }
+
+TEST(config_parses_rgignore_key) {
+    auto def = loadFromString("include = //d/src/... .p4gw/src\n");
+    CHECK(def.has_value() && def->manageRgignore);  // managed by default
+    auto off = loadFromString(
+        "include = //d/src/... .p4gw/src\nrgignore = off\n");
+    CHECK(off.has_value() && !off->manageRgignore);
+    auto managed = loadFromString(
+        "include = //d/src/... .p4gw/src\nrgignore = managed\n");
+    CHECK(managed.has_value() && managed->manageRgignore);
+    auto bad = loadFromString(
+        "include = //d/src/... .p4gw/src\nrgignore = maybe\n");
+    CHECK(!bad.has_value());
+    if (!bad) CHECK(contains(bad.error(), "rgignore"));
+}
+
+TEST(rgignore_section_reopens_root_without_dot_entries) {
+    const std::string out = p4gw::buildRgignoreSection({inc("src")}, {}, "");
+    CHECK(contains(out, "!/[!.]*\n"));
+    // No plain '!/*' anywhere - that would expose .git and the mirror.
+    CHECK(!contains(out, "\n!/*\n"));
+}
+
+TEST(rgignore_section_reopens_carveouts_and_intermediate_peers) {
+    const std::string out = p4gw::buildRgignoreSection(
+        {inc("src"), exc("src/thirdparty"), exc("src/lib"),
+         inc("src/lib/public/win64")},
+        {}, "");
+    // Plain carve-out: reopened whole.
+    CHECK(contains(out, "!/src/thirdparty/\n"));
+    // Re-include chain: each intermediate's re-excluded peers reopened,
+    // still sparing dot entries.
+    CHECK(contains(out, "!/src/lib/[!.]*\n"));
+    CHECK(contains(out, "!/src/lib/public/[!.]*\n"));
+}
+
+TEST(rgignore_section_reasserts_denylists_after_the_reopens) {
+    const std::string out = p4gw::buildRgignoreSection(
+        {inc("src")}, {"/src/**/*.pdb"},
+        "# known binaries\r\n/bin/\n\n*.dds\r\n");
+    // Both denylists repeated, after the root reopen, comments dropped.
+    const size_t reopen = out.find("!/[!.]*\n");
+    CHECK(reopen != std::string::npos);
+    CHECK(out.find("/src/**/*.pdb\n") > reopen);
+    CHECK(out.find("/bin/\n") > reopen);
+    CHECK(out.find("*.dds\n") > reopen);
+    CHECK(!contains(out, "known binaries"));
+}
+
+TEST(rgignore_section_empty_for_denylist_style) {
+    // A whole-repo include yields the denylist .gitignore - no block.
+    CHECK(p4gw::buildRgignoreSection({inc("")}, {}, "/bin/\n").empty());
+    CHECK(p4gw::buildRgignoreSection({inc(""), exc("lib")}, {}, "").empty());
+}
+
+TEST(rgignore_upsert_creates_and_prepends) {
+    const std::string block = std::string(p4gw::kRgignoreBeginMarker) +
+                              "\nbody\n" + p4gw::kRgignoreEndMarker + "\n";
+    // Fresh file: just the block.
+    auto fresh = p4gw::upsertRgignore("", "body\n");
+    CHECK(fresh.has_value() && *fresh == block);
+    // Existing hand-written rules: block prepended so later lines still win.
+    auto prepended = p4gw::upsertRgignore("/user-rule/\n", "body\n");
+    CHECK(prepended.has_value() && *prepended == block + "\n/user-rule/\n");
+}
+
+TEST(rgignore_upsert_rewrites_only_the_managed_block) {
+    const std::string before = "# mine\n/keep-above/\n" +
+                               std::string(p4gw::kRgignoreBeginMarker) +
+                               "\nold\n" + p4gw::kRgignoreEndMarker +
+                               "\n/keep-below/\n";
+    auto updated = p4gw::upsertRgignore(before, "new\n");
+    CHECK(updated.has_value());
+    if (updated) {
+        CHECK(contains(*updated, "# mine\n/keep-above/\n"));
+        CHECK(contains(*updated, "\nnew\n"));
+        CHECK(!contains(*updated, "old"));
+        CHECK(contains(*updated, "/keep-below/\n"));
+    }
+    // An empty body removes the block, leaving the rest untouched.
+    auto removed = p4gw::upsertRgignore(before, "");
+    CHECK(removed.has_value() &&
+          *removed == "# mine\n/keep-above/\n/keep-below/\n");
+    // Empty body against a file with no block changes nothing.
+    auto noop = p4gw::upsertRgignore("/user-rule/\n", "");
+    CHECK(noop.has_value() && *noop == "/user-rule/\n");
+}
+
+TEST(rgignore_upsert_rejects_a_torn_block) {
+    // A begin marker with no end: rewriting through it could eat user rules.
+    auto torn = p4gw::upsertRgignore(
+        std::string(p4gw::kRgignoreBeginMarker) + "\nold\n/user-rule/\n",
+        "new\n");
+    CHECK(!torn.has_value());
+}
+
+TEST(rgignore_refresh_writes_updates_and_respects_opt_out) {
+    // refreshRgignore talks only to the filesystem (no git/p4), so it can be
+    // driven for real against a temp repo root.
+    const fs::path root = fs::temp_directory_path() / "p4gw_test_rgignore";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    auto write = [&](const char* name, const std::string& content) {
+        std::ofstream f(root / name, std::ios::binary);
+        f << content;
+    };
+    auto read = [&](const char* name) {
+        std::ifstream f(root / name, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    };
+    p4gw::Config config;
+    config.rules = {inc("src")};
+
+    // No allowlist .gitignore yet: nothing to do, no file appears.
+    auto r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && !*r && !fs::exists(root / ".rgignore"));
+
+    // Allowlist + .ignore: the managed block is written and re-asserts .ignore.
+    write(".gitignore", p4gw::buildGitignore(config.rules));
+    write(".ignore", "/bin/\n");
+    r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && *r);
+    CHECK(contains(read(".rgignore"), "!/[!.]*\n"));
+    CHECK(contains(read(".rgignore"), "/bin/\n"));
+
+    // Unchanged inputs: no rewrite. A hand-written rule outside the block and
+    // a change to .ignore: rewritten, hand rule kept, new pattern folded in.
+    r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && !*r);
+    write(".rgignore", read(".rgignore") + "/hand-rule/\n");
+    write(".ignore", "/bin/\n*.pak\n");
+    r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && *r);
+    CHECK(contains(read(".rgignore"), "*.pak\n"));
+    CHECK(contains(read(".rgignore"), "/hand-rule/\n"));
+
+    // rgignore = off: hands off even with stale content in the block.
+    write(".ignore", "/bin/\n*.pak\n*.dds\n");
+    config.manageRgignore = false;
+    r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && !*r);
+    CHECK(!contains(read(".rgignore"), "*.dds"));
+    config.manageRgignore = true;
+
+    // .gitignore replaced by a hand-kept denylist: the block is removed, the
+    // hand rule survives.
+    write(".gitignore", "/.p4gw/\np4gw.cfg\n");
+    r = p4gw::refreshRgignore(config, root.string());
+    CHECK(r.has_value() && *r);
+    CHECK(!contains(read(".rgignore"), "!/[!.]*"));
+    CHECK(contains(read(".rgignore"), "/hand-rule/\n"));
+    fs::remove_all(root);
+}
+
+TEST(rgignore_reopens_root_detection) {
+    CHECK(p4gw::rgignoreReopensRoot("!/[!.]*\n"));
+    CHECK(p4gw::rgignoreReopensRoot("!/*\n"));
+    CHECK(p4gw::rgignoreReopensRoot("  !/*  \r\n"));
+    // The managed block's begin marker counts even mid-file.
+    CHECK(p4gw::rgignoreReopensRoot("/user-rule/\n" +
+                                    std::string(p4gw::kRgignoreBeginMarker) +
+                                    "\n"));
+    CHECK(!p4gw::rgignoreReopensRoot(""));
+    CHECK(!p4gw::rgignoreReopensRoot("!/content/\n/bin/\n"));
+    CHECK(!p4gw::rgignoreReopensRoot("# !/*\n"));
+}

@@ -167,20 +167,39 @@ struct Boundary {
     bool tracked;                    // include (true) vs exclude (false)
 };
 
-}  // namespace
+// A directory the allowlist must name: a kept tracked subtree ("leaf",
+// re-included whole) or one of its ancestors ("intermediate", re-included but
+// with its other children re-excluded via `/dir/*`).
+struct LayoutDir {
+    std::vector<std::string> components;
+    bool isLeaf;
+};
 
-std::string buildGitignore(const std::vector<ViewRule>& rules,
-                           const std::vector<std::string>& ignorePatterns) {
+// The shape both allowlist-style files are generated from: the .gitignore
+// emits it as ignore/re-include lines and the .rgignore managed block as the
+// inverse reopen lines, so the two stay in lockstep by construction.
+struct AllowlistLayout {
+    bool wholeRepoMapped = false;
+    bool anyTracked = false;
+    // Carved-out subtrees with no re-included descendant, first-seen order.
+    // (A carve-out that has one shows up as an intermediate in `dirs`.)
+    std::vector<std::string> plainCarveouts;
+    // Every directory the allowlist names, first-seen order.
+    std::vector<LayoutDir> dirs;
+};
+
+AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
+    AllowlistLayout layout;
+
     // Collapse the ordered rules to one decision per distinct working-tree
     // subtree, resolved later-wins: the last rule naming a subtree decides
     // whether it is tracked (include) or carved out (exclude). First-seen order
     // is kept for deterministic emission. An empty subtree is a whole-repo
-    // include, handled separately below.
+    // include, handled separately by the emitters.
     std::vector<Boundary> boundaries;
-    bool wholeRepoMapped = false;
     for (const auto& rule : rules) {
         if (rule.repoSubtree.empty()) {
-            if (!rule.exclude) wholeRepoMapped = true;
+            if (!rule.exclude) layout.wholeRepoMapped = true;
             continue;
         }
         auto it = std::find_if(boundaries.begin(), boundaries.end(),
@@ -196,54 +215,19 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
         }
     }
 
-    // Re-excludes the plain carved-out subtrees (an `exclude` with no deeper
-    // re-include), e.g. "/src/thirdparty/". A carve-out that *does* have a
-    // re-included descendant is emitted as an intermediate in the allowlist
-    // body instead (see below), so it is skipped here.
-    auto appendExclusions = [&](std::string& out) {
-        std::vector<std::string> plain;
-        for (const auto& b : boundaries) {
-            if (b.tracked) continue;
-            const bool hasReinclude =
-                std::any_of(boundaries.begin(), boundaries.end(),
-                            [&](const Boundary& o) {
-                                return o.tracked &&
-                                       isStrictAncestor(b.comps, o.comps);
-                            });
-            if (!hasReinclude) plain.push_back(b.subtree);
-        }
-        if (plain.empty()) return;
-        out += "\n# Directories under a mapped subtree that are carved out of "
-               "the mirror\n# (an 'exclude' line): they sync in place / are "
-               "unsynced, like unmapped\n# depot content, so Git ignores "
-               "them.\n";
-        for (const auto& sub : plain) out += "/" + sub + "/\n";
-    };
-
-    // Extra ignore patterns from p4gw.cfg `ignore` lines, appended verbatim.
-    // These are files P4 ignores (build output, IDE state) that would otherwise
-    // be tracked under a mapped subtree; they must come after the allowlist's
-    // re-includes to take effect, so they go last.
-    auto appendExtra = [&](std::string& out) {
-        if (ignorePatterns.empty()) return;
-        out += "\n# Extra ignore patterns (p4gw.cfg 'ignore' lines): files P4\n"
-               "# ignores that would otherwise be tracked under a mapped "
-               "subtree.\n";
-        for (const auto& p : ignorePatterns) out += p + "\n";
-    };
-
-    // A whole-repo include leaves nothing unmapped to hide, so an allowlist
-    // would only ignore the repo's own content. Fall back to a plain denylist
-    // of the gw-managed paths (personal config + the mirror container), plus
-    // any carved-out directories.
-    const bool anyTracked =
+    layout.anyTracked =
         std::any_of(boundaries.begin(), boundaries.end(),
                     [](const Boundary& b) { return b.tracked; });
-    if (wholeRepoMapped || !anyTracked) {
-        std::string out = kGwDenylist;
-        appendExclusions(out);
-        appendExtra(out);
-        return out;
+
+    for (const auto& b : boundaries) {
+        if (b.tracked) continue;
+        const bool hasReinclude =
+            std::any_of(boundaries.begin(), boundaries.end(),
+                        [&](const Boundary& o) {
+                            return o.tracked &&
+                                   isStrictAncestor(b.comps, o.comps);
+                        });
+        if (!hasReinclude) layout.plainCarveouts.push_back(b.subtree);
     }
 
     // Keep each tracked subtree unless a *tracked* boundary already contains it
@@ -270,18 +254,11 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
         kept.push_back(b.comps);
     }
 
-    // Every directory that must appear in the file: each kept subtree plus all
-    // of its ancestors. A directory is a "leaf" when it is exactly a tracked
-    // subtree (tracked whole); ancestors are intermediate (we re-include the
-    // dir but re-exclude its other children). Recorded in first-seen order so
-    // emission is deterministic.
-    struct Dir {
-        std::vector<std::string> components;
-        bool isLeaf;
-    };
-    std::vector<Dir> dirs;
-    auto findDir = [&](const std::vector<std::string>& c) -> Dir* {
-        for (auto& d : dirs)
+    // Every directory that must appear: each kept subtree plus all of its
+    // ancestors. A directory is a "leaf" when it is exactly a tracked subtree
+    // (tracked whole); ancestors are intermediate. First-seen order.
+    auto findDir = [&](const std::vector<std::string>& c) -> LayoutDir* {
+        for (auto& d : layout.dirs)
             if (d.components == c) return &d;
         return nullptr;
     };
@@ -290,22 +267,66 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
         for (size_t i = 0; i < leaf.size(); ++i) {
             prefix.push_back(leaf[i]);
             const bool isLeaf = (i + 1 == leaf.size());
-            if (Dir* existing = findDir(prefix)) {
+            if (LayoutDir* existing = findDir(prefix)) {
                 existing->isLeaf = existing->isLeaf || isLeaf;
             } else {
-                dirs.push_back({prefix, isLeaf});
+                layout.dirs.push_back({prefix, isLeaf});
             }
         }
     }
+    return layout;
+}
 
-    auto join = [](const std::vector<std::string>& c) {
-        std::string s;
-        for (const auto& part : c) {
-            s += '/';
-            s += part;
-        }
-        return s;  // leading slash, no trailing slash, e.g. "/a/b"
+std::string joinComponents(const std::vector<std::string>& c) {
+    std::string s;
+    for (const auto& part : c) {
+        s += '/';
+        s += part;
+    }
+    return s;  // leading slash, no trailing slash, e.g. "/a/b"
+}
+
+}  // namespace
+
+std::string buildGitignore(const std::vector<ViewRule>& rules,
+                           const std::vector<std::string>& ignorePatterns) {
+    const AllowlistLayout layout = computeAllowlistLayout(rules);
+
+    // Re-excludes the plain carved-out subtrees (an `exclude` with no deeper
+    // re-include), e.g. "/src/thirdparty/". A carve-out that *does* have a
+    // re-included descendant is emitted as an intermediate in the allowlist
+    // body instead (via `layout.dirs`), so it is not in this list.
+    auto appendExclusions = [&](std::string& out) {
+        if (layout.plainCarveouts.empty()) return;
+        out += "\n# Directories under a mapped subtree that are carved out of "
+               "the mirror\n# (an 'exclude' line): they sync in place / are "
+               "unsynced, like unmapped\n# depot content, so Git ignores "
+               "them.\n";
+        for (const auto& sub : layout.plainCarveouts) out += "/" + sub + "/\n";
     };
+
+    // Extra ignore patterns from p4gw.cfg `ignore` lines, appended verbatim.
+    // These are files P4 ignores (build output, IDE state) that would otherwise
+    // be tracked under a mapped subtree; they must come after the allowlist's
+    // re-includes to take effect, so they go last.
+    auto appendExtra = [&](std::string& out) {
+        if (ignorePatterns.empty()) return;
+        out += "\n# Extra ignore patterns (p4gw.cfg 'ignore' lines): files P4\n"
+               "# ignores that would otherwise be tracked under a mapped "
+               "subtree.\n";
+        for (const auto& p : ignorePatterns) out += p + "\n";
+    };
+
+    // A whole-repo include leaves nothing unmapped to hide, so an allowlist
+    // would only ignore the repo's own content. Fall back to a plain denylist
+    // of the gw-managed paths (personal config + the mirror container), plus
+    // any carved-out directories.
+    if (layout.wholeRepoMapped || !layout.anyTracked) {
+        std::string out = kGwDenylist;
+        appendExclusions(out);
+        appendExtra(out);
+        return out;
+    }
 
     std::string out =
         "# gw tracks only the depot subtree(s) this repo maps. Everything else\n"
@@ -324,14 +345,15 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
     // intermediate is either an ancestor of a tracked leaf or a carved-out
     // directory that has a re-included descendant; both need `/dir/*`.
     size_t maxDepth = 0;
-    for (const auto& d : dirs) maxDepth = std::max(maxDepth, d.components.size());
+    for (const auto& d : layout.dirs)
+        maxDepth = std::max(maxDepth, d.components.size());
     for (size_t depth = 1; depth <= maxDepth; ++depth) {
-        for (const auto& d : dirs)
+        for (const auto& d : layout.dirs)
             if (d.components.size() == depth)
-                out += "!" + join(d.components) + "/\n";
-        for (const auto& d : dirs)
+                out += "!" + joinComponents(d.components) + "/\n";
+        for (const auto& d : layout.dirs)
             if (d.components.size() == depth && !d.isLeaf)
-                out += join(d.components) + "/*\n";
+                out += joinComponents(d.components) + "/*\n";
     }
     // The allowlist re-includes each mapped subtree whole (`!/src/`); a later
     // `/src/thirdparty/` line then carves the (plain) excluded directories back
@@ -450,6 +472,16 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                 return std::unexpected(
                     where + ": import_mode must be 'checkout' or 'worktree', "
                     "got '" + value + "'");
+            }
+        } else if (key == "rgignore") {
+            if (value == "managed") {
+                config.manageRgignore = true;
+            } else if (value == "off") {
+                config.manageRgignore = false;
+            } else {
+                return std::unexpected(
+                    where + ": rgignore must be 'managed' or 'off', got '" +
+                    value + "'");
             }
         } else if (key == "ignore") {
             // A verbatim gitignore pattern, taken as-is (not tokenized) so globs
@@ -590,6 +622,149 @@ bool ripgrepConfigDisablesVcsIgnore(const std::string& content) {
         }
     }
     return disables;
+}
+
+std::string buildRgignoreSection(const std::vector<ViewRule>& rules,
+                                 const std::vector<std::string>& ignorePatterns,
+                                 const std::string& dotIgnoreBody) {
+    const AllowlistLayout layout = computeAllowlistLayout(rules);
+    // The denylist .gitignore (whole-repo include) hides nothing rg should
+    // see, so there is no block to maintain.
+    if (layout.wholeRepoMapped || !layout.anyTracked) return {};
+
+    // The reopens use '[!.]*' rather than '*' so dot entries are never
+    // whitelisted: a whitelist overrides ripgrep's hidden filter, and a plain
+    // '!/*' was measured to expose .git and the .p4gw mirror (double hits on
+    // the whole depot).
+    std::string out =
+        "# ripgrep reads .gitignore, so the allowlist hides unmapped depot\n"
+        "# content synced in place (bin/, content/) from every search. These\n"
+        "# reopen what the allowlist hides - searches see the tree a plain P4\n"
+        "# user's would - while '[!.]*' keeps dot entries (.git, the .p4gw\n"
+        "# mirror) hidden.\n"
+        "!/[!.]*\n";
+    for (const auto& d : layout.dirs) {
+        if (!d.isLeaf) out += "!" + joinComponents(d.components) + "/[!.]*\n";
+    }
+    for (const auto& sub : layout.plainCarveouts) out += "!/" + sub + "/\n";
+
+    // The reopens above outrank every ignore file per path, including the
+    // denylists, so anything that must stay hidden from searches is repeated
+    // here - later lines in the same file win again.
+    if (!ignorePatterns.empty()) {
+        out += "# p4gw.cfg 'ignore' patterns, re-asserted (the reopens above\n"
+               "# would override them)\n";
+        for (const auto& p : ignorePatterns) out += p + "\n";
+    }
+    bool wroteIgnoreHeader = false;
+    std::istringstream lines(dotIgnoreBody);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string pattern = trim(line);
+        if (pattern.empty() || pattern[0] == '#') continue;
+        if (!wroteIgnoreHeader) {
+            out += "# .ignore patterns, re-asserted (the reopens above would\n"
+                   "# override their root-level lines)\n";
+            wroteIgnoreHeader = true;
+        }
+        out += pattern + "\n";
+    }
+    return out;
+}
+
+std::expected<std::string, std::string> upsertRgignore(
+    const std::string& existing, const std::string& sectionBody) {
+    const std::string block =
+        sectionBody.empty()
+            ? std::string()
+            : std::string(kRgignoreBeginMarker) + "\n" + sectionBody +
+                  kRgignoreEndMarker + "\n";
+
+    // Find a marker only at the start of a line, so a copy of the marker text
+    // embedded elsewhere (say, quoted in a comment) is not mistaken for it.
+    auto findLine = [&](const std::string& marker, size_t from) {
+        size_t pos = existing.find(marker, from);
+        while (pos != std::string::npos && pos != 0 &&
+               existing[pos - 1] != '\n') {
+            pos = existing.find(marker, pos + 1);
+        }
+        return pos;
+    };
+
+    const size_t begin = findLine(kRgignoreBeginMarker, 0);
+    if (begin == std::string::npos) {
+        if (block.empty()) return existing;
+        if (existing.empty()) return block;
+        // Prepend: hand-written rules after the block keep the last word,
+        // since later lines in the same ignore file win.
+        return block + "\n" + existing;
+    }
+    size_t end = findLine(kRgignoreEndMarker, begin);
+    if (end == std::string::npos) {
+        return std::unexpected(
+            std::string("found the begin marker ('") + kRgignoreBeginMarker +
+            "') but no end marker - rewriting through it could eat "
+            "hand-written rules; restore the end marker or delete the block");
+    }
+    end += std::string(kRgignoreEndMarker).size();
+    if (end < existing.size() && existing[end] == '\n') ++end;
+    return existing.substr(0, begin) + block + existing.substr(end);
+}
+
+std::expected<bool, std::string> refreshRgignore(const Config& config,
+                                                 const std::string& root) {
+    if (!config.manageRgignore) return false;
+
+    auto readAll = [](const fs::path& p) -> std::string {
+        std::ifstream in(p, std::ios::binary);
+        if (!in) return {};
+        std::ostringstream text;
+        text << in.rdbuf();
+        return std::move(text).str();
+    };
+
+    // The block only applies against the allowlist style; check the repo's
+    // real .gitignore, not the config shape - a hand-kept denylist means the
+    // root reopen would wrongly override the user's own root-level ignores.
+    std::string body;
+    const fs::path gitignorePath = fs::path(root) / ".gitignore";
+    if (fs::exists(gitignorePath) &&
+        gitignoreIsAllowlist(readAll(gitignorePath))) {
+        body = buildRgignoreSection(config.rules, config.ignorePatterns,
+                                    readAll(fs::path(root) / ".ignore"));
+    }
+
+    const fs::path rgignorePath = fs::path(root) / ".rgignore";
+    const bool exists = fs::exists(rgignorePath);
+    const std::string existing = exists ? readAll(rgignorePath) : "";
+    if (body.empty() && !exists) return false;
+
+    auto updated = upsertRgignore(existing, body);
+    if (!updated) {
+        return std::unexpected(rgignorePath.string() + ": " + updated.error());
+    }
+    if (*updated == existing) return false;
+
+    std::ofstream out(rgignorePath, std::ios::binary | std::ios::trunc);
+    out << *updated;
+    out.close();
+    if (!out) {
+        return std::unexpected("cannot write " + rgignorePath.string());
+    }
+    return true;
+}
+
+bool rgignoreReopensRoot(const std::string& content) {
+    if (content.find(kRgignoreBeginMarker) != std::string::npos) return true;
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string pattern = trim(line);
+        if (pattern == "!/*" || pattern == "!/[!.]*") return true;
+    }
+    return false;
 }
 
 std::string depotTrackingRef(const Config& config) {

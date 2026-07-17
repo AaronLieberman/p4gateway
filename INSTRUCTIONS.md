@@ -222,14 +222,12 @@ would wrongly skip (stale size+mtime stamps); fix those with
 `gw import --full`.
 
 If ripgrep is installed and the repo uses the allowlist `.gitignore`, doctor
-also warns when nothing passes rg `--no-ignore-vcs`: rg honors `.gitignore`
-by default, so the allowlist makes unmapped depot content synced in place
-(`bin/`, `content/`) invisible to searches. The fix it suggests — a config
-file containing `--no-ignore-vcs`, pointed at by `RIPGREP_CONFIG_PATH` —
-makes rg skip the VCS ignore files while still honoring the shared
-`.ignore`/`.rgignore` denylists, so your searches see the same tree as a
-plain P4 user's. (The check can only see `RIPGREP_CONFIG_PATH`; if you pass
-the flag via a shell alias or wrapper, ignore the warning.)
+also warns when nothing reopens what the allowlist hides from `rg` searches
+(see "Searching with ripgrep"): it looks for the managed `.rgignore` block
+(or a hand-rolled `!/*` reopen), then for `--no-ignore-vcs` in a
+`RIPGREP_CONFIG_PATH` config. A shell alias or wrapper is invisible to the
+check — set `rgignore = off` in `p4gw.cfg` to silence it, which also stops
+`gw init`/`gw import` from touching `.rgignore`.
 
 ## Using git-branchless
 
@@ -300,6 +298,11 @@ baseline_branch = main
 #             one extra copy of the source on disk.
 #   checkout  Stage it in your own working tree instead (needs a clean tree).
 #import_mode = checkout
+
+# gw keeps a managed block in .rgignore so ripgrep still searches unmapped
+# depot content the allowlist .gitignore hides (see "Searching with ripgrep").
+# 'off' stops gw from touching .rgignore and silences the doctor check.
+#rgignore = off
 ```
 
 `p4gw.cfg` is personal (it names your client), and the starter `.gitignore`
@@ -318,6 +321,29 @@ Git:
 - To keep a directory that is Git-only (never in P4), add a `!/yourdir/`
   line.
 - gw never opens `p4gw.cfg` or `.gitignore` in a changelist.
+
+### Searching with ripgrep
+
+ripgrep honors `.gitignore` by default, so the allowlist has a side effect:
+unmapped depot content that syncs in place (`bin/`, `content/`) is invisible
+to `rg` searches, even though it's right there on disk. To fix that, `gw
+init` writes — and `gw import` refreshes — a **managed block** in the repo's
+`.rgignore` (a file only search tools read; it sits under the allowlist's
+`/*`, so it never reaches Git or P4 and other people never see it). The
+block:
+
+- reopens every non-hidden root entry (`!/[!.]*` — the `[!.]` spares dot
+  entries, so `.git/` and the `.p4gw/` mirror stay hidden),
+- reopens `exclude` carve-outs and the unmapped peers inside re-include
+  chains, so searches see the same tree a plain P4 user's would, and
+- re-asserts the `ignore` patterns and the repo's shared `.ignore` denylist,
+  which the reopens would otherwise override.
+
+Only the marker-delimited block is ever rewritten; rules you add outside it
+survive every refresh (put them **after** the block — later lines win). Set
+`rgignore = off` in `p4gw.cfg` to keep gw's hands off `.rgignore` entirely,
+e.g. if you prefer running rg with `--no-ignore-vcs` from a personal
+`RIPGREP_CONFIG_PATH` config or a shell alias.
 
 ### Line endings
 

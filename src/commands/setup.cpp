@@ -164,7 +164,14 @@ int cmdSetup(const Args& args) {
                 "# It uses about one extra copy of the source on disk. 'checkout'\n"
                 "# stages the snapshot in your own working tree instead and needs\n"
                 "# a clean tree.\n"
-                "#import_mode = checkout\n";
+                "#import_mode = checkout\n"
+                "\n"
+                "# gw keeps a managed block in .rgignore so ripgrep still\n"
+                "# searches unmapped depot content the allowlist .gitignore\n"
+                "# hides (the file sits under the allowlist's '/*', so it never\n"
+                "# reaches Git or P4). 'off' stops gw from touching .rgignore\n"
+                "# and silences the matching 'gw doctor' check.\n"
+                "#rgignore = off\n";
     }
     std::printf("Wrote %s\n", target.string().c_str());
 

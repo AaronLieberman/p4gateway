@@ -382,6 +382,21 @@ int cmdInit(const Args& args) {
         }
     }
 
+    // The managed .rgignore block reopens for ripgrep what the allowlist
+    // .gitignore hides, so searches still see unmapped depot content synced in
+    // place. The file sits under the allowlist's root '/*' (untracked, never
+    // committed or shipped), and only the marker-delimited block is ever
+    // rewritten - hand-written rules around it survive. Best-effort: a failure
+    // here is a note, not a failed init.
+    if (auto rg = refreshRgignore(*config, root); !rg) {
+        std::printf("note: could not update .rgignore (%s); ripgrep searches "
+                    "will skip unmapped depot content\n", rg.error().c_str());
+    } else if (*rg) {
+        std::printf("Wrote the managed .rgignore block (keeps unmapped depot "
+                    "content searchable with ripgrep; 'rgignore = off' in "
+                    "p4gw.cfg disables this)\n");
+    }
+
     // Land gw's metadata so the first 'gw import' starts from a clean tree. On a
     // brand-new (or --force-git-init) repo there is no history to disturb, so
     // commit it as the first commit. On a repo that already has commits we do
