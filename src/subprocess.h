@@ -78,4 +78,9 @@ std::string uniqueTempFile(const std::string& prefix,
 // on POSIX it compares st_uid to the effective uid.
 std::expected<bool, std::string> isOwnedByCurrentUser(const std::string& path);
 
+// Reads an environment variable, returning empty if it is unset. (getenv_s on
+// Windows: MSVC deprecates std::getenv with C4996, so this is the one place
+// that reads the environment on both platforms.)
+std::string envValue(const char* name);
+
 }  // namespace p4gw

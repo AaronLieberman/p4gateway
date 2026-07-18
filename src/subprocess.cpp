@@ -74,7 +74,8 @@ std::string quoteArg(const std::string& arg) {
 #endif
 }
 
-// Reads an environment variable, returning empty if it is unset.
+}  // namespace
+
 std::string envValue(const char* name) {
 #ifdef _WIN32
     // getenv_s avoids MSVC's C4996 deprecation of std::getenv.
@@ -88,6 +89,8 @@ std::string envValue(const char* name) {
     return value ? std::string(value) : std::string{};
 #endif
 }
+
+namespace {
 
 #ifdef _WIN32
 

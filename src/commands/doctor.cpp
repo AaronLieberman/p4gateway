@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -288,8 +287,8 @@ int cmdDoctor(const Args& args) {
             bool covered =
                 rgignoreReopensRoot(readAll(fs::path(root) / ".rgignore"));
             if (!covered) {
-                const char* rcPath = std::getenv("RIPGREP_CONFIG_PATH");
-                if (rcPath != nullptr && *rcPath != '\0') {
+                const std::string rcPath = envValue("RIPGREP_CONFIG_PATH");
+                if (!rcPath.empty()) {
                     covered = ripgrepConfigDisablesVcsIgnore(readAll(rcPath));
                 }
             }
