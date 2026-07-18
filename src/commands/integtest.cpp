@@ -114,6 +114,9 @@ constexpr const char* kObliterateFiles[] = {
 constexpr const char* kKnownLocalEntries[] = {
     "p4.ini", ".p4config",
     "p4gw.cfg", ".gitignore", ".gitattributes", ".git",
+    // gw's managed ripgrep reopen file, and the shared denylist itRgignore
+    // writes to exercise its re-assertion.
+    ".rgignore", ".ignore",
     ".p4gw", "src", "bin", "devtools",
     "readme.txt", "notes.txt",
 };
@@ -496,6 +499,24 @@ std::expected<void, std::string> itGwInit(ItContext& it) {
     if (std::find(tracked->begin(), tracked->end(), ".gitattributes") ==
         tracked->end()) {
         return std::unexpected(".gitattributes was written but not committed");
+    }
+    // The allowlist .gitignore hides unmapped depot content from ripgrep, so
+    // init must also write the managed .rgignore block that reopens it. The
+    // file stays untracked (the allowlist's '/*' covers it).
+    auto rgignore = readFile(fs::path(it.repoDir) / ".rgignore");
+    if (!rgignore) {
+        return std::unexpected("init did not write the managed .rgignore: " +
+                               rgignore.error());
+    }
+    if (rgignore->find(kRgignoreBeginMarker) == std::string::npos ||
+        rgignore->find("!/[!.]*") == std::string::npos) {
+        return std::unexpected("init's .rgignore lacks the managed block:\n" +
+                               *rgignore);
+    }
+    if (std::find(tracked->begin(), tracked->end(), ".rgignore") !=
+        tracked->end()) {
+        return std::unexpected(".rgignore must stay untracked, but git "
+                               "tracks it");
     }
     return {};
 }
@@ -2061,6 +2082,99 @@ std::expected<void, std::string> itWorktreeGitignore(ItContext& it) {
     return {};
 }
 
+// The managed .rgignore lifecycle against real imports: a refresh folds a
+// changed .ignore into the block without touching hand-written rules outside
+// it and without duplicating the block, and `rgignore = off` stops gw from
+// recreating the file. (Whether ripgrep itself honors the result is pinned by
+// unit tests against a real rg; here the subject is the file management.)
+std::expected<void, std::string> itRgignore(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path rgignorePath = fs::path(it.repoDir) / ".rgignore";
+    const fs::path dotIgnorePath = fs::path(it.repoDir) / ".ignore";
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+
+    auto countBlocks = [&](const std::string& content) {
+        size_t count = 0;
+        for (size_t pos = content.find(kRgignoreBeginMarker);
+             pos != std::string::npos;
+             pos = content.find(kRgignoreBeginMarker, pos + 1)) {
+            ++count;
+        }
+        return count;
+    };
+
+    // A hand-written rule outside the block, and a shared .ignore denylist
+    // that the block must re-assert (the reopens outrank .ignore per path).
+    auto current = readFile(rgignorePath);
+    if (!current) {
+        return std::unexpected("expected the managed .rgignore from init: " +
+                               current.error());
+    }
+    auto handRule = appendFile(rgignorePath, "/hand-rule/\n");
+    if (!handRule) return handRule;
+    auto wroteIgnore = writeFile(dotIgnorePath, "/bin/\n");
+    if (!wroteIgnore) return wroteIgnore;
+
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) return std::unexpected(imported.error());
+    auto refreshed = readFile(rgignorePath);
+    if (!refreshed) return std::unexpected(refreshed.error());
+    if (countBlocks(*refreshed) != 1) {
+        return std::unexpected("import must rewrite the managed block in "
+                               "place, not duplicate it:\n" + *refreshed);
+    }
+    const auto blockEnd = refreshed->find(kRgignoreEndMarker);
+    const auto binAt = refreshed->find("/bin/\n");
+    if (blockEnd == std::string::npos || binAt == std::string::npos ||
+        binAt > blockEnd) {
+        return std::unexpected("import did not fold the .ignore pattern into "
+                               "the managed block:\n" + *refreshed);
+    }
+    if (refreshed->find("/hand-rule/\n") == std::string::npos) {
+        return std::unexpected("the refresh dropped a hand-written rule "
+                               "outside the managed block:\n" + *refreshed);
+    }
+
+    // Opt out: gw must neither refresh nor recreate the file, and doctor must
+    // drop its ripgrep check entirely (rg may or may not exist on this
+    // machine, so only the opted-out silence is assertable either way).
+    auto optedOut = appendFile(cfg, "\nrgignore = off\n");
+    if (!optedOut) return optedOut;
+    std::error_code ec;
+    fs::remove(rgignorePath, ec);
+    auto offImport = runGw(it, it.repoDir, {"import"});
+    if (!offImport) return std::unexpected(offImport.error());
+    if (fs::exists(rgignorePath)) {
+        return std::unexpected("'rgignore = off' but import recreated "
+                               ".rgignore");
+    }
+    auto doctorOut = runGw(it, it.repoDir, {"doctor"});
+    if (!doctorOut) return std::unexpected(doctorOut.error());
+    if (doctorOut->find("ripgrep") != std::string::npos) {
+        return std::unexpected("'rgignore = off' but doctor still ran the "
+                               "ripgrep check:\n" + *doctorOut);
+    }
+
+    // Restore: default config again, .ignore gone; an import regenerates the
+    // managed file so later steps see the usual state.
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    fs::remove(dotIgnorePath, ec);
+    auto regen = runGw(it, it.repoDir, {"import"});
+    if (!regen) return std::unexpected(regen.error());
+    auto regenerated = readFile(rgignorePath);
+    if (!regenerated) {
+        return std::unexpected("import did not regenerate .rgignore after the "
+                               "opt-out was removed: " + regenerated.error());
+    }
+    if (regenerated->find("/bin/\n") != std::string::npos) {
+        return std::unexpected("the regenerated block still re-asserts a "
+                               "deleted .ignore:\n" + *regenerated);
+    }
+    return {};
+}
+
 std::expected<void, std::string> itFinalChecks(ItContext& it) {
     auto out = runGw(it, it.repoDir, {"doctor"});
     if (!out) return std::unexpected(out.error());
@@ -2808,6 +2922,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itHaveManifestExclude(it); });
         steps.emplace_back("worktree import picks up an updated .gitignore",
                            [&] { return itWorktreeGitignore(it); });
+        steps.emplace_back("managed .rgignore: refreshed in place, hand rules "
+                           "kept, off opts out",
+                           [&] { return itRgignore(it); });
         steps.emplace_back("doctor clean, nothing opened, no stray writes",
                            [&] { return itFinalChecks(it); });
         steps.emplace_back("doctor catches each deliberate view "
