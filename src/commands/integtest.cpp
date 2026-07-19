@@ -518,6 +518,20 @@ std::expected<void, std::string> itGwInit(ItContext& it) {
         return std::unexpected(".rgignore must stay untracked, but git "
                                "tracks it");
     }
+    // Init is documented idempotent: a re-run over the freshly written
+    // metadata must change nothing. (The old mirror-entry append used a
+    // literal substring check that missed the allowlist's implicit '/*'
+    // coverage and tacked a redundant '.p4gw/' onto every re-run.)
+    auto ignoreBefore = readFile(fs::path(it.repoDir) / ".gitignore");
+    if (!ignoreBefore) return std::unexpected(ignoreBefore.error());
+    auto rerun = runGw(it, it.repoDir, {"init", "--allow-in-repo"});
+    if (!rerun) return std::unexpected(rerun.error());
+    auto ignoreAfter = readFile(fs::path(it.repoDir) / ".gitignore");
+    if (!ignoreAfter) return std::unexpected(ignoreAfter.error());
+    if (*ignoreAfter != *ignoreBefore) {
+        return std::unexpected("re-running init changed the .gitignore - init "
+                               "must be idempotent:\n" + *ignoreAfter);
+    }
     return {};
 }
 

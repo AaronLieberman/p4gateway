@@ -309,13 +309,22 @@ int cmdInit(const Args& args) {
         std::string content((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
         in.close();
+        // An allowlist (the style gw itself writes: '/*' then re-includes)
+        // hides the root-level mirror container implicitly, so there is no
+        // mirror line to find - appending one would make re-running init
+        // non-idempotent, and would silently override a hand-written
+        // '!/.p4gw/' re-include. Only a denylist needs the explicit entry.
+        const bool allowlist = gitignoreIsAllowlist(content);
         std::ofstream out(gitignore, std::ios::app);
-        for (const auto& entry : mirrorEntries) {
-            if (content.find(entry) == std::string::npos) {
-                out << "\n# gw's mirror directory - P4-managed, not for Git\n"
-                    << entry << "\n";
-                std::printf("Added %s to .gitignore\n", entry.c_str());
-                wroteGitignore = true;
+        if (!allowlist) {
+            for (const auto& entry : mirrorEntries) {
+                if (content.find(entry) == std::string::npos) {
+                    out << "\n# gw's mirror directory - P4-managed, not for "
+                           "Git\n"
+                        << entry << "\n";
+                    std::printf("Added %s to .gitignore\n", entry.c_str());
+                    wroteGitignore = true;
+                }
             }
         }
         for (const auto& entry : excludeEntries) {
@@ -335,14 +344,9 @@ int cmdInit(const Args& args) {
                 wroteGitignore = true;
             }
         }
-        // An allowlist .gitignore (gw's starter: '/*' then re-includes) ignores
-        // loose root files too, so it swallows the .gitattributes written below
-        // - re-include it, the same way the header re-includes .gitignore. Only
-        // for an allowlist; a denylist never ignores it. Detect the '/*' line at
-        // the file start or on its own line.
-        const bool allowlist =
-            content.rfind("/*\n", 0) == 0 ||
-            content.find("\n/*\n") != std::string::npos;
+        // The allowlist's '/*' also swallows loose root files, including the
+        // .gitattributes written below - re-include it, the same way the
+        // header re-includes .gitignore. A denylist never ignores it.
         if (allowlist &&
             content.find("!/.gitattributes") == std::string::npos) {
             out << "\n# gw's line-ending policy - re-included so the root '/*'\n"
