@@ -26,14 +26,6 @@ struct ViewRule {
     // paths so we never touch (or crawl) the rest of the workspace.
     std::string depotPath;
 
-    // Whether `depotPath` maps a whole subtree (`/...`, the default) or only the
-    // files directly in one directory (`/*`, no sub-directories) - exactly the
-    // recursive-vs-single-level distinction of a p4 client view. A single-level
-    // `include` pairs with a recursive `exclude` to keep the direct files of a
-    // directory while dropping its children. `exclude` lines are always
-    // recursive (`/...`), so this is only ever false for an `include`.
-    bool recursive = true;
-
     // Directory the client view remaps `depotPath` into - p4's staging area,
     // which p4 syncs and gw reads/writes. Always lives under the repo's single
     // `.p4gw` container; relative values resolve against the directory holding
@@ -47,6 +39,15 @@ struct ViewRule {
     // enclosing include (an exclude of "//d/src/lib/..." under a "src" include
     // -> "src/lib").
     std::string repoSubtree;
+
+    // Whether `depotPath` maps a whole subtree (`/...`, the default) or only the
+    // files directly in one directory (`/*`, no sub-directories) - exactly the
+    // recursive-vs-single-level distinction of a p4 client view. A single-level
+    // `include` pairs with a recursive `exclude` to keep the direct files of a
+    // directory while dropping its children. `exclude` lines are always
+    // recursive (`/...`), so this is only ever false for an `include`. Kept last
+    // so positional aggregate-inits of the earlier fields stay valid.
+    bool recursive = true;
 };
 
 // How `gw import` builds the depot snapshot.
