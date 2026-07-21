@@ -318,6 +318,11 @@ Git:
   (`!/src/lib/public/win64/`) — the same nesting Git itself understands.
 - Each `ignore` line appends its pattern verbatim after the allowlist, so
   files P4 skips (build output, IDE state) stay out of Git too.
+- Adding an `include` to `p4gw.cfg` later needs the allowlist to grow a
+  matching `!/yourdir/` line, or Git ignores the new subtree and `gw import`
+  ships nothing through it. Rerun `gw init` — it appends the missing
+  re-includes to your existing `.gitignore` (then commit it). `gw doctor`
+  fails when a mapped subtree isn't covered, so this doesn't stay silent.
 - To keep a directory that is Git-only (never in P4), add a `!/yourdir/`
   line.
 - gw never opens `p4gw.cfg` or `.gitignore` in a changelist.

@@ -326,6 +326,23 @@ int cmdInit(const Args& args) {
                     wroteGitignore = true;
                 }
             }
+        } else {
+            // The allowlist re-includes exactly the mapped subtrees, so an
+            // `include` added to p4gw.cfg after this file was written leaves its
+            // subtree ignored - 'gw import' copies the mirror in but 'git add'
+            // drops it. Append the missing re-includes (before the carve-out
+            // re-exclusions below, so a re-include always precedes its carve-out).
+            const auto missing =
+                missingAllowlistTrackingLines(config->rules, content);
+            if (!missing.empty()) {
+                out << "\n# newly mapped subtree(s) ('include') - re-included so "
+                       "the root '/*'\n# does not ignore them\n";
+                for (const auto& line : missing) {
+                    out << line << "\n";
+                    std::printf("Added %s to .gitignore\n", line.c_str());
+                }
+                wroteGitignore = true;
+            }
         }
         for (const auto& entry : excludeEntries) {
             if (content.find(entry) == std::string::npos) {

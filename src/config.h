@@ -160,6 +160,25 @@ std::string excludedRepoSubtree(const std::string& mappingDepotPath,
 std::string buildGitignore(const std::vector<ViewRule>& rules,
                            const std::vector<std::string>& ignorePatterns = {});
 
+// The allowlist re-include lines that make Git track each mapped `include`
+// subtree: "!/src/", "!/files/", plus the ancestor re-include and child
+// re-exclusion lines for a nested re-include chain ("!/a/", "/a/*", "!/a/b/").
+// These are exactly the lines buildGitignore emits from the ordered rules,
+// minus the plain carve-out re-exclusions (handled separately). Empty when the
+// rules yield the denylist body (a whole-repo include, or nothing tracked).
+// Order matches buildGitignore. Pure; unit-tested.
+std::vector<std::string> allowlistTrackingLines(
+    const std::vector<ViewRule>& rules);
+
+// The subset of allowlistTrackingLines(rules) not already present as a complete
+// line in `gitignoreContent` - the re-includes an existing allowlist .gitignore
+// is missing to track every mapped subtree (e.g. after an `include` was added
+// to p4gw.cfg without regenerating .gitignore, so `gw import` copies the mirror
+// in but `git add` ignores it). Empty when the file already covers them or the
+// rules yield the denylist body. Pure; unit-tested.
+std::vector<std::string> missingAllowlistTrackingLines(
+    const std::vector<ViewRule>& rules, const std::string& gitignoreContent);
+
 // The starter `.gitattributes` gw init commits: a committed `* -text` so git
 // stores every file's blob byte-for-byte as P4 synced it into the mirror
 // (verbatim, no text-vs-binary guessing or CRLF<->LF translation), independent

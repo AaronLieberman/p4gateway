@@ -286,6 +286,39 @@ std::string joinComponents(const std::vector<std::string>& c) {
     return s;  // leading slash, no trailing slash, e.g. "/a/b"
 }
 
+// The allowlist body's re-include / child-re-exclude lines, in depth order: a
+// "!/dir/" re-include for every directory the layout names, and a "/dir/*"
+// child re-exclusion for each intermediate one (so the next deeper re-include
+// shows only the mapped descendant through). The plain carve-out re-exclusions
+// are emitted separately by the caller. No trailing newline on each entry.
+std::vector<std::string> trackingLinesFromLayout(const AllowlistLayout& layout) {
+    std::vector<std::string> lines;
+    size_t maxDepth = 0;
+    for (const auto& d : layout.dirs)
+        maxDepth = std::max(maxDepth, d.components.size());
+    for (size_t depth = 1; depth <= maxDepth; ++depth) {
+        for (const auto& d : layout.dirs)
+            if (d.components.size() == depth)
+                lines.push_back("!" + joinComponents(d.components) + "/");
+        for (const auto& d : layout.dirs)
+            if (d.components.size() == depth && !d.isLeaf)
+                lines.push_back(joinComponents(d.components) + "/*");
+    }
+    return lines;
+}
+
+// Whether `content` contains `line` as a complete line (trimmed, CR-tolerant),
+// so "!/src/" is not mistaken for present when only "!/src/lib/" appears.
+bool hasExactLine(const std::string& content, const std::string& line) {
+    std::istringstream stream(content);
+    std::string cur;
+    while (std::getline(stream, cur)) {
+        if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+        if (trim(cur) == line) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 std::string buildGitignore(const std::vector<ViewRule>& rules,
@@ -344,23 +377,31 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
     // level's re-includes show only the mapped descendants through. An
     // intermediate is either an ancestor of a tracked leaf or a carved-out
     // directory that has a re-included descendant; both need `/dir/*`.
-    size_t maxDepth = 0;
-    for (const auto& d : layout.dirs)
-        maxDepth = std::max(maxDepth, d.components.size());
-    for (size_t depth = 1; depth <= maxDepth; ++depth) {
-        for (const auto& d : layout.dirs)
-            if (d.components.size() == depth)
-                out += "!" + joinComponents(d.components) + "/\n";
-        for (const auto& d : layout.dirs)
-            if (d.components.size() == depth && !d.isLeaf)
-                out += joinComponents(d.components) + "/*\n";
-    }
+    for (const auto& line : trackingLinesFromLayout(layout)) out += line + "\n";
     // The allowlist re-includes each mapped subtree whole (`!/src/`); a later
     // `/src/thirdparty/` line then carves the (plain) excluded directories back
     // out. Git applies the patterns in order, so these must come last.
     appendExclusions(out);
     appendExtra(out);
     return out;
+}
+
+std::vector<std::string> allowlistTrackingLines(
+    const std::vector<ViewRule>& rules) {
+    const AllowlistLayout layout = computeAllowlistLayout(rules);
+    // The denylist body (whole-repo include, or nothing tracked) uses no
+    // re-includes, so there is nothing to track line by line.
+    if (layout.wholeRepoMapped || !layout.anyTracked) return {};
+    return trackingLinesFromLayout(layout);
+}
+
+std::vector<std::string> missingAllowlistTrackingLines(
+    const std::vector<ViewRule>& rules, const std::string& gitignoreContent) {
+    std::vector<std::string> missing;
+    for (const auto& line : allowlistTrackingLines(rules)) {
+        if (!hasExactLine(gitignoreContent, line)) missing.push_back(line);
+    }
+    return missing;
 }
 
 std::expected<Config, std::string> loadConfig(const std::string& path) {

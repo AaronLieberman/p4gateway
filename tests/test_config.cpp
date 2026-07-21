@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 #include "config.h"
 #include "test_framework.h"
@@ -413,6 +415,11 @@ bool contains(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
 
+bool contains_line(const std::vector<std::string>& lines,
+                   const std::string& line) {
+    return std::find(lines.begin(), lines.end(), line) != lines.end();
+}
+
 }  // namespace
 
 TEST(gitignore_allowlists_a_top_level_subtree) {
@@ -552,6 +559,58 @@ TEST(gitattributes_pin_rejects_non_catchall_or_unrelated) {
     CHECK(!p4gw::gitattributesPinsEol("* diff=cpp\n"));
     // '-text' must be a whole attribute token, not a substring of another.
     CHECK(!p4gw::gitattributesPinsEol("* mytext\n"));
+}
+
+TEST(allowlist_tracking_lines_lists_each_mapped_subtree) {
+    const auto lines =
+        p4gw::allowlistTrackingLines({inc("src"), inc("files")});
+    // One re-include per mapped subtree, in declaration order - exactly what
+    // buildGitignore emits for the allowlist body.
+    CHECK(lines.size() == 2);
+    CHECK(lines[0] == "!/src/");
+    CHECK(lines[1] == "!/files/");
+}
+
+TEST(allowlist_tracking_lines_covers_nested_reinclude_chain) {
+    const auto lines = p4gw::allowlistTrackingLines({inc("a/b")});
+    // The ancestor re-include, its child re-exclusion, then the deeper subtree.
+    CHECK(contains_line(lines, "!/a/"));
+    CHECK(contains_line(lines, "/a/*"));
+    CHECK(contains_line(lines, "!/a/b/"));
+}
+
+TEST(allowlist_tracking_lines_empty_for_denylist_body) {
+    // A whole-repo include falls back to the denylist body, which uses no
+    // re-includes - so there is nothing to track line by line.
+    CHECK(p4gw::allowlistTrackingLines({inc("")}).empty());
+}
+
+TEST(missing_allowlist_lines_finds_a_newly_added_include) {
+    // The .gitignore was written for src only; adding a `files` include leaves
+    // its re-include missing (the exact bug: import ships nothing through it).
+    const std::string existing = p4gw::buildGitignore({inc("src")});
+    const auto missing = p4gw::missingAllowlistTrackingLines(
+        {inc("src"), inc("files")}, existing);
+    CHECK(missing.size() == 1);
+    CHECK(missing[0] == "!/files/");
+}
+
+TEST(missing_allowlist_lines_empty_when_file_covers_every_subtree) {
+    const std::string existing =
+        p4gw::buildGitignore({inc("src"), inc("files")});
+    CHECK(p4gw::missingAllowlistTrackingLines({inc("src"), inc("files")},
+                                              existing)
+              .empty());
+}
+
+TEST(missing_allowlist_lines_matches_whole_lines_only) {
+    // "!/src/" must not count as present just because "!/src/lib/" is - the
+    // whole src subtree would be untracked despite the deeper line appearing.
+    const std::string existing = "/*\n!/src/lib/public/win64/\n";
+    const auto missing =
+        p4gw::missingAllowlistTrackingLines({inc("src")}, existing);
+    CHECK(missing.size() == 1);
+    CHECK(missing[0] == "!/src/");
 }
 
 TEST(gitignore_allowlist_detection) {

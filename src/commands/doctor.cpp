@@ -260,6 +260,43 @@ int cmdDoctor(const Args& args) {
         }
     }
 
+    // Allowlist coverage. The .gitignore gw writes is an allowlist that
+    // re-includes exactly the mapped subtrees; everything else stays ignored.
+    // An `include` added to p4gw.cfg without its `!/<subtree>/` re-include
+    // leaves that subtree ignored, so 'gw import' copies the mirror in but
+    // 'git add' drops it and the baseline ships nothing through it - silently,
+    // with no error anywhere. Flag any mapped subtree the allowlist misses.
+    // Only meaningful for the allowlist style (a hand-kept denylist tracks by
+    // default); an absent/empty .gitignore is simply not an allowlist yet.
+    {
+        auto readAll = [](const fs::path& p) -> std::string {
+            std::ifstream in(p, std::ios::binary);
+            if (!in) return {};
+            std::string content((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+            return content;
+        };
+        const std::string gitignore = readAll(fs::path(root) / ".gitignore");
+        if (gitignoreIsAllowlist(gitignore)) {
+            const auto missing =
+                missingAllowlistTrackingLines(config->rules, gitignore);
+            if (missing.empty()) {
+                std::printf("ok    .gitignore allowlist tracks every mapped "
+                            "subtree\n");
+            } else {
+                std::printf("FAIL  .gitignore allowlist does not track %zu "
+                            "mapped subtree(s) - 'gw import' ships nothing "
+                            "through them.\n      Add these line(s) to "
+                            ".gitignore (or rerun 'gw init'):\n",
+                            missing.size());
+                for (const auto& line : missing) {
+                    std::printf("        %s\n", line.c_str());
+                }
+                ++failures;
+            }
+        }
+    }
+
     // Ripgrep blind spot. rg honors .gitignore by default, and the allowlist
     // .gitignore gw writes ignores everything unmapped - so unmapped depot
     // content synced in place (bin/, content/) silently vanishes from every
