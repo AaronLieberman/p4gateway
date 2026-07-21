@@ -2135,12 +2135,15 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     }
     auto originalSpec = p4::clientSpec(it.p4);
     if (!originalSpec) return std::unexpected(originalSpec.error());
-    // The depot baseline the scenario advances. `data` is a sibling subtree
+    // Both refs the scenario's imports advance. `data` is a sibling subtree
     // (unlike itWorktreeGitignore's src file, which a later src-mapping import
-    // deletes on its own), so once we remove the mapping nothing would prune it
-    // from the baseline - roll the ref back explicitly at the end instead. The
-    // 'main' branch never moves here (the pre-fix import is a clean no-op and
-    // the post-fix one is a dirty-tree import that skips the branch update).
+    // deletes on its own), so once the mapping is removed nothing would prune it
+    // - restore both refs to their entry commits at the end so the scenario is a
+    // no-op on shared state. Rolling back only the depot ref would leave 'main'
+    // diverged from it, which later misdirects the git-branchless restack (it
+    // restacks onto 'main').
+    auto savedMain = git::revParse("main", it.repoDir);
+    if (!savedMain) return std::unexpected(savedMain.error());
     auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
     if (!savedRef) return std::unexpected(savedRef.error());
 
@@ -2253,21 +2256,31 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
                                "\n" + *healthy);
     }
 
-    // (8) Restore the fixture: revert opens, put config/.gitignore/spec back,
-    // roll the baseline ref back so `data` leaves no trace, then obliterate the
-    // depot file and drop the mirror. The manifest is a cache; delete it so the
-    // next step full-walks against the restored (src-only) config.
+    // (8) Restore the fixture exactly as inherited. p4 side: drop any opens.
     auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
                           p4::revert(it.p4, it.p4DepotPath));
     if (!reverted) return std::unexpected(reverted.error());
+    // git side: 'main' and the depot ref back to their entry commits (a reset
+    // for the checked-out branch, update-ref for the hidden one), so the removed
+    // subtree and the baseline commits that carried it leave no trace.
+    auto backToMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!backToMain) return std::unexpected(backToMain.error());
+    auto resetMain = git::run({"reset", "--hard", *savedMain}, it.repoDir);
+    if (!resetMain) return std::unexpected(resetMain.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    // The reset restored the committed .gitignore; overwrite with the working
+    // copy captured at entry (p4gw.cfg is untracked, so the reset left the
+    // scenario's `include` line in place - rewrite it too).
     auto restoredIgnore = writeFile(gitignore, *savedIgnore);
     if (!restoredIgnore) return restoredIgnore;
     auto restoredCfg = writeFile(cfg, *savedCfg);
     if (!restoredCfg) return restoredCfg;
     auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
     if (!restoredSpec) return std::unexpected(restoredSpec.error());
-    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
-    if (!rolledBack) return std::unexpected(rolledBack.error());
+    // depot: obliterate the throwaway file (guarded), drop the mirror, the
+    // manifest (a cache, now bound to a rolled-back snapshot), and any checkout
+    // copy a checkout-mode import may have materialized.
     auto guard = itVerifyThrowaway(it);
     if (!guard) return std::unexpected(guard.error());
     auto obliterated = trace(it, "p4 obliterate -y " + dataDepotFile,
@@ -2275,6 +2288,7 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     if (!obliterated) return std::unexpected(obliterated.error());
     std::error_code ec;
     fs::remove_all(dataMirror, ec);
+    fs::remove_all(fs::path(it.repoDir) / "data", ec);
     fs::remove(manifest, ec);
     return {};
 }
