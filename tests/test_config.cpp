@@ -119,6 +119,64 @@ TEST(config_parses_reinclude_deeper_than_an_exclude) {
     }
 }
 
+TEST(config_parses_single_level_include) {
+    // The direct-files pattern: map src, carve out src/build recursively, then
+    // re-include only the files directly in src/build (a '/*' depot path).
+    auto config = loadFromString(
+        "include = //depot/main/src/...      .p4gw/src\n"
+        "exclude = //depot/main/src/build/...\n"
+        "include = //depot/main/src/build/*  .p4gw/src/build\n");
+    CHECK(config.has_value());
+    if (config) {
+        CHECK(config->rules.size() == 3);
+        CHECK(config->rules[0].recursive);
+        CHECK(config->rules[1].exclude && config->rules[1].recursive);
+        CHECK(!config->rules[2].exclude);
+        CHECK(!config->rules[2].recursive);
+        CHECK(config->rules[2].depotPath == "//depot/main/src/build/*");
+        CHECK(config->rules[2].mirrorPath == ".p4gw/src/build");
+        CHECK(config->rules[2].repoSubtree == "src/build");
+    }
+}
+
+TEST(config_rejects_single_level_exclude) {
+    // '/*' is only meaningful on an include; an exclude is always recursive.
+    CHECK(!loadFromString(
+              "include = //depot/x/... .p4gw/x\n"
+              "exclude = //depot/x/build/*\n")
+               .has_value());
+}
+
+TEST(effective_rule_single_level_covers_only_direct_children) {
+    auto config = loadFromString(
+        "include = //depot/main/src/...      .p4gw/src\n"
+        "exclude = //depot/main/src/build/...\n"
+        "include = //depot/main/src/build/*  .p4gw/src/build\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto& rules = config->rules;
+    // A file directly in src/build resolves to the single-level include.
+    const auto* direct =
+        p4gw::effectiveRuleForDepot(rules, "//depot/main/src/build/config.ini");
+    CHECK(direct != nullptr && !direct->exclude && !direct->recursive);
+    // A file in a sub-directory of src/build is NOT covered by the '/*' rule,
+    // so it falls back to the recursive exclude.
+    const auto* deep = p4gw::effectiveRuleForDepot(
+        rules, "//depot/main/src/build/gen/output.txt");
+    CHECK(deep != nullptr && deep->exclude);
+    // The same, resolved on the repo (working-tree) side.
+    const auto* directRepo =
+        p4gw::effectiveRuleForRepo(rules, "src/build/config.ini");
+    CHECK(directRepo != nullptr && !directRepo->exclude);
+    const auto* deepRepo =
+        p4gw::effectiveRuleForRepo(rules, "src/build/gen/output.txt");
+    CHECK(deepRepo != nullptr && deepRepo->exclude);
+    // A plain src file is unaffected.
+    const auto* core =
+        p4gw::effectiveRuleForDepot(rules, "//depot/main/src/core/main.cpp");
+    CHECK(core != nullptr && !core->exclude && core->recursive);
+}
+
 TEST(effective_rule_for_depot_is_later_wins) {
     auto config = loadFromString(
         "include = //depot/src/...                     .p4gw/src\n"
@@ -402,6 +460,18 @@ p4gw::ViewRule inc(const std::string& subtree) {
     return r;
 }
 
+// A single-level (`/*`) include: only the files directly in `subtree` are
+// mapped, its sub-directories are not.
+p4gw::ViewRule incFiles(const std::string& subtree) {
+    p4gw::ViewRule r;
+    r.exclude = false;
+    r.recursive = false;
+    r.depotPath = "//depot/x/" + subtree + "/*";
+    r.mirrorPath = ".p4gw/" + subtree;
+    r.repoSubtree = subtree;
+    return r;
+}
+
 // A carved-out subtree - the exclude half of a rule list.
 p4gw::ViewRule exc(const std::string& subtree) {
     p4gw::ViewRule r;
@@ -496,6 +566,31 @@ TEST(gitignore_reincludes_a_deeper_subtree_under_an_exclude) {
     // Ordering: each level's re-exclude of contents precedes the deeper
     // re-include, or the leaf would be hidden.
     CHECK(out.find("/src/lib/*\n") < out.find("!/src/lib/public/win64/\n"));
+}
+
+TEST(gitignore_single_level_reexcludes_child_directories) {
+    // The direct-files pattern under a recursive parent: src is tracked whole,
+    // src/build carved out, then re-included single-level. The '!/src/' keeps
+    // src/build's own files; '/src/build/*/' re-excludes its child directories.
+    const std::string out = p4gw::buildGitignore(
+        {inc("src"), exc("src/build"), incFiles("src/build")});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(contains(out, "/src/build/*/\n"));
+    // Not a plain whole-directory carve-out (that would hide the direct files
+    // too). Anchor at a line boundary so it does not match '/src/build/*/'.
+    CHECK(!contains(out, "\n/src/build/\n"));
+    // The re-exclusion of children must come after the subtree's re-include.
+    CHECK(out.find("!/src/\n") < out.find("/src/build/*/\n"));
+}
+
+TEST(gitignore_single_level_top_level_subtree) {
+    // A single-level mapping with no recursive ancestor: re-include the subtree
+    // (so its files show through the blanket /*) and re-exclude its children.
+    const std::string out = p4gw::buildGitignore({incFiles("build")});
+    CHECK(contains(out, "/*\n"));
+    CHECK(contains(out, "!/build/\n"));
+    CHECK(contains(out, "/build/*/\n"));
+    CHECK(out.find("!/build/\n") < out.find("/build/*/\n"));
 }
 
 TEST(gitignore_reexcludes_under_whole_repo_mapping) {

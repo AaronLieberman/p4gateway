@@ -21,7 +21,14 @@ top-level unmapped directories even though it lives under a mapped subtree.
 Rules may be intermixed freely, and a later `include` **deeper** than an
 `exclude` re-includes that subtree back into a nested mirror (the
 win64-yes-linux-no pattern: `exclude src/lib`, then `include
-src/lib/public/win64`). The view check tolerates all of this plus per-platform
+src/lib/public/win64`). An `include` depot path ends in `/...` (recursive) or
+`/*` (single-level — only the files directly in that directory, the p4 view
+wildcard); a `/*` include pairs with a recursive `exclude` to keep a
+directory's own files while dropping its sub-directories (`exclude src/build`,
+then `include src/build/*`). The recursive-vs-single-level bit is carried on
+`ViewRule::recursive` and threaded through `effectiveRuleFor*` (single-level
+covers only direct children) and `buildGitignore` (a `/src/build/*/` line
+re-excludes the child dirs). Excludes are always `/...`. The view check tolerates all of this plus per-platform
 peer carve-outs done purely in the client view (keep `win64/`, drop its
 `linux/` peer); its one hard rule is that nothing may map into the repo outside
 a mirror unless an `exclude` declares it. The starter `.gitignore` `gw init`

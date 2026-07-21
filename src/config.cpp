@@ -51,11 +51,24 @@ std::vector<std::string> tokenize(const std::string& value) {
     return tokens;
 }
 
-// "//depot/x/..." -> "//depot/x/" so a prefix test is anchored at a path
-// boundary ("//d/src/" must not match "//d/srclib/").
+// "//depot/x/..." (or the single-level "//depot/x/*") -> "//depot/x/" so a
+// prefix test is anchored at a path boundary ("//d/src/" must not match
+// "//d/srclib/"). The recursive-vs-single-level distinction is carried
+// separately (ViewRule::recursive), not by the stripped base.
 std::string stripDepotWildcard(const std::string& path) {
     if (path.ends_with("...")) return path.substr(0, path.size() - 3);
+    if (path.ends_with("*")) return path.substr(0, path.size() - 1);
     return path;
+}
+
+// Whether a rule with wildcard-stripped base `base` and the given recursion
+// covers `path`: a prefix match, plus - for a single-level (`/*`) rule - the
+// requirement that nothing follows the direct child (no deeper '/').
+bool wildcardCovers(bool recursive, const std::string& base,
+                    const std::string& path) {
+    if (!path.starts_with(base)) return false;
+    if (recursive) return true;
+    return path.find('/', base.size()) == std::string::npos;
 }
 
 }  // namespace
@@ -105,7 +118,8 @@ const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
                                       const std::string& depotFile) {
     const ViewRule* effective = nullptr;
     for (const auto& rule : rules) {
-        if (depotFile.starts_with(stripDepotWildcard(rule.depotPath))) {
+        if (wildcardCovers(rule.recursive, stripDepotWildcard(rule.depotPath),
+                           depotFile)) {
             effective = &rule;  // later declaration wins
         }
     }
@@ -117,8 +131,19 @@ const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
     const ViewRule* effective = nullptr;
     for (const auto& rule : rules) {
         const std::string& sub = rule.repoSubtree;
-        const bool matches =
-            sub.empty() || repoRel == sub || repoRel.starts_with(sub + "/");
+        bool matches;
+        if (sub.empty()) {
+            matches = true;  // whole-repo include (always recursive)
+        } else if (repoRel == sub) {
+            matches = true;
+        } else if (repoRel.starts_with(sub + "/")) {
+            // A single-level rule covers only direct children: nothing may
+            // follow the component after the subtree prefix.
+            matches = rule.recursive ||
+                      repoRel.find('/', sub.size() + 1) == std::string::npos;
+        } else {
+            matches = false;
+        }
         if (matches) effective = &rule;  // later declaration wins
     }
     return effective;
@@ -165,6 +190,7 @@ struct Boundary {
     std::string subtree;             // forward slashes, no trailing slash
     std::vector<std::string> comps;  // subtree split into components
     bool tracked;                    // include (true) vs exclude (false)
+    bool recursive;                  // whole subtree (true) vs direct files only
 };
 
 // A directory the allowlist must name: a kept tracked subtree ("leaf",
@@ -184,6 +210,10 @@ struct AllowlistLayout {
     // Carved-out subtrees with no re-included descendant, first-seen order.
     // (A carve-out that has one shows up as an intermediate in `dirs`.)
     std::vector<std::string> plainCarveouts;
+    // Tracked subtrees mapped single-level (`/*`): their own files are kept
+    // (by the subtree's re-include), but their sub-directories must be
+    // re-excluded with a `/sub/*/` line. First-seen order.
+    std::vector<std::string> singleLevelCarveouts;
     // Every directory the allowlist names, first-seen order.
     std::vector<LayoutDir> dirs;
 };
@@ -209,9 +239,10 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
         if (it == boundaries.end()) {
             boundaries.push_back({rule.repoSubtree,
                                   pathComponents(rule.repoSubtree),
-                                  !rule.exclude});
+                                  !rule.exclude, rule.recursive});
         } else {
-            it->tracked = !rule.exclude;  // later rule wins
+            it->tracked = !rule.exclude;      // later rule wins
+            it->recursive = rule.recursive;   // ... and carries its wildcard
         }
     }
 
@@ -228,6 +259,15 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
                                    isStrictAncestor(b.comps, o.comps);
                         });
         if (!hasReinclude) layout.plainCarveouts.push_back(b.subtree);
+    }
+
+    // A tracked single-level subtree keeps its own files but re-excludes its
+    // sub-directories (`/sub/*/`), so it is neither a plain carve-out nor a
+    // whole re-include.
+    for (const auto& b : boundaries) {
+        if (b.tracked && !b.recursive) {
+            layout.singleLevelCarveouts.push_back(b.subtree);
+        }
     }
 
     // Keep each tracked subtree unless a *tracked* boundary already contains it
@@ -338,6 +378,20 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
         for (const auto& sub : layout.plainCarveouts) out += "/" + sub + "/\n";
     };
 
+    // Re-excludes the sub-directories of a single-level (`/*`) mapped subtree,
+    // keeping its own files (which the subtree's re-include still tracks). The
+    // trailing-slash glob `/sub/*/` matches directories only, so `sub/file.txt`
+    // stays tracked while `sub/child/` (and everything under it) is ignored.
+    auto appendSingleLevel = [&](std::string& out) {
+        if (layout.singleLevelCarveouts.empty()) return;
+        out += "\n# Sub-directories of a single-level ('/*') mapped subtree: only "
+               "the\n# directory's own files are mapped, so its child directories "
+               "are ignored\n# (like unmapped depot content).\n";
+        for (const auto& sub : layout.singleLevelCarveouts) {
+            out += "/" + sub + "/*/\n";
+        }
+    };
+
     // Extra ignore patterns from p4gw.cfg `ignore` lines, appended verbatim.
     // These are files P4 ignores (build output, IDE state) that would otherwise
     // be tracked under a mapped subtree; they must come after the allowlist's
@@ -380,8 +434,10 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
     for (const auto& line : trackingLinesFromLayout(layout)) out += line + "\n";
     // The allowlist re-includes each mapped subtree whole (`!/src/`); a later
     // `/src/thirdparty/` line then carves the (plain) excluded directories back
-    // out. Git applies the patterns in order, so these must come last.
+    // out, and `/src/build/*/` re-excludes a single-level subtree's children.
+    // Git applies the patterns in order, so these must come last.
     appendExclusions(out);
+    appendSingleLevel(out);
     appendExtra(out);
     return out;
 }
@@ -439,11 +495,18 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             rule.depotPath = tokens[0];
             rule.mirrorPath = tokens[1];
             rule.repoSubtree = mirrorRepoSubtree(tokens[1]);
-            if (!rule.depotPath.ends_with("/...")) {
+            // A depot path ends in '/...' (map the whole subtree) or '/*' (map
+            // only the files directly in that directory, like a p4 single-level
+            // view line). '/*' pairs with a recursive 'exclude' to keep a
+            // directory's own files while dropping its sub-directories.
+            if (!rule.depotPath.ends_with("/...") &&
+                !rule.depotPath.ends_with("/*")) {
                 return std::unexpected(
                     where + ": depot path '" + rule.depotPath +
-                    "' must end with '/...'");
+                    "' must end with '/...' (whole subtree) or '/*' (direct "
+                    "files only)");
             }
+            rule.recursive = rule.depotPath.ends_with("/...");
             for (const auto& existing : config.rules) {
                 if (existing.exclude) continue;
                 if (existing.depotPath == rule.depotPath) {
@@ -471,6 +534,12 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                     where + ": 'exclude' takes one value: <depot_path>");
             }
             const std::string& excludePath = tokens[0];
+            if (excludePath.ends_with("/*")) {
+                return std::unexpected(
+                    where + ": exclude path '" + excludePath +
+                    "' cannot use '/*'; an exclude is always recursive - end it "
+                    "with '/...'");
+            }
             if (!excludePath.ends_with("/...")) {
                 return std::unexpected(where + ": exclude path '" + excludePath +
                                        "' must end with '/...'");

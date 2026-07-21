@@ -269,11 +269,22 @@ include = //depot/yourproject/config/...  .p4gw/config
 # place, and gw keeps it out of the mirror and gitignores it - exactly like
 # unmapped depot content (bin/, content/), even though it lives under a mapped
 # subtree. Intermix them freely, and a later 'include' deeper than an 'exclude'
-# maps that part back into the mirror (the win64-yes-linux-no pattern). Each
-# path ends in '/...'; each exclude must fall under a preceding include.
+# maps that part back into the mirror (the win64-yes-linux-no pattern). An
+# include's depot path ends in '/...' (map the whole subtree) or '/*' (map only
+# the files directly in that directory, no sub-directories - the p4 single-level
+# wildcard); an exclude is always recursive ('/...') and must fall under a
+# preceding include.
 exclude = //depot/yourproject/src/thirdparty/...
 exclude = //depot/yourproject/src/lib/...
 include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win64
+
+# Direct files of a directory only: carve the directory out recursively, then
+# re-include it with a '/*' depot path. Here src/build's own files are tracked
+# and shipped, but everything in its sub-directories is dropped (like unmapped
+# depot content). The starter .gitignore keeps '!/src/' and adds '/src/build/*/'
+# to re-exclude the child directories.
+exclude = //depot/yourproject/src/build/...
+include = //depot/yourproject/src/build/*  .p4gw/src/build
 
 # Optional 'ignore' lines add extra .gitignore patterns (verbatim gitignore
 # syntax), one per line. The allowlist tracks a whole mapped subtree, but P4
@@ -399,3 +410,14 @@ A subtree need not sync as one solid block. These patterns are supported:
   they parallel, the deeper include overrides the exclude for just that
   subtree; gw tracks it, ships it, and the surrounding `src/lib/` stays
   carved out.
+- **Just the files in a directory, not its sub-directories.** Use a `/*`
+  depot path — the p4 single-level wildcard. Carve the directory out
+  recursively, then re-include it with `/*`: `exclude =
+  //depot/.../src/build/...` followed by `include = //depot/.../src/build/*
+  .p4gw/src/build`. The direct files of `src/build/` are tracked and shipped,
+  while every sub-directory is dropped (the exclude still covers them — `/*`
+  only re-includes the one level). The matching client view line uses `*`
+  too (`//depot/.../src/build/* //client/…/.p4gw/src/build/*`), and the
+  starter `.gitignore` keeps `!/src/` and adds `/src/build/*/` to re-exclude
+  the child directories. An `exclude` is always recursive, so `/*` is only
+  ever used on an `include`.

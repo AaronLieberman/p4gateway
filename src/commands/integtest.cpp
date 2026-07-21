@@ -109,6 +109,9 @@ constexpr const char* kObliterateFiles[] = {
     // itHaveManifestExclude's carve-out; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/devtools/tool.txt",
+    // itSingleLevelInclude's fixture files (a direct file and a sub-directory
+    // file under src/build); obliterated in-step, listed as an abort safety net.
+    "src/build/keep.txt", "src/build/gen/drop.txt",
 };
 
 // Top-level names integtest itself creates under testRoot (== repoDir). The
@@ -1984,6 +1987,153 @@ std::expected<void, std::string> itHaveManifestExclude(ItContext& it) {
     return {};
 }
 
+// Exercises the single-level ('/*') include end to end: map src recursively,
+// carve out src/build, then re-include only the files directly in src/build via
+// a '/*' depot path and a matching single-level client view line. This is the
+// one config shape unit tests can't fully prove, because the payoff is real p4
+// behavior - the view check must accept the '/*' client line, `p4 sync` must
+// bring only the direct files into the nested mirror, and `gw import` must ship
+// the direct file while dropping a file that lives in a src/build sub-directory.
+// Sets the mapping up, verifies all three, then fully restores the fixture
+// (obliterate, restore config + spec, re-import). Runs on 'main', clean.
+std::expected<void, std::string> itSingleLevelInclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+
+    // "//.../src/..." -> "//.../src/", then the build subtree's depot paths.
+    std::string srcBase = it.srcDepotPath;
+    srcBase.resize(srcBase.size() - 3);
+    const std::string buildExcludeDepot = srcBase + "build/...";
+    const std::string buildInclDepot = srcBase + "build/*";
+    const std::string buildScope = srcBase + "build/...";  // p4 sync scope
+    const std::string keepDepotFile = srcBase + "build/keep.txt";
+    const std::string dropDepotFile = srcBase + "build/gen/drop.txt";
+
+    // On-disk mirror locations (the build mirror nests inside the src mirror).
+    const fs::path buildMirrorDir = fs::path(it.mirrorDir) / "build";
+    const fs::path keepMirror = buildMirrorDir / "keep.txt";
+    const fs::path dropMirror = buildMirrorDir / "gen" / "drop.txt";
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+
+    // (1) Create the two depot files under the *current* recursive src mapping:
+    // a file directly in src/build (kept by '/*') and one in a sub-directory
+    // (dropped by it).
+    if (auto r = writeFile(keepMirror, "// src/build direct file, kept by /*\n");
+        !r)
+        return r;
+    if (auto r = writeFile(dropMirror, "// src/build sub-dir file, dropped\n");
+        !r)
+        return r;
+    auto addCl =
+        p4::createChangelist(it.p4, "gw integtest: single-level build fixture");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto reconciled =
+        trace(it, "p4 reconcile -c " + *addCl + " " + it.srcDepotPath,
+              p4::reconcileToCl(it.p4, *addCl, it.srcDepotPath));
+    if (!reconciled) return std::unexpected(reconciled.error());
+    auto submitted =
+        trace(it, "p4 submit -c " + *addCl, p4::submit(it.p4, *addCl));
+    if (!submitted) return std::unexpected(submitted.error());
+
+    // (2) Switch the client view and config to the single-level mapping: carve
+    // out src/build recursively, then re-include its direct files. Both go after
+    // the src remap so later-wins resolves the direct files back into a mirror.
+    const std::string buildExcludeClient = p4::clientViewPath(
+        clientName, clientRoot, buildMirrorDir.string(), "/...");
+    const std::string buildInclClient = p4::clientViewPath(
+        clientName, clientRoot, buildMirrorDir.string(), "/*");
+    if (buildExcludeClient.empty() || buildInclClient.empty()) {
+        return std::unexpected("cannot compute the build mirror's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({buildExcludeDepot, buildExcludeClient, true, false});
+    view.push_back({buildInclDepot, buildInclClient, false, false});
+    auto wroteSpec = p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!wroteSpec) return std::unexpected(wroteSpec.error());
+    auto wroteCfg = appendFile(cfg, "\nexclude = " + buildExcludeDepot +
+                                        "\ninclude = " + buildInclDepot +
+                                        " .p4gw/src/build\n");
+    if (!wroteCfg) return wroteCfg;
+
+    // (3) Sync to the new view: the direct file stays in the mirror, the sub-dir
+    // file falls out (now unmapped). Scope to src/build so the force-sync never
+    // rewrites the unmapped root/bin fixtures.
+    auto synced = trace(it, "p4 sync -f " + buildScope,
+                        p4::syncForce(it.p4, buildScope));
+    if (!synced) return std::unexpected(synced.error());
+    if (!fs::exists(keepMirror)) {
+        return std::unexpected("the single-level view dropped the direct file "
+                               "src/build/keep.txt from the mirror");
+    }
+
+    // (4) The view check accepts the '/*' client line (doctor is green).
+    auto doctor = runGw(it, it.repoDir, {"doctor"});
+    if (!doctor) {
+        return std::unexpected("doctor rejected the single-level mapping:\n" +
+                               doctor.error());
+    }
+
+    // (5) Import ships the direct file but not the sub-directory file. Force the
+    // full walk (delete the manifest) so the have-intersection routing is what
+    // decides, not a stale fast-path diff.
+    std::error_code ec;
+    fs::remove(manifest, ec);
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) return std::unexpected(imported.error());
+    auto baselineTree =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"}, it.repoDir);
+    if (!baselineTree) return std::unexpected(baselineTree.error());
+    if (baselineTree->find("src/build/keep.txt") == std::string::npos) {
+        return std::unexpected("import did not ship the direct file "
+                               "src/build/keep.txt:\n" + *baselineTree);
+    }
+    if (baselineTree->find("src/build/gen/drop.txt") != std::string::npos) {
+        return std::unexpected(
+            "import shipped a file from a src/build sub-directory that the "
+            "single-level map excludes:\n" + *baselineTree);
+    }
+
+    // (6) Restore: revert opens, restore config + spec, obliterate the fixture
+    // files (guarded by the throwaway sentinel), sync the build subtree empty,
+    // and re-import so the baseline drops src/build again. Later steps see the
+    // original recursive fixture.
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    for (const std::string& depotFile : {keepDepotFile, dropDepotFile}) {
+        auto obliterated = trace(it, "p4 obliterate -y " + depotFile,
+                                 p4::obliterate(it.p4, depotFile));
+        if (!obliterated) return std::unexpected(obliterated.error());
+    }
+    auto resynced = trace(it, "p4 sync -f " + buildScope,
+                          p4::syncForce(it.p4, buildScope));
+    if (!resynced) return std::unexpected(resynced.error());
+    fs::remove_all(buildMirrorDir, ec);
+    fs::remove_all(fs::path(it.srcWork) / "build", ec);
+    fs::remove(manifest, ec);
+    auto reimported = runGw(it, it.repoDir, {"import"});
+    if (!reimported) return std::unexpected(reimported.error());
+    return {};
+}
+
 // Regression guard for the worktree-mode gitignore-staleness bug: the snapshot
 // worktree stages detached at the old baseline, so it carries that baseline's
 // .gitignore. When the user changes their allowlist - un-ignoring a subtree the
@@ -3128,6 +3278,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("have-manifest fast path skips a gitignored mirror "
                            "file",
                            [&] { return itHaveManifestIgnored(it); });
+        steps.emplace_back("single-level '/*' include ships only direct files",
+                           [&] { return itSingleLevelInclude(it); });
         steps.emplace_back("have-manifest ignores an excluded, diverted "
                            "carve-out",
                            [&] { return itHaveManifestExclude(it); });

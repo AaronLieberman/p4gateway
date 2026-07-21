@@ -21,9 +21,18 @@ struct ViewRule {
     bool exclude = false;
 
     // Depot path of the subtree, e.g. "//depot/yourproject/src/...". Ends with
-    // "/...". Every p4 operation is scoped to the include rules' depot paths so
-    // we never touch (or crawl) the rest of the workspace.
+    // "/..." (recursive) or "/*" (single-level - direct files only, like the p4
+    // view wildcards). Every p4 operation is scoped to the include rules' depot
+    // paths so we never touch (or crawl) the rest of the workspace.
     std::string depotPath;
+
+    // Whether `depotPath` maps a whole subtree (`/...`, the default) or only the
+    // files directly in one directory (`/*`, no sub-directories) - exactly the
+    // recursive-vs-single-level distinction of a p4 client view. A single-level
+    // `include` pairs with a recursive `exclude` to keep the direct files of a
+    // directory while dropping its children. `exclude` lines are always
+    // recursive (`/...`), so this is only ever false for an `include`.
+    bool recursive = true;
 
     // Directory the client view remaps `depotPath` into - p4's staging area,
     // which p4 syncs and gw reads/writes. Always lives under the repo's single
@@ -95,18 +104,20 @@ std::vector<const ViewRule*> includeRules(const std::vector<ViewRule>& rules);
 std::vector<std::string> excludeDepotPaths(const std::vector<ViewRule>& rules);
 
 // The rule that governs a depot file, resolved later-wins: the *last* rule (in
-// declaration order, not longest-prefix) whose depot path is a prefix of
-// `depotFile`. nullptr if no rule covers it. An include result means the file
-// maps to the mirror; an exclude result means it is carved out. Pure;
-// unit-tested.
+// declaration order, not longest-prefix) whose depot path covers `depotFile`. A
+// recursive (`/...`) rule covers any descendant; a single-level (`/*`) rule
+// covers only files directly in the directory (no deeper path component).
+// nullptr if no rule covers it. An include result means the file maps to the
+// mirror; an exclude result means it is carved out. Pure; unit-tested.
 const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
                                       const std::string& depotFile);
 
 // The rule that governs a repo-relative working-tree path, resolved later-wins:
-// the *last* rule whose `repoSubtree` is a prefix of `repoRel` (an empty
-// subtree, i.e. a whole-repo include, matches everything). nullptr if none.
-// "Tracked / shipped through the mirror" iff the result is an include. Pure;
-// unit-tested.
+// the *last* rule whose `repoSubtree` covers `repoRel` (an empty subtree, i.e. a
+// whole-repo include, matches everything). A recursive rule covers the subtree
+// and every descendant; a single-level (`/*`) rule covers only files directly in
+// the subtree. nullptr if none. "Tracked / shipped through the mirror" iff the
+// result is an include. Pure; unit-tested.
 const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
                                      const std::string& repoRel);
 

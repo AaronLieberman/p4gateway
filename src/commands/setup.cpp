@@ -119,17 +119,24 @@ int cmdSetup(const Args& args) {
                 "# Intermix them freely, and an 'include' deeper than an "
                 "'exclude' maps that\n"
                 "# part back into the mirror (the win64-yes-linux-no pattern). "
-                "Each depot path\n"
-                "# ends in '/...'; each exclude must fall under a preceding "
-                "include. Format and\n"
-                "# examples:\n"
-                "#   include = <depot_path ending in /...>  <mirror_path>\n"
+                "An include's\n"
+                "# depot path ends in '/...' (map the whole subtree) or '/*' "
+                "(map only the\n"
+                "# files directly in that directory, no sub-directories); an "
+                "exclude is always\n"
+                "# '/...' and must fall under a preceding include. Format and "
+                "examples:\n"
+                "#   include = <depot_path ending in /... or /*>  <mirror_path>\n"
                 "#   include = //depot/yourproject/src/...     .p4gw/src\n"
                 "#   include = //depot/yourproject/config/...  .p4gw/config\n"
                 "#   exclude = //depot/yourproject/src/thirdparty/...\n"
                 "#   exclude = //depot/yourproject/src/lib/...\n"
                 "#   include = //depot/yourproject/src/lib/public/win64/... "
-                ".p4gw/src/lib/public/win64\n";
+                ".p4gw/src/lib/public/win64\n"
+                "# Direct files of a directory only (exclude it, then re-include "
+                "with '/*'):\n"
+                "#   exclude = //depot/yourproject/src/build/...\n"
+                "#   include = //depot/yourproject/src/build/*  .p4gw/src/build\n";
         if (depotPath.empty()) {
             file << "#include = //depot/yourproject/src/... " << mirrorPath << "\n";
         } else {

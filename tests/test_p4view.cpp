@@ -398,6 +398,57 @@ TEST(check_spec_mapping_exempts_declared_inplace_exclude) {
     CHECK(declared.empty());
 }
 
+TEST(check_spec_mapping_single_level_reinclude) {
+    // The direct-files pattern against a real spec: src mirrored recursively,
+    // src/build carved out, then its direct files re-included single-level into
+    // a nested mirror. The repo is the client root (mirrors under .p4gw).
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t-//depot/project/src/build/... //c/.p4gw/src/build/...\n"
+        "\t//depot/project/src/build/* //c/.p4gw/src/build/*\n";
+    const std::vector<std::string> noExcludes;
+
+    // The single-level include's own check passes against the '/*' client line.
+    const auto build = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/build/*", "/work", "/work/.p4gw/src/build",
+        noExcludes, {"/work/.p4gw/src"});
+    for (const auto& problem : build) {
+        std::printf("  unexpected build problem: %s\n", problem.message.c_str());
+    }
+    CHECK(build.empty());
+
+    // The recursive src include still passes: the nested single-level mirror is
+    // a sibling mirror, not a repo leak.
+    const auto src = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src", noExcludes,
+        {"/work/.p4gw/src/build"});
+    for (const auto& problem : src) {
+        std::printf("  unexpected src problem: %s\n", problem.message.c_str());
+    }
+    CHECK(src.empty());
+}
+
+TEST(check_spec_mapping_single_level_requires_the_wildcard_line) {
+    // Without the '/*' re-include line, src/build is only carved out, so the
+    // single-level include maps nothing - the check must flag it rather than
+    // silently accept the recursive '/...' client line in its place.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t-//depot/project/src/build/... //c/.p4gw/src/build/...\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/build/*", "/work", "/work/.p4gw/src/build",
+        {}, {"/work/.p4gw/src"});
+    CHECK(!problems.empty());
+}
+
 TEST(view_check_fails_when_correct_remap_is_shadowed) {
     // Two lines both cover depot_path; the later one maps to the wrong place,
     // shadowing the correct remap. The "later lines win" rule makes this fail.

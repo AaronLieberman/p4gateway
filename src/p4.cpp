@@ -110,10 +110,16 @@ std::vector<std::string> tokenizeViewLine(const std::string& line) {
     return tokens;
 }
 
-// "//depot/x/..." -> "//depot/x/" so prefix comparison works.
+// "//depot/x/..." (or single-level "//depot/x/*") -> "//depot/x/" so prefix
+// comparison works. The recursive-vs-single-level distinction is carried by the
+// wildcard suffix elsewhere (checkSpecMapping picks the expected client suffix);
+// here we only need the anchored base.
 std::string stripWildcard(const std::string& path) {
     if (path.ends_with("...")) {
         return path.substr(0, path.size() - 3);
+    }
+    if (path.ends_with("*")) {
+        return path.substr(0, path.size() - 1);
     }
     return path;
 }
@@ -333,8 +339,13 @@ std::vector<ViewProblem> checkSpecMapping(
     if (clientName.empty() || clientRoot.empty()) {
         return {{"client spec has no Client:/Root: field", ""}};
     }
+    // A single-level (`/*`) include is remapped by a single-level client view
+    // line; expect the matching `/*` client suffix so the effective-mapping
+    // check compares like for like. A recursive include expects `/...`.
+    const std::string clientSuffix =
+        depotPath.ends_with("/*") ? "/*" : "/...";
     const std::string expectedClientPath =
-        clientViewPath(clientName, clientRoot, mirrorDir, "/...");
+        clientViewPath(clientName, clientRoot, mirrorDir, clientSuffix);
     if (expectedClientPath.empty()) {
         return {{"mirror " + mirrorDir + " is not inside the client root " +
                      clientRoot + " - p4 cannot map it",
