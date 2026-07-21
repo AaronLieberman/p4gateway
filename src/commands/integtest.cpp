@@ -103,6 +103,9 @@ constexpr const char* kObliterateFiles[] = {
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
     // itHaveManifestIgnored's and itWorktreeGitignore's build-output files.
     "src/generated/out.txt", "src/generated/w.txt",
+    // itSecondInclude's sibling-subtree file; obliterated in-step, listed here
+    // as a safety net so an aborted run's cleanup still removes it.
+    "data/config.txt",
     // itHaveManifestExclude's carve-out; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/devtools/tool.txt",
@@ -118,6 +121,9 @@ constexpr const char* kKnownLocalEntries[] = {
     // writes to exercise its re-assertion.
     ".rgignore", ".ignore",
     ".p4gw", "src", "bin", "devtools",
+    // itSecondInclude's sibling subtree (only materializes in the checkout
+    // under checkout-mode import; harmless to always allow).
+    "data",
     "readme.txt", "notes.txt",
 };
 
@@ -2096,6 +2102,183 @@ std::expected<void, std::string> itWorktreeGitignore(ItContext& it) {
     return {};
 }
 
+// Regression guard for the allowlist-.gitignore coverage gap: an `include`
+// added to p4gw.cfg after setup maps a new subtree, but the allowlist tracks
+// only the subtrees it already re-includes, so the new one stays ignored until
+// a matching `!/dir/` line is added. Before the fix, `gw import` copied the new
+// mirror into the staging tree but `git add` dropped it - the subtree silently
+// never entered the baseline, and nothing flagged it. Now `gw doctor` fails on
+// the gap and `gw init` appends the missing re-include, after which import
+// tracks the subtree. Adds a second `data` mapping (a sibling subtree of the
+// same depot), reproduces the silent miss, fixes it through `gw init`, and
+// restores the fixture. Runs on 'main', clean, after itWorktreeGitignore.
+std::expected<void, std::string> itSecondInclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path gitignore = fs::path(it.repoDir) / ".gitignore";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    const fs::path dataMirror = fs::path(it.repoDir) / ".p4gw" / "data";
+    const std::string dataDepot = it.depotRoot + "/data/...";
+    const std::string dataDepotFile = it.depotRoot + "/data/config.txt";
+    const std::string trackedRel = "data/config.txt";
+    auto inBaseline = [&](const std::string& tree, const std::string& rel) {
+        return tree.find(rel) != std::string::npos;
+    };
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto savedIgnore = readFile(gitignore);
+    if (!savedIgnore) return std::unexpected(savedIgnore.error());
+    if (savedIgnore->find("!/data/") != std::string::npos) {
+        return std::unexpected("fixture .gitignore already re-includes '/data/' "
+                               "- this test needs it absent");
+    }
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+    // The depot baseline the scenario advances. `data` is a sibling subtree
+    // (unlike itWorktreeGitignore's src file, which a later src-mapping import
+    // deletes on its own), so once we remove the mapping nothing would prune it
+    // from the baseline - roll the ref back explicitly at the end instead. The
+    // 'main' branch never moves here (the pre-fix import is a clean no-op and
+    // the post-fix one is a dirty-tree import that skips the branch update).
+    auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!savedRef) return std::unexpected(savedRef.error());
+
+    // (1) Map a second subtree into its own mirror: add the client view line
+    // and declare the matching `include` in p4gw.cfg - but leave .gitignore
+    // untouched, exactly as a user who edits the config by hand would.
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string dataClient =
+        p4::clientViewPath(clientName, clientRoot, dataMirror.string(), "/...");
+    if (dataClient.empty()) {
+        return std::unexpected("cannot compute the data mirror's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({dataDepot, dataClient, false, false});
+    auto remapped = p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!remapped) return std::unexpected(remapped.error());
+    auto includedCfg =
+        appendFile(cfg, "\ninclude = " + dataDepot + " .p4gw/data\n");
+    if (!includedCfg) return includedCfg;
+
+    // (2) Create the new subtree's file in its mirror and submit it, so p4 have
+    // reports it synced and import has something to (fail to) ship.
+    auto wroteData = writeFile(dataMirror / "config.txt",
+                               "// second-include fixture: data/config.txt\n");
+    if (!wroteData) return wroteData;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: second include");
+    if (!addCl) return std::unexpected(addCl.error());
+    const std::string dataLocal = (dataMirror / "config.txt").string();
+    auto added = trace(it, "p4 add " + dataLocal,
+                       p4::addFiles(it.p4, *addCl, {dataLocal}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+
+    // (3) doctor must FAIL on the uncovered subtree, naming the line to add.
+    auto brokeDoctor = runGw(it, it.repoDir, {"doctor"});
+    if (brokeDoctor) {
+        return std::unexpected("doctor passed while the allowlist did not cover "
+                               "the new include:\n" + *brokeDoctor);
+    }
+    if (brokeDoctor.error().find("does not track") == std::string::npos ||
+        brokeDoctor.error().find("!/data/") == std::string::npos) {
+        return std::unexpected("doctor failed for the wrong reason - expected "
+                               "the allowlist-coverage message naming '!/data/' "
+                               "in:\n" + brokeDoctor.error());
+    }
+
+    // (4) The bug's shape: import runs clean, yet the new subtree never reaches
+    // the baseline because the allowlist ignores it.
+    auto missImport = runGw(it, it.repoDir, {"import"});
+    if (!missImport) return std::unexpected(missImport.error());
+    auto treeMissed =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                 it.repoDir);
+    if (!treeMissed) return std::unexpected(treeMissed.error());
+    if (inBaseline(*treeMissed, trackedRel)) {
+        return std::unexpected("the new subtree entered the baseline before the "
+                               "allowlist re-included it - the guard is moot");
+    }
+
+    // (5) `gw init` re-verifies the (now two-mapping) view and appends the
+    // missing re-include to the existing allowlist .gitignore.
+    auto reinit = runGw(it, it.repoDir, {"init"});
+    if (!reinit) return std::unexpected(reinit.error());
+    if (reinit->find("Added !/data/") == std::string::npos) {
+        return std::unexpected("gw init did not append the missing '!/data/' "
+                               "re-include:\n" + *reinit);
+    }
+    auto fixedIgnore = readFile(gitignore);
+    if (!fixedIgnore) return std::unexpected(fixedIgnore.error());
+    if (fixedIgnore->find("!/data/") == std::string::npos) {
+        return std::unexpected("'!/data/' is missing from .gitignore after "
+                               "gw init:\n" + *fixedIgnore);
+    }
+
+    // (6) Now import tracks the subtree - it lands in the baseline.
+    auto trackImport = runGw(it, it.repoDir, {"import"});
+    if (!trackImport) {
+        return std::unexpected("import after fixing the allowlist failed:\n" +
+                               trackImport.error());
+    }
+    auto treeTracked =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                 it.repoDir);
+    if (!treeTracked) return std::unexpected(treeTracked.error());
+    if (!inBaseline(*treeTracked, trackedRel)) {
+        return std::unexpected("import did not commit the newly re-included "
+                               "subtree (the coverage bug):\n" + *treeTracked);
+    }
+
+    // (7) And doctor is green again, confirming the coverage check clears.
+    auto healthy = runGw(it, it.repoDir, {"doctor"});
+    if (!healthy) {
+        return std::unexpected("doctor still failing after the allowlist was "
+                               "fixed:\n" + healthy.error());
+    }
+    if (healthy->find("allowlist tracks every mapped subtree") ==
+        std::string::npos) {
+        return std::unexpected("doctor did not report full allowlist coverage:"
+                               "\n" + *healthy);
+    }
+
+    // (8) Restore the fixture: revert opens, put config/.gitignore/spec back,
+    // roll the baseline ref back so `data` leaves no trace, then obliterate the
+    // depot file and drop the mirror. The manifest is a cache; delete it so the
+    // next step full-walks against the restored (src-only) config.
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto restoredIgnore = writeFile(gitignore, *savedIgnore);
+    if (!restoredIgnore) return restoredIgnore;
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + dataDepotFile,
+                             p4::obliterate(it.p4, dataDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    std::error_code ec;
+    fs::remove_all(dataMirror, ec);
+    fs::remove(manifest, ec);
+    return {};
+}
+
 // The managed .rgignore lifecycle against real imports: a refresh folds a
 // changed .ignore into the block without touching hand-written rules outside
 // it and without duplicating the block, and `rgignore = off` stops gw from
@@ -2936,6 +3119,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                            [&] { return itHaveManifestExclude(it); });
         steps.emplace_back("worktree import picks up an updated .gitignore",
                            [&] { return itWorktreeGitignore(it); });
+        steps.emplace_back("second include: doctor flags it, gw init covers it, "
+                           "import ships it",
+                           [&] { return itSecondInclude(it); });
         steps.emplace_back("managed .rgignore: refreshed in place, hand rules "
                            "kept, off opts out",
                            [&] { return itRgignore(it); });
