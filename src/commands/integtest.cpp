@@ -2126,11 +2126,32 @@ std::expected<void, std::string> itSingleLevelInclude(ItContext& it) {
     auto resynced = trace(it, "p4 sync -f " + buildScope,
                           p4::syncForce(it.p4, buildScope));
     if (!resynced) return std::unexpected(resynced.error());
+    // Clear the (gitignored) mirror build dir and manifest, then re-import. The
+    // working-tree copy of src/build/keep.txt is left in place on purpose: it is
+    // committed at the current baseline, so the tree stays clean and the
+    // re-import fast-forwards main to a baseline without it (git merge --ff-only
+    // removes it from the checkout). Deleting it here by hand would dirty the
+    // tree and make worktree-mode import skip the fast-forward, stranding the
+    // deletion and breaking the next step.
     fs::remove_all(buildMirrorDir, ec);
-    fs::remove_all(fs::path(it.srcWork) / "build", ec);
     fs::remove(manifest, ec);
     auto reimported = runGw(it, it.repoDir, {"import"});
     if (!reimported) return std::unexpected(reimported.error());
+    // main must be back to the original fixture and the tree clean, or later
+    // steps (which rely on a clean checkout) inherit the mess.
+    auto baselineTree2 =
+        git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"}, it.repoDir);
+    if (!baselineTree2) return std::unexpected(baselineTree2.error());
+    if (baselineTree2->find("src/build/") != std::string::npos) {
+        return std::unexpected("restore left src/build in the baseline:\n" +
+                               *baselineTree2);
+    }
+    auto dirty = git::isDirty(it.repoDir);
+    if (!dirty) return std::unexpected(dirty.error());
+    if (*dirty) {
+        return std::unexpected("restore left the working tree dirty; later "
+                               "steps need a clean checkout");
+    }
     return {};
 }
 
