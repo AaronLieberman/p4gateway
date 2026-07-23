@@ -708,6 +708,35 @@ TEST(missing_allowlist_lines_matches_whole_lines_only) {
     CHECK(missing[0] == "!/src/");
 }
 
+TEST(missing_allowlist_lines_ignores_redundant_intermediate_reinclude) {
+    // Exclude src/devtools, then re-include only a deeper subtree. src is
+    // tracked whole ('!/src/' with no '/src/*'), so Git already descends into
+    // devtools - the "!/src/devtools/" intermediate re-include gw emits is
+    // redundant. A hand-minimized .gitignore that drops it still tracks the
+    // subtree, so the coverage check must NOT flag it.
+    const std::vector<p4gw::ViewRule> rules = {
+        inc("src"), exc("src/lib"), exc("src/thirdparty"), exc("src/devtools"),
+        inc("src/devtools/datacache")};
+    const std::string minimal =
+        "/*\n"
+        "!/.gitignore\n"
+        "!/.gitattributes\n"
+        "!/src/\n"
+        "/src/lib/\n"
+        "/src/thirdparty/\n"
+        "/src/devtools/*\n"
+        "!/src/devtools/datacache/\n";
+    CHECK(p4gw::missingAllowlistTrackingLines(rules, minimal).empty());
+    // The load-bearing deep re-include, by contrast, is still required: drop it
+    // and the subtree really is untracked (its parent '/src/devtools/*' hides
+    // it), so the check reports exactly that line.
+    const std::string broken =
+        "/*\n!/src/\n/src/lib/\n/src/thirdparty/\n/src/devtools/*\n";
+    const auto missing = p4gw::missingAllowlistTrackingLines(rules, broken);
+    CHECK(missing.size() == 1);
+    CHECK(missing[0] == "!/src/devtools/datacache/");
+}
+
 TEST(gitignore_allowlist_detection) {
     // The starter allowlist opens with the bare '/*' root-ignore line; the
     // whole-repo mapping falls back to a denylist without one.

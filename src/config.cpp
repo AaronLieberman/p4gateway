@@ -347,6 +347,41 @@ std::vector<std::string> trackingLinesFromLayout(const AllowlistLayout& layout) 
     return lines;
 }
 
+// The re-include lines that are *load-bearing* for tracking, in depth order: a
+// "!/dir/" is only needed when the directory would otherwise be excluded - the
+// root "/*" for a depth-1 subtree, or an intermediate ancestor's "/parent/*".
+// When the nearest tracked ancestor is tracked *whole* (a leaf, so no
+// "/parent/*"), its own "!/anc/" already tracks the descendant, making the
+// deeper re-include redundant. The child re-exclusions ("/dir/*") are never
+// load-bearing for tracking - their absence over-tracks, it never hides a
+// mapped subtree - so they are omitted. This is the subset a coverage check
+// must insist on; buildGitignore still emits the fuller, belt-and-suspenders
+// set (a generated .gitignore trivially satisfies this).
+std::vector<std::string> requiredTrackingLines(const AllowlistLayout& layout) {
+    auto emitsChildExclude = [&](const std::vector<std::string>& comps) {
+        for (const auto& d : layout.dirs)
+            if (d.components == comps) return !d.isLeaf;
+        return false;  // not a named directory: no "/comps/*" line
+    };
+    size_t maxDepth = 0;
+    for (const auto& d : layout.dirs)
+        maxDepth = std::max(maxDepth, d.components.size());
+    std::vector<std::string> lines;
+    for (size_t depth = 1; depth <= maxDepth; ++depth) {
+        for (const auto& d : layout.dirs) {
+            if (d.components.size() != depth) continue;
+            const std::vector<std::string> parent(d.components.begin(),
+                                                  d.components.end() - 1);
+            // Depth-1 dirs sit directly under the root "/*"; deeper ones need a
+            // re-include only when their parent re-excludes them.
+            if (parent.empty() || emitsChildExclude(parent)) {
+                lines.push_back("!" + joinComponents(d.components) + "/");
+            }
+        }
+    }
+    return lines;
+}
+
 // Whether `content` contains `line` as a complete line (trimmed, CR-tolerant),
 // so "!/src/" is not mistaken for present when only "!/src/lib/" appears.
 bool hasExactLine(const std::string& content, const std::string& line) {
@@ -453,8 +488,15 @@ std::vector<std::string> allowlistTrackingLines(
 
 std::vector<std::string> missingAllowlistTrackingLines(
     const std::vector<ViewRule>& rules, const std::string& gitignoreContent) {
+    const AllowlistLayout layout = computeAllowlistLayout(rules);
+    // The denylist body (whole-repo include, or nothing tracked) uses no
+    // re-includes, so there is nothing to track line by line.
+    if (layout.wholeRepoMapped || !layout.anyTracked) return {};
+    // Only the load-bearing re-includes matter: a redundant intermediate line
+    // (e.g. "!/src/devtools/" when "!/src/" already tracks src whole) is not
+    // required, so its absence must not be flagged as an untracked subtree.
     std::vector<std::string> missing;
-    for (const auto& line : allowlistTrackingLines(rules)) {
+    for (const auto& line : requiredTrackingLines(layout)) {
         if (!hasExactLine(gitignoreContent, line)) missing.push_back(line);
     }
     return missing;

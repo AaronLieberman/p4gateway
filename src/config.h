@@ -182,12 +182,15 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
 std::vector<std::string> allowlistTrackingLines(
     const std::vector<ViewRule>& rules);
 
-// The subset of allowlistTrackingLines(rules) not already present as a complete
-// line in `gitignoreContent` - the re-includes an existing allowlist .gitignore
-// is missing to track every mapped subtree (e.g. after an `include` was added
-// to p4gw.cfg without regenerating .gitignore, so `gw import` copies the mirror
-// in but `git add` ignores it). Empty when the file already covers them or the
-// rules yield the denylist body. Pure; unit-tested.
+// The *load-bearing* re-include lines not already present as a complete line in
+// `gitignoreContent` - the re-includes an existing allowlist .gitignore is
+// genuinely missing to track every mapped subtree (e.g. after an `include` was
+// added to p4gw.cfg without regenerating .gitignore, so `gw import` copies the
+// mirror in but `git add` ignores it). Only lines whose absence actually leaves
+// a mapped subtree untracked are reported: a redundant intermediate re-include
+// (a "!/src/devtools/" when "!/src/" already tracks src whole) is never flagged,
+// since Git tracks the subtree without it. Empty when the file already covers
+// every mapped subtree or the rules yield the denylist body. Pure; unit-tested.
 std::vector<std::string> missingAllowlistTrackingLines(
     const std::vector<ViewRule>& rules, const std::string& gitignoreContent);
 
