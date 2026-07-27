@@ -401,6 +401,8 @@ std::expected<RunResult, std::string> spawnChild(
 
 void setVerbose(bool on) { g_verbose = on; }
 
+bool verbose() { return g_verbose; }
+
 std::string currentUser() {
     // USERNAME is the Windows login name; USER/LOGNAME cover the POSIX builds
     // used in CI and dev.

@@ -2240,8 +2240,16 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
     auto restoredMain = readFile(mirrorMain);
     if (!restoredMain) return std::unexpected(restoredMain.error());
     if (*restoredMain != *baselineMain) {
-        return std::unexpected("syncback did not restore the mirror's main.cpp "
-                               "to the baseline revision's content");
+        // Quote both sides and what gw said it did: this compares bytes p4
+        // wrote, so the difference (a stray line, an EOL translation) is the
+        // whole diagnosis and is otherwise invisible from CI.
+        return std::unexpected(
+            "syncback did not restore the mirror's main.cpp to the baseline "
+            "revision's content.\n--- gw syncback said:\n" + *ran +
+            "--- expected (before the drift submit), " +
+            std::to_string(baselineMain->size()) + " bytes:\n" + *baselineMain +
+            "--- got, " + std::to_string(restoredMain->size()) +
+            " bytes:\n" + *restoredMain);
     }
     if (fs::exists(mirrorNew)) {
         return std::unexpected("syncback left " + mirrorNew +
@@ -3403,6 +3411,14 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
                      sub.c_str());
         return usage();
     }
+
+    // `main` pulls the global --verbose out of the argument list before
+    // dispatching (it drives the process layer's command echo), so the flag
+    // never reaches the loop below. Seed the driver's own tracing from the
+    // global state instead, or `gw integtest run --verbose` echoes the spawned
+    // command lines but not the trace or gw's own output - exactly what you
+    // need when triaging a CI failure.
+    it.verbose = p4gw::verbose();
 
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];

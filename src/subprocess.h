@@ -42,6 +42,11 @@ struct RunOptions {
 // (the `--verbose` flag). Off by default; set once from main.
 void setVerbose(bool on);
 
+// Whether verbose echoing is on. `main` strips the global `--verbose` before
+// dispatching, so a command that keeps its own verbosity (integtest's driver
+// trace) reads it back from here rather than from its own argument list.
+bool verbose();
+
 // The local login name (Windows `USERNAME`, else POSIX `USER`/`LOGNAME`), or an
 // empty string if none of those are set. Used to default a new repo's Git
 // identity to the local account.
