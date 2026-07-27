@@ -28,7 +28,7 @@ there is none.
 
 Every step that doesn't set `import_mode` now runs **worktree** mode — that
 includes first import, `--rebase` melts, teammate absorption, opened-file
-handling, shelf import, have-manifest fast path, doctor probes, and all four
+handling, shelf import, have-manifest fast path, doctor probes, and all six
 git-branchless restack scenarios. That matches the goal (most coverage in
 the default mode). What still runs **checkout** staging:
 
@@ -91,7 +91,7 @@ nothing. The two high-priority items below closed this (done 2026-07).
 8. **First-import fallback note.** A repo whose config says
    `import_mode = worktree` gets checkout staging + a note on the very first
    import. Assert the note once (cheap; guards the fallback wiring).
-9. **git-branchless under checkout mode.** The four restack scenarios now
+9. **git-branchless under checkout mode.** The six restack scenarios now
    run only in worktree mode. Checkout mode shares the repositioning code
    (the `!worktreeMode` gates were removed), so one smoke scenario (e.g. the
    plain sync-restack) in checkout mode would guard the mode-specific

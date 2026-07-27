@@ -3223,6 +3223,12 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 //      (not a plain rebase) and left detached at the rewrite, not on a branch.
 //   B) When the checked-out commit was itself already submitted, branchless
 //      obsoletes it and gw leaves HEAD detached at the new depot baseline.
+//   D) A detached HEAD sitting on the baseline itself fast-forwards to the new
+//      one instead of being stranded on the prior baseline.
+//   E) A detached HEAD on a *descendant* of an absorbed commit lands on the
+//      rewritten descendant, not on the baseline.
+//   F) A *branch* holding only absorbed work is dropped by the sync; import
+//      lands on the baseline and says so instead of failing to switch back.
 //   C) After `git branchless init --uninstall`, gw detects the repo as plain
 //      again and falls back to `git rebase`.
 std::expected<void, std::string> itBranchless(ItContext& it) {
@@ -3387,6 +3393,103 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (importNoop->find("Nothing to restack") == std::string::npos) {
         return std::unexpected("import --rebase did not report that there was "
                                "nothing to restack:\n" + *importNoop);
+    }
+
+    // --- E: detached on a *descendant* of an absorbed commit lands on the
+    // rewritten descendant, not on the baseline: the parent is skipped as
+    // already-applied, the child is rewritten onto the new depot state, and the
+    // ephemeral carrier branch rides HEAD to it. ---
+    auto swE = git::run({"switch", "--detach", "refs/p4gw/main"}, it.repoDir);
+    if (!swE) return std::unexpected(swE.error());
+    if (auto r = appendFile(main, "// branchless absorbed parent\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: parent (submitted)",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    if (auto r = appendFile(util, "// branchless surviving child\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: child (still local)",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    // Submit only the parent's change, so the import absorbs it and leaves the
+    // child as the one commit that still has work of its own.
+    if (auto r = teammate("// branchless absorbed parent\n"); !r) return r;
+    auto importE = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importE) return std::unexpected(importE.error());
+    if (!detached()) {
+        return std::unexpected("HEAD is on a branch after restacking a "
+                               "descendant of an absorbed commit; expected it "
+                               "to stay detached:\n" + *importE);
+    }
+    auto headE = git::revParse("HEAD", it.repoDir);
+    auto baseE = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!headE) return std::unexpected(headE.error());
+    if (!baseE) return std::unexpected(baseE.error());
+    if (*headE == *baseE) {
+        return std::unexpected("HEAD landed on the depot baseline instead of "
+                               "the rewritten descendant of the absorbed "
+                               "commit:\n" + *importE);
+    }
+    auto onBaseE = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!onBaseE) return std::unexpected(onBaseE.error());
+    if (!*onBaseE) {
+        return std::unexpected("the rewritten descendant is not on the new "
+                               "depot baseline");
+    }
+    auto utilE = readFile(util);
+    if (!utilE) return std::unexpected(utilE.error());
+    if (utilE->find("// branchless surviving child") == std::string::npos) {
+        return std::unexpected("the rewritten descendant lost its local change");
+    }
+    // The carrier branch is an implementation detail and must never be left
+    // behind for the user to trip over.
+    auto carrierGone = git::branchExists("gw-import-restack", it.repoDir);
+    if (!carrierGone) return std::unexpected(carrierGone.error());
+    if (*carrierGone) {
+        return std::unexpected("import left its temporary restack branch behind");
+    }
+
+    // --- F: a *branch* whose only work was absorbed is deleted by the sync
+    // (branchless drops a branch left with nothing of its own and checks out
+    // main). Import must land on the baseline and say so, not fail trying to
+    // switch back to a branch that no longer exists. ---
+    const std::string absorbedBranch = "gw-integtest-absorbed";
+    auto swF = git::run({"switch", "-c", absorbedBranch, "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swF) return std::unexpected(swF.error());
+    if (auto r = appendFile(main, "// branchless branch absorbed\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r)
+        return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: whole branch submitted",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    if (auto r = teammate("// branchless branch absorbed\n"); !r) return r;
+    auto importF = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importF) return std::unexpected(importF.error());
+    auto branchF = git::currentBranch(it.repoDir);
+    if (!branchF) return std::unexpected(branchF.error());
+    if (*branchF != "main") {
+        return std::unexpected("after its branch was absorbed, import left the "
+                               "user on '" + *branchF + "' instead of the "
+                               "baseline:\n" + *importF);
+    }
+    auto absorbedGone = git::branchExists(absorbedBranch, it.repoDir);
+    if (!absorbedGone) return std::unexpected(absorbedGone.error());
+    if (*absorbedGone) {
+        return std::unexpected("expected git-branchless to drop the absorbed "
+                               "branch '" + absorbedBranch + "'");
+    }
+    if (importF->find("dropped it") == std::string::npos) {
+        return std::unexpected("import did not explain that the absorbed branch "
+                               "was dropped:\n" + *importF);
     }
 
     // --- C: after uninstall, gw treats the repo as plain git again. ---

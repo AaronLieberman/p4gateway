@@ -345,8 +345,9 @@ check — set `rgignore = off` in `p4gw.cfg` to silence it, which also stops
 ## Using git-branchless
 
 If the repo is managed by [git-branchless](https://github.com/arxanas/git-branchless),
-gw works with it instead of around it. It detects branchless automatically
-(its `branchless.core.mainBranch` config key) and adapts:
+gw works with it instead of around it. It detects branchless automatically (the
+`include.path = branchless/config` line `git branchless init` adds to the repo
+config) and adapts:
 
 - gw never modifies branchless's config — it just warns if branchless's main
   branch isn't your gw baseline (`main` by default), since that's the trunk
@@ -356,8 +357,21 @@ gw works with it instead of around it. It detects branchless automatically
 - `gw import --rebase` restacks **every visible stack** onto the new depot
   state via `git branchless sync`, not just the commit you happen to be on,
   and records the rewrites so the pre-import commits go obsolete (hidden
-  from the smartlog). Without `--rebase`, your stacks are left untouched and
-  you're pointed at `gw import --rebase` (or `git sync`).
+  from the smartlog). Without `--rebase`, your stacks are left untouched.
+- **It puts you back where you were afterwards.** This matters most right
+  after you ship: the commit you prepared and submitted is already in the
+  depot snapshot, so the restack skips it as already-applied — and a bare
+  `git sync` reacts to that by checking out the main *branch*, quietly ending
+  your detached-HEAD session on the trunk. Run the restack through
+  `gw import --rebase` instead and you land:
+  - detached at the rewrite of the commit you were on, if it survived
+    (including when it is a **descendant** of the commit that was absorbed —
+    you end up on the rewritten descendant, not on the baseline);
+  - detached at the new depot baseline, if the commit you were on was the one
+    that got absorbed (it is now part of that baseline);
+  - back on your branch, if you were on one — or, when the branch held only
+    work the depot now carries and branchless dropped it, on the baseline
+    branch with a note saying so.
 
 ## Configuration
 

@@ -946,15 +946,46 @@ int cmdImport(const Args& args) {
         // stomp" default as the branch workflow) and point them at the restack.
         if (!rebase) {
             if (branchless) {
+                // Deliberately no longer offers a bare `git sync` as the
+                // equivalent: sync checks out the main branch whenever the
+                // commit you are on was rewritten away (the just-submitted
+                // commit, every time), so it silently swallows a detached HEAD.
+                // `gw import --rebase` runs the same sync and then puts HEAD
+                // back where you were.
                 std::printf("Your stacks were left as-is. Restack them onto the "
-                            "new depot state with: gw import --rebase "
-                            "(or git sync).\n");
+                            "new depot state with: gw import --rebase\n");
+                if (originalBranch.empty()) {
+                    std::printf("(prefer it over a bare 'git sync', which "
+                                "leaves you on '%s' when the commit you are on "
+                                "was absorbed).\n",
+                                baseline.c_str());
+                }
             } else {
                 std::printf("Your detached work was left as-is. Rebase it onto "
                             "the new depot state with: gw import --rebase.\n");
             }
             return 0;
         }
+
+        // Belt and braces for the repositioning below: a user who started on a
+        // detached HEAD must end on one. `git branchless sync` checks out its
+        // main *branch* (not the commit) whenever the commit HEAD sat on was
+        // rewritten away - it skips a commit whose content the depot snapshot
+        // already carries, which is exactly what happens to the commit you just
+        // prepared and submitted - so any repositioning we miss silently lands
+        // the user on the baseline branch, where their next commit would extend
+        // it. Detaching at whatever HEAD resolves to keeps the commit and drops
+        // only the branch attachment, so this is a no-op when the repositioning
+        // already did the right thing.
+        auto keepDetached = [&]() -> std::expected<void, std::string> {
+            if (!originalBranch.empty()) return {};  // started on a branch
+            auto where = git::currentBranch(root);
+            if (!where) return std::unexpected(where.error());
+            if (*where == "HEAD") return {};  // already detached
+            auto detached = git::switchDetached("HEAD", root);
+            if (!detached) return std::unexpected(detached.error());
+            return {};
+        };
 
         // Restack onto the new baseline. Branchless moves every visible stack in
         // one shot and records the rewrites (obsoleting the old commits) - the
@@ -1000,7 +1031,18 @@ int cmdImport(const Args& args) {
                 // clear error, never silent data loss.
                 auto made = git::run({"switch", "-c", carrier, originalHead},
                                      root);
-                if (!made) return fail(made.error());
+                if (!made) {
+                    std::fflush(stdout);  // keep messages ordered with stderr
+                    std::fprintf(stderr,
+                                 "note: '%s' is the temporary branch import "
+                                 "rides your detached work through the restack "
+                                 "on. A leftover from an interrupted run must "
+                                 "be dealt with first: check it out ('git log "
+                                 "%s'), then 'git branch -D %s'.\n",
+                                 carrier.c_str(), carrier.c_str(),
+                                 carrier.c_str());
+                    return fail(made.error());
+                }
             }
             auto synced = git::branchlessSync(root);
             if (!synced) {
@@ -1024,7 +1066,8 @@ int cmdImport(const Args& args) {
             // HEAD on a rewritten or dropped commit is left on main): detach at
             // the ephemeral branch's restacked tip and drop it, or return to the
             // user's real branch.
-            bool mergedAway = false;
+            bool mergedAway = false;      // HEAD's own commit was absorbed
+            bool absorbedBranch = false;  // the branch itself was dropped
             if (useCarrier) {
                 auto tip = git::revParse(carrier, root);
                 if (tip) {
@@ -1044,8 +1087,33 @@ int cmdImport(const Args& args) {
                     mergedAway = true;
                 }
             } else if (!originalBranch.empty()) {
-                auto back = git::switchBranch(originalBranch, root);
-                if (!back) return fail(back.error());
+                // The sync can *delete* the branch you were on: when every
+                // commit on it was already applied upstream - which is exactly
+                // what happens to the change you prepared and p4 submitted -
+                // branchless skips them all, drops the branch left pointing at
+                // nothing of its own, and checks out its main branch. Switching
+                // back would then fail on a branch that no longer exists, and
+                // the import would end in an error with the user parked on main
+                // (the whole reported symptom), so treat a vanished branch as
+                // "that work is in the depot now" and land on the baseline
+                // deliberately, with a message that says so.
+                auto stillThere = git::branchExists(originalBranch, root);
+                if (!stillThere) return fail(stillThere.error());
+                if (*stillThere) {
+                    auto back = git::switchBranch(originalBranch, root);
+                    if (!back) return fail(back.error());
+                } else {
+                    absorbedBranch = true;
+                    auto baselineExists = git::branchExists(baseline, root);
+                    if (!baselineExists) return fail(baselineExists.error());
+                    if (*baselineExists) {
+                        auto onBaseline = git::switchBranch(baseline, root);
+                        if (!onBaseline) return fail(onBaseline.error());
+                    } else {
+                        auto det = git::switchDetached(newDepot, root);
+                        if (!det) return fail(det.error());
+                    }
+                }
             } else {
                 // Detached with no divergent work (at/behind the baseline):
                 // fast-forward HEAD to the new baseline, the way being on the
@@ -1053,6 +1121,11 @@ int cmdImport(const Args& args) {
                 auto det = git::switchDetached(newDepot, root);
                 if (!det) return fail(det.error());
             }
+            if (auto kept = keepDetached(); !kept) return fail(kept.error());
+
+            // Measured after the repositioning above, so it reflects where the
+            // user actually lands. (Re-detaching never changes what HEAD
+            // resolves to, only whether a branch name is attached.)
             auto tipsAfter = git::localBranchTips(root);
             if (!tipsAfter) return fail(tipsAfter.error());
             auto headAfter = git::revParse("HEAD", root);
@@ -1064,6 +1137,12 @@ int cmdImport(const Args& args) {
                 std::printf("Restacked your visible commits. The commit you had "
                             "checked out was already in the depot state; HEAD is "
                             "detached at the new depot baseline.\n");
+            } else if (absorbedBranch) {
+                std::printf("Restacked your visible commits. '%s' held only work "
+                            "the depot state already carries, so git-branchless "
+                            "dropped it; you are on '%s'. Start new work with: "
+                            "git switch -c <branch>\n",
+                            originalBranch.c_str(), baseline.c_str());
             } else if (!restacked) {
                 std::printf("Nothing to restack - your commits are already on "
                             "the depot baseline.\n");
@@ -1092,6 +1171,7 @@ int cmdImport(const Args& args) {
                              "--continue' (or 'git rebase --abort' to undo).\n");
                 return 1;
             }
+            if (auto kept = keepDetached(); !kept) return fail(kept.error());
             std::printf("Rebased your detached work onto the new depot state "
                         "(HEAD is still detached).\n");
         }
