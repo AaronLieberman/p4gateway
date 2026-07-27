@@ -129,7 +129,14 @@ wrapper function, not an inline `run("p4", ...)` call.
 - Code that talks to real `git`/`p4` binaries is kept thin precisely so it
   needs little testing; don't try to mock the p4 server. `p4` is usually NOT
   installed in the dev/CI environment — never write a test that requires it.
-- A real end-to-end check needs a Windows machine with a P4 workspace; flag
-  changes that need that in your summary rather than claiming they're verified.
+- A real end-to-end check needs a Windows machine with a P4 workspace.
   `gw integtest run` automates exactly that check on such a machine
-  (see README-integtest.md) — it is never run by ctest or CI.
+  (see README-integtest.md); ctest never runs it.
+- **Run the integtest via the GitHub Action for any change that needs Windows
+  or live-P4 verification** — don't just flag it as unverified. The `integtest`
+  workflow (`.github/workflows/integtest.yml`) boots a throwaway p4d on a
+  windows-latest runner and runs the whole suite. It fires automatically on
+  push to `main` and can be started on any branch with `workflow_dispatch`
+  (`actions_run_trigger`, or the Actions tab). Kick it off, wait for it, and
+  report the result; a change to `gw integtest` itself is not verified until
+  that run is green.

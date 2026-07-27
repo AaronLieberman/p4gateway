@@ -2166,9 +2166,22 @@ std::expected<void, std::string> itSingleLevelInclude(ItContext& it) {
 // (#0) out of the mirror, and a drifted file that is *open* is left alone rather
 // than losing an unsubmitted resolve. Ends by syncing to head and importing, so
 // the fixture hands off at head with the baseline matching. Runs on 'main',
-// clean, after the have-manifest steps (it needs a manifest bound to the current
-// baseline).
+// clean.
 std::expected<void, std::string> itSyncback(ItContext& it) {
+    // Syncback reads its target revisions from the have manifest, so establish
+    // one bound to the current baseline rather than inheriting whatever the
+    // previous step left: itHaveManifestExclude deliberately deletes the
+    // manifest as its last act, and step order is free to change again.
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    auto seeded = runGw(it, it.repoDir, {"import"});
+    if (!seeded) return std::unexpected(seeded.error());
+    if (!fs::exists(manifest)) {
+        return std::unexpected("no have manifest after a seeding import (" +
+                               manifest.string() + " missing); syncback has "
+                               "nothing to read its target revisions from");
+    }
+
     const std::string mirrorMain =
         (fs::path(it.mirrorDir) / "main.cpp").string();
     const std::string mirrorNew =
