@@ -101,6 +101,9 @@ constexpr const char* kObliterateFiles[] = {
     "bin/tool.txt", "bin/helper.txt",
     "src/main.cpp", "src/util.cpp", "src/util.h", "src/blob.bin",
     "src/utils.h", "src/newfile.cpp", "src/docs/overview.md",
+    // itSyncback's post-import addition; obliterated in-step, listed here as a
+    // safety net so an aborted run's cleanup still removes it.
+    "src/syncback.cpp",
     // itHaveManifestIgnored's and itWorktreeGitignore's build-output files.
     "src/generated/out.txt", "src/generated/w.txt",
     // itSecondInclude's sibling-subtree file; obliterated in-step, listed here
@@ -2155,6 +2158,176 @@ std::expected<void, std::string> itSingleLevelInclude(ItContext& it) {
     return {};
 }
 
+// `gw syncback` puts the client back on the revisions the baseline was imported
+// from, so a resolve done in P4 (sync the conflicting file to head, merge,
+// submit) does not force a full-workspace sync before the next import. Three
+// behaviors only a live server can show: a file whose revision moved forward is
+// synced back to the baseline's, a file submitted since the import is un-synced
+// (#0) out of the mirror, and a drifted file that is *open* is left alone rather
+// than losing an unsubmitted resolve. Ends by syncing to head and importing, so
+// the fixture hands off at head with the baseline matching. Runs on 'main',
+// clean, after the have-manifest steps (it needs a manifest bound to the current
+// baseline).
+std::expected<void, std::string> itSyncback(ItContext& it) {
+    const std::string mirrorMain =
+        (fs::path(it.mirrorDir) / "main.cpp").string();
+    const std::string mirrorNew =
+        (fs::path(it.mirrorDir) / "syncback.cpp").string();
+    const std::string newDepotFile = it.depotRoot + "/src/syncback.cpp";
+    const std::string worktreeMain =
+        (fs::path(it.srcWork) / "main.cpp").string();
+
+    // The content at the baseline revision - what syncback must restore.
+    auto baselineMain = readFile(mirrorMain);
+    if (!baselineMain) return std::unexpected(baselineMain.error());
+    auto baselineWorktree = readFile(worktreeMain);
+    if (!baselineWorktree) return std::unexpected(baselineWorktree.error());
+
+    // Drift the client the way a submit does: an edit to a file the baseline
+    // has (its have rev moves past the snapshot's) plus a brand-new file (a
+    // have entry the manifest has never seen).
+    auto cl = p4::createChangelist(it.p4, "gw integtest: syncback drift");
+    if (!cl) return std::unexpected(cl.error());
+    auto opened = trace(it, "p4 edit " + mirrorMain,
+                        p4::editFiles(it.p4, *cl, {mirrorMain}));
+    if (!opened) return std::unexpected(opened.error());
+    auto appended = appendFile(mirrorMain, "// syncback drift\n");
+    if (!appended) return appended;
+    auto wroteNew = writeFile(mirrorNew, "// added after the import\n");
+    if (!wroteNew) return wroteNew;
+    auto added = trace(it, "p4 add " + mirrorNew,
+                       p4::addFiles(it.p4, *cl, {mirrorNew}));
+    if (!added) return std::unexpected(added.error());
+    auto submitted = trace(it, "p4 submit -c " + *cl, p4::submit(it.p4, *cl));
+    if (!submitted) return std::unexpected(submitted.error());
+
+    // --dry-run must name both actions and change nothing.
+    auto preview = runGw(it, it.repoDir, {"syncback", "--dry-run"});
+    if (!preview) return std::unexpected(preview.error());
+    if (preview->find("restore") == std::string::npos ||
+        preview->find("main.cpp") == std::string::npos) {
+        return std::unexpected("syncback --dry-run did not plan a restore of "
+                               "the drifted main.cpp:\n" + *preview);
+    }
+    if (preview->find("remove") == std::string::npos ||
+        preview->find("syncback.cpp") == std::string::npos) {
+        return std::unexpected("syncback --dry-run did not plan to un-sync the "
+                               "file added since the import:\n" + *preview);
+    }
+    auto afterPreview = readFile(mirrorMain);
+    if (!afterPreview) return std::unexpected(afterPreview.error());
+    if (afterPreview->find("// syncback drift") == std::string::npos ||
+        !fs::exists(mirrorNew)) {
+        return std::unexpected("syncback --dry-run modified the mirror");
+    }
+
+    // The real run: both files return to the baseline's have state.
+    auto ran = runGw(it, it.repoDir, {"syncback"});
+    if (!ran) return std::unexpected(ran.error());
+    auto restoredMain = readFile(mirrorMain);
+    if (!restoredMain) return std::unexpected(restoredMain.error());
+    if (*restoredMain != *baselineMain) {
+        return std::unexpected("syncback did not restore the mirror's main.cpp "
+                               "to the baseline revision's content");
+    }
+    if (fs::exists(mirrorNew)) {
+        return std::unexpected("syncback left " + mirrorNew +
+                               " in the mirror; the baseline never had it");
+    }
+    // The working tree was never in play - only p4's mirror moves.
+    auto worktreeAfter = readFile(worktreeMain);
+    if (!worktreeAfter) return std::unexpected(worktreeAfter.error());
+    if (*worktreeAfter != *baselineWorktree) {
+        return std::unexpected("syncback modified the working tree's main.cpp; "
+                               "it must only touch the mirror");
+    }
+
+    // The manifest still describes the baseline, so the next import takes the
+    // fast path and finds nothing at all to do.
+    auto noop = runGw(it, it.repoDir, {"import"});
+    if (!noop) return std::unexpected(noop.error());
+    if (noop->find("Already up to date") == std::string::npos) {
+        return std::unexpected("import after syncback was not a clean no-op - "
+                               "the mirror is not back on the baseline:\n" +
+                               *noop);
+    }
+    if (noop->find("Have manifest for") == std::string::npos) {
+        return std::unexpected("syncback invalidated the have manifest (the "
+                               "import fell back to the mirror walk):\n" +
+                               *noop);
+    }
+
+    // An open file that has drifted must be reported, not synced: syncing it
+    // back would discard an unsubmitted resolve. This is the shape of the
+    // workflow mid-flight - the conflicting file synced forward and still open
+    // in the changelist being resolved - so drift it with a sync (the mirror
+    // now sits below head, where a submit would itself demand a resolve).
+    auto syncedForward = trace(it, "p4 sync " + mirrorMain,
+                               p4::sync(it.p4, mirrorMain));
+    if (!syncedForward) return std::unexpected(syncedForward.error());
+    auto driftedAgain = readFile(mirrorMain);
+    if (!driftedAgain) return std::unexpected(driftedAgain.error());
+    if (driftedAgain->find("// syncback drift") == std::string::npos) {
+        return std::unexpected("syncing the mirror file to head did not bring "
+                               "back the submitted change");
+    }
+
+    auto cl2 = p4::createChangelist(it.p4, "gw integtest: syncback open");
+    if (!cl2) return std::unexpected(cl2.error());
+    auto opened2 = trace(it, "p4 edit " + mirrorMain,
+                         p4::editFiles(it.p4, *cl2, {mirrorMain}));
+    if (!opened2) return std::unexpected(opened2.error());
+
+    auto skipped = runGw(it, it.repoDir, {"syncback"});
+    if (!skipped) return std::unexpected(skipped.error());
+    if (skipped->find("open in P4") == std::string::npos) {
+        return std::unexpected("syncback did not report the drifted file it "
+                               "left alone for being open:\n" + *skipped);
+    }
+    auto stillDrifted = readFile(mirrorMain);
+    if (!stillDrifted) return std::unexpected(stillDrifted.error());
+    if (*stillDrifted == *baselineMain) {
+        return std::unexpected("syncback synced back a file that was open in "
+                               "P4, which would discard an unsubmitted "
+                               "resolve");
+    }
+
+    // Close the open, and syncback restores it as before.
+    auto reverted = trace(it, "p4 revert -c " + *cl2 + " " + it.p4DepotPath,
+                          p4::revertChangelist(it.p4, *cl2));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto deletedCl = p4::deleteChangelist(it.p4, *cl2);
+    if (!deletedCl) return std::unexpected(deletedCl.error());
+    auto ran2 = runGw(it, it.repoDir, {"syncback"});
+    if (!ran2) return std::unexpected(ran2.error());
+    auto restoredAgain = readFile(mirrorMain);
+    if (!restoredAgain) return std::unexpected(restoredAgain.error());
+    if (*restoredAgain != *baselineMain) {
+        return std::unexpected("syncback did not restore main.cpp once the "
+                               "open was reverted");
+    }
+
+    // Hand off at head with the baseline matching: sync forward and absorb the
+    // drift the normal way, so later steps inherit the usual fixture state.
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + newDepotFile,
+                             p4::obliterate(it.p4, newDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+    auto absorbed = runGw(it, it.repoDir, {"import"});
+    if (!absorbed) return std::unexpected(absorbed.error());
+    auto dirtyAfter = git::isDirty(it.repoDir);
+    if (!dirtyAfter) return std::unexpected(dirtyAfter.error());
+    if (*dirtyAfter) {
+        return std::unexpected("syncback step left the working tree dirty; "
+                               "later steps need a clean checkout");
+    }
+    return {};
+}
+
 // Regression guard for the worktree-mode gitignore-staleness bug: the snapshot
 // worktree stages detached at the old baseline, so it carries that baseline's
 // .gitignore. When the user changes their allowlist - un-ignoring a subtree the
@@ -3304,6 +3477,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("have-manifest ignores an excluded, diverted "
                            "carve-out",
                            [&] { return itHaveManifestExclude(it); });
+        steps.emplace_back("gw syncback restores the baseline's revisions, "
+                           "skipping opens",
+                           [&] { return itSyncback(it); });
         steps.emplace_back("worktree import picks up an updated .gitignore",
                            [&] { return itWorktreeGitignore(it); });
         steps.emplace_back("second include: doctor flags it, gw init covers it, "

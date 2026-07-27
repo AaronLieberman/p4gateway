@@ -43,6 +43,10 @@ and keeps a like-named local branch fast-forwarded to it for convenience
 the current branch into the mirror with explicit `p4 edit/add/delete/move`
 (driven by the git diff, verified by a scoped `p4 reconcile -n`) and builds
 a pending CL that the user submits from P4V — gw itself never submits.
+`gw syncback` is the reverse of a sync-forward: after resolving a file in P4
+and submitting, it syncs the mirror back to the revisions the have manifest
+recorded for the current baseline, so a one-file resolve doesn't force a
+whole-workspace sync before the next import.
 Getting started is split in two: `gw setup` writes the `p4gw.cfg` template
 offline; `gw init` verifies the client view against it via p4 (hard failure
 on a wrong mapping) and creates the Git repo.
@@ -73,7 +77,8 @@ build/gw --help                # build\gw.exe on Windows
 ```
 src/main.cpp        CLI entry: parses <command> and dispatches; keep it dumb
 src/commands.h      command signatures (one int cmdX(const Args&) each)
-src/commands/*.cpp  one file per subcommand (setup, init, import, prepare, status, shelf, doctor, integtest)
+src/commands/*.cpp  one file per subcommand (setup, init, import, prepare,
+                    syncback, status, shelf, doctor, integtest)
 src/subprocess.{h,cpp} subprocess runner — the ONLY place that spawns processes
                     (not named process.h: that shadows the CRT header MSVC's
                     <thread> needs)

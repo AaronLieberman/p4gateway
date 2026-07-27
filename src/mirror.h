@@ -155,4 +155,51 @@ SyncActions diffHaveState(
     const std::vector<std::pair<std::string, std::string>>& then,
     const std::vector<std::pair<std::string, std::string>>& now);
 
+// ---- syncback: putting the client back on the baseline's revisions ----
+//
+// The manifest is also a record of where the mirror *was* when the baseline
+// was imported, which is what lets `gw syncback` undo a sync-forward. After a
+// resolve done in P4 (sync the conflicting file to head, merge, submit) the
+// client sits past the baseline on those files, so an import would absorb a
+// half-synced depot state. Syncing them back to the manifest's revisions puts
+// the mirror exactly where the snapshot came from - no full sync needed - and
+// leaves the manifest itself still valid, since the have state matches it
+// again.
+
+// One file `gw syncback` must re-sync to restore the baseline's have state.
+struct SyncbackAction {
+    std::string depotFile;  // //depot/...
+    std::string rev;        // target have revision; "0" means un-sync it
+};
+
+// What `gw syncback` must sync to put the client back on the revisions the
+// baseline snapshot was built from.
+struct SyncbackPlan {
+    // Files whose have revision moved since the import, or that were synced
+    // away entirely: sync back to the recorded revision.
+    std::vector<SyncbackAction> restores;
+
+    // Files synced in since the import, which the baseline never had: sync to
+    // #0, which drops p4's copy from the mirror. They are absent from the
+    // depot snapshot and therefore from the working tree too, so removing them
+    // discards nothing of the user's - and a plain `p4 sync` brings them back.
+    std::vector<SyncbackAction> removes;
+
+    // Depot files that drifted but are open in P4, reported instead of acted
+    // on: p4 will not overwrite an opened file, and syncing one back would
+    // throw away an unsubmitted resolve - exactly the work syncback exists to
+    // protect.
+    std::vector<std::string> skippedOpen;
+};
+
+// Pure: diffs the baseline's recorded have state against the client's current
+// one and returns the syncs that restore it. Both lists hold owned entries
+// (already resolved through the ordered view rules, as import records them).
+// A file whose revision never moved yields no action at all - the common case,
+// and the reason syncback costs a few file syncs where a full re-sync costs a
+// workspace. Each list is sorted by depot path. Pure; unit-tested.
+SyncbackPlan planSyncback(const std::vector<ManifestEntry>& baseline,
+                          const std::vector<ManifestEntry>& now,
+                          const std::vector<std::string>& openedDepotFiles);
+
 }  // namespace p4gw::mirror

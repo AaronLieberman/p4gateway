@@ -16,6 +16,7 @@ int cmdSetup(const Args& args);
 int cmdInit(const Args& args);
 int cmdImport(const Args& args);
 int cmdPrepare(const Args& args);
+int cmdSyncback(const Args& args);
 int cmdStatus(const Args& args);
 int cmdShelf(const Args& args);
 int cmdDoctor(const Args& args);

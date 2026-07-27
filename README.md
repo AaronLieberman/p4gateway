@@ -55,8 +55,9 @@ gw import                        # absorb your own submit into main, plus
 ```
 
 That's the whole loop. When you need more — handing work off as a shelf,
-refreshing a pending CL after review feedback, a status screen, an
-environment doctor — see [INSTRUCTIONS.md](INSTRUCTIONS.md).
+refreshing a pending CL after review feedback, resolving a file in P4 without
+resyncing the world, a status screen, an environment doctor — see
+[INSTRUCTIONS.md](INSTRUCTIONS.md).
 
 ## Better with git-branchless
 

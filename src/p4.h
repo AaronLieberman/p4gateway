@@ -270,6 +270,16 @@ std::expected<void, std::string> printHeadToFile(const Config& config,
                                                  const std::string& depotFile,
                                                  const std::string& dest);
 
+// `p4 sync <depotFile>#<rev> ...` over an explicit, revision-qualified file
+// list (chunked to stay under the command-line limit). This is how
+// `gw syncback` puts mirror files back on the revisions the baseline snapshot
+// was built from, including the `#0` form that un-syncs a file the baseline
+// never had. Every spec must name an explicit file - never an unscoped
+// wildcard - so the sync stays bounded by the plan, not by the depot's size.
+// A chunk that is already where it belongs ("up-to-date") is success.
+std::expected<std::string, std::string> syncToRevisions(
+    const Config& config, const std::vector<std::string>& fileSpecs);
+
 // ---- workflow wrappers ----
 // Used by `gw integtest` today (and groundwork for a future submit
 // workflow). Callers must pass an explicitly scoped pathSpec - never an

@@ -23,6 +23,7 @@ void printUsage() {
         "  init     Verify the client-view mapping and set up the Git repo\n"
         "  import   Commit the synced mirror state to the baseline branch (--rebase)\n"
         "  prepare  Open the current branch's changes in a pending P4 changelist\n"
+        "  syncback Put the mirror back on the baseline's revisions after a p4 resolve\n"
         "  status   Show Git/P4 state at a glance\n"
         "  shelf    Work with P4 shelves: list, or import <cl> into Git\n"
         "  doctor   Check the environment and the client-view mapping\n"
@@ -74,6 +75,7 @@ int main(int argc, char** argv) {
     if (command == "init") return p4gw::cmdInit(args);
     if (command == "import") return p4gw::cmdImport(args);
     if (command == "prepare") return p4gw::cmdPrepare(args);
+    if (command == "syncback") return p4gw::cmdSyncback(args);
     if (command == "status") return p4gw::cmdStatus(args);
     if (command == "shelf") return p4gw::cmdShelf(args);
     if (command == "doctor") return p4gw::cmdDoctor(args);

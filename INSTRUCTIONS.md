@@ -19,6 +19,7 @@ For building and first-time setup, see [SETUP.md](SETUP.md).
 | `gw init` | Verify the client view against the config, then create the Git repo. |
 | `gw import` | Absorb whatever the mirror has synced into the `main` baseline. |
 | `gw prepare` | Turn the current branch into a pending P4 changelist (or a shelf). |
+| `gw syncback` | Put the mirror back on the baseline's revisions after a P4 resolve. |
 | `gw status` | One screen of where Git and P4 stand, plus the most useful next step. |
 | `gw shelf list` | List your pending and shelved changelists under the subtree. |
 | `gw shelf import <cl>` | Bring a P4 shelf into Git as a new branch off `main`. |
@@ -63,6 +64,30 @@ gw prepare --update 4821         # revert CL 4821's opens, re-stage the branch i
 
 `--update` keeps the changelist's number and description; a plain
 `gw prepare` would refuse here because CL 4821's files are still open.
+
+### Resolving in P4 before submitting
+
+Sometimes P4 won't take the changelist `gw prepare` built until you resolve:
+someone submitted to one of your files while the CL was pending. The resolve
+belongs in P4 — sync the conflicting file, merge it, submit — and then one
+command puts the mirror back:
+
+```
+<sync the conflicting file, resolve, and submit — in P4V or by hand>
+
+gw syncback                      # back to the revisions the baseline has
+```
+
+That last step is the point. Syncing the file moved it past the depot state
+gw imported, so the mirror no longer matches the baseline: `gw import` would
+absorb a half-synced depot, and syncing the *rest* of the workspace to match
+costs a rebuild you didn't ask for. `gw syncback` puts just the files that
+moved back where the baseline has them, so you keep working against the depot
+state you already have.
+
+Nothing forces you to take the latest now. When you do want it, sync
+everything and `gw import --rebase` as usual — the commit you submitted
+rebases away as an empty change.
 
 ### Handing off work as a shelf
 
@@ -187,6 +212,36 @@ Options:
   opens (restoring the mirror to the depot head), drops any shelf, and
   deletes the changelist — the one-command version of a hand `p4 revert` +
   change delete.
+
+### gw syncback
+
+Syncs the mirror back to the exact revisions the current depot baseline was
+imported from — the counterpart to syncing a file forward to resolve it in P4
+(see [the recipe](#resolving-in-p4-before-submitting)).
+
+- The target revisions come from the have manifest `gw import` records on
+  every run, so the baseline must have been imported by this repo and the
+  manifest must still describe it. If it doesn't, syncback refuses and points
+  at `gw import` rather than guess — Git stores content, not P4 revisions, so
+  there is nothing else to reconstruct them from.
+- Files whose revision moved are synced back to the recorded one. Files synced
+  in since the import are synced to `#0`, which drops p4's copy: the baseline
+  never had them, so they are in neither the snapshot nor your working tree,
+  and a plain `p4 sync` brings them back.
+- Files whose revision never moved cost nothing, so this is a handful of file
+  syncs rather than a workspace sync — the whole reason it exists.
+- Run it *after* the submit. A file still open in P4 is left alone and
+  reported: p4 won't overwrite it, and syncing it back would discard an
+  unsubmitted resolve.
+- It only ever moves p4's mirror. Your working tree, your branch, and the
+  baseline are untouched, and the manifest stays valid — the next `gw import`
+  takes its fast path and finds nothing to do.
+- `--dry-run` (`-n`) prints the syncs it would run and stops.
+
+One caveat worth knowing: after syncback the mirror no longer holds the change
+you just submitted, so `gw prepare` on that branch would ship it a second
+time. That settles itself the next time you sync for real and run `gw import`
+— the commit rebases away as an empty change.
 
 ### gw status
 

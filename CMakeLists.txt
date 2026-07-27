@@ -31,6 +31,7 @@ add_library(p4gw_core STATIC
     src/commands/init.cpp
     src/commands/import.cpp
     src/commands/prepare.cpp
+    src/commands/syncback.cpp
     src/commands/status.cpp
     src/commands/shelf.cpp
     src/commands/doctor.cpp

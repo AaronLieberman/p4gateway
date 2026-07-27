@@ -815,6 +815,33 @@ std::expected<std::string, std::string> sync(const Config& config,
     return result;
 }
 
+std::expected<std::string, std::string> syncToRevisions(
+    const Config& config, const std::vector<std::string>& fileSpecs) {
+    std::string combined;
+    for (size_t i = 0; i < fileSpecs.size(); i += kMaxFilesPerCall) {
+        std::vector<std::string> args{"sync"};
+        for (size_t j = i; j < fileSpecs.size() && j < i + kMaxFilesPerCall;
+             ++j) {
+            args.push_back(fileSpecs[j]);
+        }
+        auto result = run(config, args);
+        if (!result) {
+            // A chunk whose files all already sit on their target revision
+            // exits non-zero carrying only the "up-to-date" notice - benign,
+            // exactly as in sync() above. Anything else is a real failure
+            // (a writable mirror file p4 refuses to clobber, an obliterated
+            // revision) and must surface rather than leave a half-restored
+            // mirror looking successful.
+            if (result.error().find("up-to-date") == std::string::npos) {
+                return std::unexpected(result.error());
+            }
+            continue;
+        }
+        combined += *result;
+    }
+    return combined;
+}
+
 std::expected<std::string, std::string> syncForce(const Config& config,
                                                   const std::string& pathSpec) {
     auto result = run(config, {"sync", "-f", pathSpec});

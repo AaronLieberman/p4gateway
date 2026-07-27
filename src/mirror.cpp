@@ -349,4 +349,49 @@ SyncActions diffHaveState(
     return actions;
 }
 
+SyncbackPlan planSyncback(const std::vector<ManifestEntry>& baseline,
+                          const std::vector<ManifestEntry>& now,
+                          const std::vector<std::string>& openedDepotFiles) {
+    const std::unordered_set<std::string> opened(openedDepotFiles.begin(),
+                                                 openedDepotFiles.end());
+    std::unordered_map<std::string, const std::string*> nowRev;
+    nowRev.reserve(now.size());
+    for (const auto& entry : now) {
+        nowRev.emplace(entry.depotFile, &entry.rev);
+    }
+
+    SyncbackPlan plan;
+    std::unordered_set<std::string> inBaseline;
+    inBaseline.reserve(baseline.size());
+    for (const auto& entry : baseline) {
+        inBaseline.insert(entry.depotFile);
+        const auto it = nowRev.find(entry.depotFile);
+        // Same revision: sync never rewrote it, so the mirror copy is still
+        // the snapshot's. Absent from `now` means it was synced away (or
+        // deleted at head and synced), which the recorded revision restores.
+        if (it != nowRev.end() && *it->second == entry.rev) continue;
+        if (opened.contains(entry.depotFile)) {
+            plan.skippedOpen.push_back(entry.depotFile);
+        } else {
+            plan.restores.push_back({entry.depotFile, entry.rev});
+        }
+    }
+    for (const auto& entry : now) {
+        if (inBaseline.contains(entry.depotFile)) continue;
+        if (opened.contains(entry.depotFile)) {
+            plan.skippedOpen.push_back(entry.depotFile);
+        } else {
+            plan.removes.push_back({entry.depotFile, "0"});
+        }
+    }
+
+    auto byDepotFile = [](const SyncbackAction& a, const SyncbackAction& b) {
+        return a.depotFile < b.depotFile;
+    };
+    std::sort(plan.restores.begin(), plan.restores.end(), byDepotFile);
+    std::sort(plan.removes.begin(), plan.removes.end(), byDepotFile);
+    std::sort(plan.skippedOpen.begin(), plan.skippedOpen.end());
+    return plan;
+}
+
 }  // namespace p4gw::mirror

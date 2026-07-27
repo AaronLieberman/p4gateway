@@ -3,7 +3,8 @@
 p4gateway is at **v1.0** (2026-07): the mirror workflow is complete and in
 daily use — `setup`/`init`, worktree-mode incremental `import`, `prepare`
 with the full pending-CL lifecycle (`--update`, `--shelf`, `--shelf
---update`, `--abandon`, slicing), `status`, `shelf list`/`import`, `doctor`,
+--update`, `--abandon`, slicing), `syncback`, `status`, `shelf
+list`/`import`, `doctor`,
 and a CI-run integration test against a live p4d. The milestones below
 record the work that shipped it; **Future work** collects candidate items,
 none scheduled. Testing gaps and planned test additions are tracked in
@@ -248,6 +249,20 @@ cover the pure logic without p4.
       no mirror-walk line), deleted-manifest fallback + rewrite,
       corrupted-binding fallback, and the fast path returning. `gw doctor`
       reports the manifest's binding state.
+- [x] `gw syncback`: sync the mirror back to the revisions the current
+      baseline was imported from, so resolving one file in P4 (sync to head,
+      merge, submit) doesn't force a whole-workspace sync before the next
+      import. Reuses the have manifest as the record of *where the mirror
+      was*, which makes it exact and cheap: files whose rev never moved cost
+      nothing, drifted files sync back to the recorded rev, and files
+      submitted since the import sync to `#0` (absent from the snapshot and
+      the working tree alike). Refuses on a missing or wrongly bound manifest
+      rather than guess — nothing else records p4 revisions. Files open in P4
+      are reported, never synced: p4 won't overwrite them and doing so would
+      discard an unsubmitted resolve. Leaves the manifest valid, so the next
+      import is a fast-path no-op. Planning is pure and unit-tested;
+      `gw integtest run` covers restore, `#0` removal, the open-file skip,
+      and the no-op import afterward.
 - [x] CI on GitHub Actions: Linux + Windows build & unit tests
       (.github/workflows/ci.yml)
 - [x] Run `gw integtest run` in GitHub Actions
