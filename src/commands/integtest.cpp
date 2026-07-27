@@ -2190,6 +2190,21 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
     const std::string worktreeMain =
         (fs::path(it.srcWork) / "main.cpp").string();
 
+    // Compare mirror content on text, not bytes. The driver appends markers to
+    // workspace files with a bare '\n' (appendFile), so the local copy carries
+    // mixed line endings, while the depot holds the canonical LF form and
+    // `p4 sync` writes it back through the client's LineEnd (CRLF on Windows).
+    // Syncing a file back therefore *canonicalizes* its endings - correct, and
+    // invisible in production where only p4 ever writes the mirror, but a raw
+    // byte compare against the pre-drift file would flag it as a mismatch.
+    auto sameText = [](const std::string& a, const std::string& b) {
+        std::string x = a;
+        std::string y = b;
+        std::erase(x, '\r');
+        std::erase(y, '\r');
+        return x == y;
+    };
+
     // The content at the baseline revision - what syncback must restore.
     auto baselineMain = readFile(mirrorMain);
     if (!baselineMain) return std::unexpected(baselineMain.error());
@@ -2239,7 +2254,12 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
     if (!ran) return std::unexpected(ran.error());
     auto restoredMain = readFile(mirrorMain);
     if (!restoredMain) return std::unexpected(restoredMain.error());
-    if (*restoredMain != *baselineMain) {
+    if (restoredMain->find("// syncback drift") != std::string::npos) {
+        return std::unexpected("syncback left the submitted drift in the "
+                               "mirror's main.cpp - it did not sync the file "
+                               "back to the baseline revision");
+    }
+    if (!sameText(*restoredMain, *baselineMain)) {
         // Quote both sides and what gw said it did: this compares bytes p4
         // wrote, so the difference (a stray line, an EOL translation) is the
         // whole diagnosis and is otherwise invisible from CI.
@@ -2307,7 +2327,7 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
     }
     auto stillDrifted = readFile(mirrorMain);
     if (!stillDrifted) return std::unexpected(stillDrifted.error());
-    if (*stillDrifted == *baselineMain) {
+    if (stillDrifted->find("// syncback drift") == std::string::npos) {
         return std::unexpected("syncback synced back a file that was open in "
                                "P4, which would discard an unsubmitted "
                                "resolve");
@@ -2323,7 +2343,7 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
     if (!ran2) return std::unexpected(ran2.error());
     auto restoredAgain = readFile(mirrorMain);
     if (!restoredAgain) return std::unexpected(restoredAgain.error());
-    if (*restoredAgain != *baselineMain) {
+    if (!sameText(*restoredAgain, *baselineMain)) {
         return std::unexpected("syncback did not restore main.cpp once the "
                                "open was reverted");
     }
