@@ -36,17 +36,21 @@ instead of one tally for the whole view.
 `gw --version` reports the build and the exact source it came from:
 
 ```
-gw 1.0.174+g547aba883
-  commit  547aba883c4b26ab318e6eef0471d4ce7c02317e
-  date    2026-07-29T05:26:44+00:00
+gw 1.0.25+g209d124cc
+  commit  209d124ccd4a205672fd0aeedf6dde967e454bf6
+  date    2026-07-29T11:52:01+00:00
   branch  main
 ```
 
-The patch number is the commit count on `main`, so it climbs with every
-commit, and the `+g...` suffix is the commit itself — `git show 547aba883`
-in the p4gateway repo lands on the source that produced the binary. Nobody
-edits a version by hand: the build derives all of it from git. A build from
-a modified working tree is tagged `.dirty` and a build from a shallow clone
+The patch number counts the commits on `main` since the current `MAJOR.MINOR`
+was set, so it climbs with every commit, and the `+g...` suffix is the commit
+itself — `git show 209d124cc` in the p4gateway repo lands on the source that
+produced the binary. Nobody edits a version by hand: the build derives all of
+it from git. The one thing a human sets is the `MAJOR.MINOR` in the top-level
+`CMakeLists.txt` (`project(p4gateway VERSION 1.0.0 ...)`, all three components
+spelled out); committing that bump resets the patch number to 0 by itself,
+because the count starts at the commit that made the change. A build from a
+modified working tree is tagged `.dirty` and a build from a shallow clone
 `.shallow` (with no trustworthy commit count, so the patch number reads 0).
 `gw doctor` repeats the one-line version at the top of its report, which is
 the line to include when you report a problem.

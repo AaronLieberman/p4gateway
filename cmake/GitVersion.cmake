@@ -8,15 +8,20 @@
 #
 # Nobody hand-edits a version here: the only number a human sets is the
 # MAJOR.MINOR in the top-level project() call, passed in as GW_VERSION_BASE.
-# The patch number is the commit count behind HEAD (main is linear, so that
-# count is monotonic), and the commit sha is what actually ties a binary back
-# to its source.
+# The patch number counts the commits since that MAJOR.MINOR was set, so
+# bumping it in CMakeLists.txt resets the patch to 0 all by itself (main is
+# linear, so the count climbs monotonically from there). The commit sha is
+# what actually ties a binary back to its source.
 #
 # Required -D arguments:
 #   GW_VERSION_BASE  MAJOR.MINOR from project(), e.g. "1.0"
 #   GW_SRC_DIR       the repo to interrogate (the project source dir)
 #   GW_IN            path to cmake/version.cpp.in
 #   GW_OUT           path of the version.cpp to write
+# Optional:
+#   GW_WARN_UNANCHORED  warn when the MAJOR.MINOR bump commit can't be found
+#                       (set only for the configure-time run, so the warning
+#                       appears once rather than on every build)
 
 foreach(required GW_VERSION_BASE GW_SRC_DIR GW_IN GW_OUT)
     if(NOT DEFINED ${required})
@@ -74,7 +79,33 @@ if(GW_VERSION_COMMIT)
     if(shallow STREQUAL "true")
         set(GW_VERSION_SHALLOW "true")
     else()
-        gw_git(GW_VERSION_COMMITS rev-list --count HEAD)
+        # Where does this MAJOR.MINOR start? The bump commit is the oldest one
+        # that changed how often "VERSION <base>." occurs in CMakeLists.txt -
+        # i.e. the commit that first wrote this MAJOR.MINOR into project().
+        # -S takes a fixed string, so no regex dialect is involved, and the
+        # trailing dot keeps a base of "3.2" from matching a
+        # cmake_minimum_required of "VERSION 3.25".
+        gw_git(bumps log --format=%H -S "VERSION ${GW_VERSION_BASE}."
+               -- CMakeLists.txt)
+        if(bumps)
+            string(REPLACE "\n" ";" bumps "${bumps}")
+            list(POP_BACK bumps bump)  # git log is newest-first; take the first
+            gw_git(GW_VERSION_COMMITS rev-list --count "${bump}..HEAD")
+        else()
+            # No such commit: an unusual project() spelling, or a history that
+            # never contained the bump. Counting the whole history keeps the
+            # number monotonic, it just no longer resets at the bump.
+            gw_git(GW_VERSION_COMMITS rev-list --count HEAD)
+            if(GW_WARN_UNANCHORED)
+                message(WARNING
+                    "GitVersion: no commit in CMakeLists.txt's history "
+                    "introduces \"VERSION ${GW_VERSION_BASE}.\", so the patch "
+                    "number counts the whole history instead of resetting at "
+                    "the ${GW_VERSION_BASE} bump. Spell the project() version "
+                    "with all three components (VERSION ${GW_VERSION_BASE}.0) "
+                    "and commit that bump on its own.")
+            endif()
+        endif()
     endif()
 
     # Tracked-file changes only: untracked scratch files and build directories

@@ -96,10 +96,13 @@ tests/              zero-dependency harness (test_framework.h), one file per uni
 ```
 
 The version is never hand-edited: only MAJOR.MINOR in the top-level
-`project()` call is set by a human. The patch number is `git rev-list --count
-HEAD` (main is linear, so it climbs monotonically) and the `+g<sha>` suffix
-ties a binary to its source; `.dirty` and `.shallow` mark builds whose stamp
-can't be trusted. The `gw_version` target reruns the script on every build, so
+`project()` call is set by a human. The patch number is the commit count since
+that MAJOR.MINOR was written (main is linear, so it climbs monotonically), so
+bumping MINOR resets it to 0 on its own — the script finds the bump with a
+fixed-string `git log -S "VERSION <base>." -- CMakeLists.txt` and counts from
+the oldest match, which is why `project()` must spell all three components.
+The `+g<sha>` suffix ties a binary to its source; `.dirty` and `.shallow` mark
+builds whose stamp can't be trusted. The `gw_version` target reruns the script on every build, so
 a new commit restamps without a reconfigure, and `configure_file` skips the
 write when nothing changed, so only the generated TU recompiles. CI checkouts
 need `fetch-depth: 0` or the count is unavailable.

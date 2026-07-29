@@ -26,17 +26,23 @@ endif()
 # before the first compile. GitVersion.cmake writes through configure_file, so
 # an unchanged HEAD leaves version.cpp byte-identical and nothing recompiles.
 set(gw_version_cpp ${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp)
-set(gw_version_args
+set(gw_version_script ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
+set(gw_version_defs
     -D GW_VERSION_BASE=${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     -D GW_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
     -D GW_IN=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cpp.in
     -D GW_OUT=${gw_version_cpp}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake
 )
-execute_process(COMMAND ${CMAKE_COMMAND} ${gw_version_args} COMMAND_ERROR_IS_FATAL ANY)
+# GW_WARN_UNANCHORED only on this run: if the patch number can't reset at the
+# MAJOR.MINOR bump the user should hear it once, not on every build.
+execute_process(
+    COMMAND ${CMAKE_COMMAND} ${gw_version_defs} -D GW_WARN_UNANCHORED=ON
+            -P ${gw_version_script}
+    COMMAND_ERROR_IS_FATAL ANY
+)
 add_custom_target(gw_version
     BYPRODUCTS ${gw_version_cpp}
-    COMMAND ${CMAKE_COMMAND} ${gw_version_args}
+    COMMAND ${CMAKE_COMMAND} ${gw_version_defs} -P ${gw_version_script}
     COMMENT "Stamping gw version from git"
     VERBATIM
 )
