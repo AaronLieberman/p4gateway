@@ -30,7 +30,8 @@ For building and first-time setup, see [SETUP.md](SETUP.md).
 Every command takes `--help` (`-h`). The global `--verbose` flag (before or
 after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4`
 command to stderr as it runs — handy for seeing exactly what gw does against
-your depot.
+your depot. It also makes `gw import` report each `include` separately
+instead of one tally for the whole view.
 
 ## Recipes
 
@@ -357,7 +358,9 @@ config) and adapts:
 - `gw import --rebase` restacks **every visible stack** onto the new depot
   state via `git branchless sync`, not just the commit you happen to be on,
   and records the rewrites so the pre-import commits go obsolete (hidden
-  from the smartlog). Without `--rebase`, your stacks are left untouched.
+  from the smartlog). Without `--rebase`, your stacks are left untouched; if
+  the import brought in new depot state, you're pointed at
+  `gw import --rebase`.
 - **It puts you back where you were afterwards.** This matters most right
   after you ship: the commit you prepared and submitted is already in the
   depot snapshot, so the restack skips it as already-applied — and a bare

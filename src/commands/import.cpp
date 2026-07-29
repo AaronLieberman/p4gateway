@@ -15,6 +15,7 @@
 #include "git.h"
 #include "mirror.h"
 #include "p4.h"
+#include "subprocess.h"
 
 namespace fs = std::filesystem;
 
@@ -152,8 +153,31 @@ std::expected<std::string, std::string> buildSnapshot(
     // Each mapping is its own depot subtree, synced into its own mirror and
     // living under its own working-tree directory; import them independently
     // and tally for the summary.
+    //
+    // Two passes on purpose. The first resolves every mapping's work - the have
+    // query, then either the manifest diff or the mirror walk - without
+    // touching a file; the second applies it. That way import reports one
+    // tally for the whole view instead of a query line and a tally line per
+    // include (three includes meant six lines to say "nothing changed"), and
+    // the tally still lands *before* the copying it describes. `--verbose`
+    // keeps the per-mapping breakdown.
+    const bool perMapping = verbose();
+
+    // One mapping's resolved work, carried from the plan pass to the apply pass.
+    struct MappingWork {
+        const ViewRule* rule;
+        std::string mirrorDir;
+        std::string worktreeDir;
+        mirror::ImportPlan plan;
+        size_t unchanged;  // fast path: files whose have revision did not move
+    };
+    std::vector<MappingWork> work;
+
     std::vector<mirror::ManifestEntry> newManifest;  // fresh have, all mappings
     std::vector<std::string> touched;  // staging-relative paths (fast path)
+
+    if (!perMapping) progress("Querying p4 have...");
+    bool listingAnnounced = false;
     for (const auto* rule : includeRules(config.rules)) {
         const std::string mirrorDir =
             resolveMirrorPath(rule->mirrorPath, root);
@@ -169,7 +193,9 @@ std::expected<std::string, std::string> buildSnapshot(
         // the manifest diff (fast path), and the manifest written for the next
         // run. A failed `p4 have` is an error (don't mistake it for "everything
         // is a stray"); an empty result is legitimately nothing synced.
-        progress("Querying p4 have for " + rule->depotPath + "...");
+        if (perMapping) {
+            progress("Querying p4 have for " + rule->depotPath + "...");
+        }
         auto haveDepot = p4::haveFiles(config, rule->depotPath);
         if (!haveDepot) return std::unexpected(haveDepot.error());
 
@@ -222,11 +248,13 @@ std::expected<std::string, std::string> buildSnapshot(
             std::erase_if(actions.deletes, [&](const std::string& rel) {
                 return mirror::isGwMetadataPath(subtreePrefix + rel);
             });
-            progress("Have manifest for " + rule->depotPath + ": " +
-                     std::to_string(actions.copies.size()) + " changed, " +
-                     std::to_string(actions.deletes.size()) + " deleted, " +
-                     std::to_string(nowRel.size() - actions.copies.size()) +
-                     " unchanged (skipped)");
+            if (perMapping) {
+                progress("Have manifest for " + rule->depotPath + ": " +
+                         std::to_string(actions.copies.size()) + " changed, " +
+                         std::to_string(actions.deletes.size()) + " deleted, " +
+                         std::to_string(nowRel.size() - actions.copies.size()) +
+                         " unchanged (skipped)");
+            }
         } else {
             // Full walk: list the mirror and reconcile it against the tracked
             // files. p4 only ever removes files it deleted a revision of, so
@@ -234,7 +262,15 @@ std::expected<std::string, std::string> buildSnapshot(
             // botched sync, hand edits) lingers in the mirror. Keep only the
             // files p4 reports as synced; strays are ignored so they never
             // land in the baseline.
-            progress("Listing mirror files under " + mirrorDir + "...");
+            if (perMapping) {
+                progress("Listing mirror files under " + mirrorDir + "...");
+            } else if (!listingAnnounced) {
+                // Announced on first use, not before the loop: the have queries
+                // above run first, and a header printed ahead of them would
+                // pin the wait on the wrong phase.
+                progress("Listing mirror files...");
+                listingAnnounced = true;
+            }
             auto mirrorFiles = mirror::listFiles(mirrorDir);
             if (!mirrorFiles) return std::unexpected(mirrorFiles.error());
 
@@ -276,21 +312,16 @@ std::expected<std::string, std::string> buildSnapshot(
             if (rel.empty()) continue;  // belongs to a different mapping
             openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
         }
-        const auto plan = mirror::planImport(actions, openedMirror);
+        auto plan = mirror::planImport(actions, openedMirror);
 
-        // "Scan" count (full walk only; the fast path printed its own tally):
-        // the walk reconciles the *whole* mirror against the working tree, then
-        // copies only the files that actually changed - so this is how many it
-        // inspects, not how many it copies. Say "Importing", not "Syncing":
-        // nothing is synced from P4 here, gw only moves already-synced mirror
-        // files into the repo.
-        const size_t toScan = plan.actions.copies.size();
-        const size_t toDelete = plan.actions.deletes.size();
-        if (!manifestValid &&
-            (toScan != 0 || toDelete != 0 || !plan.depotReads.empty())) {
+        if (perMapping && !manifestValid &&
+            (!plan.actions.copies.empty() || !plan.actions.deletes.empty() ||
+             !plan.depotReads.empty())) {
             progress("Importing " + rule->depotPath + " (" +
-                     std::to_string(toScan) + " mirror file(s) to scan, " +
-                     std::to_string(toDelete) + " to delete)...");
+                     std::to_string(plan.actions.copies.size()) +
+                     " mirror file(s) to scan, " +
+                     std::to_string(plan.actions.deletes.size()) +
+                     " to delete)...");
         }
 
         // On the fast path, remember exactly which staging paths this mapping
@@ -307,20 +338,59 @@ std::expected<std::string, std::string> buildSnapshot(
             }
         }
 
-        auto applied = mirror::applySyncActions(plan.actions, mirrorDir,
-                                                worktreeDir,
+        // "Unchanged" is a fast-path notion (a have revision that did not
+        // move); the full walk inspects the whole mirror and has none.
+        const size_t unchanged =
+            manifestValid ? nowRel.size() - actions.copies.size() : 0;
+        work.push_back(
+            {rule, mirrorDir, worktreeDir, std::move(plan), unchanged});
+    }
+
+    // One tally for the whole view, printed before any file moves (verbose
+    // already reported each mapping as it was planned). On the fast path it is
+    // the manifest diff; on the full walk it is the scan count - the walk
+    // reconciles the *whole* mirror against the working tree and then copies
+    // only what actually changed, so this is how many files it inspects, not
+    // how many it copies. Say "Importing", not "Syncing": nothing is synced
+    // from P4 here, gw only moves already-synced mirror files into the repo.
+    if (!perMapping) {
+        size_t toScan = 0, toDelete = 0, unchanged = 0;
+        bool anyDepotReads = false;
+        for (const auto& item : work) {
+            toScan += item.plan.actions.copies.size();
+            toDelete += item.plan.actions.deletes.size();
+            unchanged += item.unchanged;
+            anyDepotReads = anyDepotReads || !item.plan.depotReads.empty();
+        }
+        if (manifestValid) {
+            progress("Have manifest: " + std::to_string(toScan) + " changed, " +
+                     std::to_string(toDelete) + " deleted, " +
+                     std::to_string(unchanged) + " unchanged (skipped)");
+        } else if (toScan != 0 || toDelete != 0 || anyDepotReads) {
+            progress("Importing " + std::to_string(toScan) +
+                     " mirror file(s) to scan, " + std::to_string(toDelete) +
+                     " to delete...");
+        }
+    }
+
+    // Apply pass: move the planned files across the mirror boundary.
+    for (const auto& item : work) {
+        const auto& plan = item.plan;
+        auto applied = mirror::applySyncActions(plan.actions, item.mirrorDir,
+                                                item.worktreeDir,
                                                 /*trustStats=*/!fullCopy);
         if (!applied) return std::unexpected(applied.error());
         const size_t actuallyCopied = *applied;
 
         // Restore depot-head content for files open in the mirror.
         if (!plan.depotReads.empty()) {
-            std::string depotBase = rule->depotPath;
+            std::string depotBase = item.rule->depotPath;
             if (depotBase.ends_with("...")) {
                 depotBase.resize(depotBase.size() - 3);
             }
             for (const auto& rel : plan.depotReads) {
-                const fs::path dest = fs::path(worktreeDir) / fs::path(rel);
+                const fs::path dest =
+                    fs::path(item.worktreeDir) / fs::path(rel);
                 std::error_code ec;
                 fs::create_directories(dest.parent_path(), ec);
                 if (ec) {
@@ -943,26 +1013,37 @@ int cmdImport(const Args& args) {
         }
 
         // Without --rebase, leave the user's work where it is (the same "never
-        // stomp" default as the branch workflow) and point them at the restack.
+        // stomp" default as the branch workflow) and point them at the restack -
+        // but only when there is somewhere new to restack onto. The branch
+        // epilogue has always gated this on `behind`; this one printed
+        // unconditionally, so a steady-state import (mirror already matching the
+        // baseline, nothing moved) told the user to go restack onto depot state
+        // identical to what they are on.
         if (!rebase) {
             if (branchless) {
-                // Deliberately no longer offers a bare `git sync` as the
+                // Deliberately does not offer a bare `git sync` as the
                 // equivalent: sync checks out the main branch whenever the
                 // commit you are on was rewritten away (the just-submitted
                 // commit, every time), so it silently swallows a detached HEAD.
                 // `gw import --rebase` runs the same sync and then puts HEAD
-                // back where you were.
-                std::printf("Your stacks were left as-is. Restack them onto the "
-                            "new depot state with: gw import --rebase\n");
-                if (originalBranch.empty()) {
-                    std::printf("(prefer it over a bare 'git sync', which "
-                                "leaves you on '%s' when the commit you are on "
-                                "was absorbed).\n",
-                                baseline.c_str());
+                // back where you were. That is a reason to name one command,
+                // not a caveat worth printing next to it - the message is
+                // advice the user did not ask for, so it stays one line.
+                if (importedNew) {
+                    std::printf("Your stacks were left as-is. Restack them onto "
+                                "the new depot state with: gw import --rebase\n");
                 }
             } else {
-                std::printf("Your detached work was left as-is. Rebase it onto "
-                            "the new depot state with: gw import --rebase.\n");
+                // A detached HEAD that already contains the new baseline has
+                // nothing to replay; `git rebase` would decline it as up to
+                // date. Same guard the --rebase path below applies.
+                auto headHasDepot = git::isAncestor(newDepot, "HEAD", root);
+                if (!headHasDepot) return fail(headHasDepot.error());
+                if (!*headHasDepot) {
+                    std::printf("Your detached work was left as-is. Rebase it "
+                                "onto the new depot state with: "
+                                "gw import --rebase\n");
+                }
             }
             return 0;
         }
