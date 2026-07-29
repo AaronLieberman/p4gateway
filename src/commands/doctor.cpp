@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 
+#include <algorithm>
 #include <cstdio>
+#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <iterator>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "commands.h"
 #include "config.h"
@@ -31,13 +34,173 @@ constexpr const char* kDoctorUsage =
     "FAIL per check and exits non-zero if any check failed.\n"
     "\n"
     "options:\n"
-    "      --verify  Also compare every mirror file byte-for-byte against its\n"
-    "                working-tree copy and flag files whose content differs\n"
-    "                while size+mtime match - the files 'gw import' would\n"
-    "                wrongly skip (fix with 'gw import --full'). Reads the\n"
-    "                whole mirror; can take a while on a big subtree.\n"
-    "  -h, --help    Show this help\n"
+    "      --verify     Also compare every mirror file byte-for-byte against\n"
+    "                   its working-tree copy and flag files whose content\n"
+    "                   differs while size+mtime match - the files 'gw import'\n"
+    "                   would wrongly skip (fix with 'gw import --full'). Reads\n"
+    "                   the whole mirror; can take a while on a big subtree.\n"
+    "      --unmanaged  Skip the other checks and list every tracked file no\n"
+    "                   mapping ships to P4, split into the ones that came from\n"
+    "                   P4 (orphans, whose subtree left the config or the client\n"
+    "                   view) and deliberate Git-only files, with instructions\n"
+    "                   for cleaning them up. Needs no P4 connection.\n"
+    "  -h, --help       Show this help\n"
     "\n";
+
+// Gathers the tracked files no `include` ships, resolved against the depot
+// baseline snapshot so a file `gw import` put in Git is told apart from one the
+// user added by hand. A repo with no baseline yet simply has no orphans.
+std::expected<std::vector<UnmanagedFile>, std::string> gatherUnmanaged(
+    const Config& config, const std::string& root) {
+    auto tracked = git::lsFiles(root);
+    if (!tracked) return std::unexpected(tracked.error());
+    std::vector<std::string> baseline;
+    const std::string depotRef = depotTrackingRef(config);
+    if (git::revParse(depotRef, root)) {
+        auto baselineFiles = git::lsTreeFiles(depotRef, root);
+        if (!baselineFiles) return std::unexpected(baselineFiles.error());
+        baseline = std::move(*baselineFiles);
+    }
+    return classifyUnmanaged(config.rules, *tracked, baseline);
+}
+
+// Prints `files` grouped by why nothing ships them - the `exclude` that carves
+// each one out first (the group a vanished subtree lands in), then the paths no
+// rule covers, then gw's own metadata. `limit` caps the paths listed per group;
+// 0 lists them all.
+void printUnmanagedGroups(const std::vector<UnmanagedFile>& files,
+                          size_t limit) {
+    auto printGroup = [&](const char* heading, auto&& belongs) {
+        std::vector<const UnmanagedFile*> group;
+        for (const auto& file : files) {
+            if (belongs(file)) group.push_back(&file);
+        }
+        if (group.empty()) return;
+        std::printf("    %s:\n", heading);
+        for (size_t i = 0; i < group.size(); ++i) {
+            if (limit != 0 && i == limit) {
+                std::printf("      ... and %zu more\n", group.size() - i);
+                break;
+            }
+            std::printf("      %s\n", group[i]->path.c_str());
+        }
+    };
+
+    // One group per `exclude`, in the order the carve-outs first appear.
+    std::vector<std::string> excludes;
+    for (const auto& file : files) {
+        if (file.kind != UnmanagedKind::Excluded) continue;
+        if (std::find(excludes.begin(), excludes.end(), file.excludedBy) ==
+            excludes.end()) {
+            excludes.push_back(file.excludedBy);
+        }
+    }
+    for (const auto& depotPath : excludes) {
+        const std::string heading = "carved out by 'exclude " + depotPath + "'";
+        printGroup(heading.c_str(), [&](const UnmanagedFile& file) {
+            return file.kind == UnmanagedKind::Excluded &&
+                   file.excludedBy == depotPath;
+        });
+    }
+    printGroup("covered by no rule", [](const UnmanagedFile& file) {
+        return file.kind == UnmanagedKind::Unmapped;
+    });
+    printGroup("gw's own files", [](const UnmanagedFile& file) {
+        return file.kind == UnmanagedKind::GwMetadata;
+    });
+}
+
+// What to do about the files above. Deliberately a decision procedure rather
+// than a fix: gw cannot tell a stale orphan from a file the user wants to keep
+// in Git, and deleting either one behind their back is exactly the destructive
+// default the project forbids.
+constexpr const char* kUnmanagedInstructions =
+    "How to clean these up\n"
+    "\n"
+    "gw will not do it for you: no mapping covers these paths, so 'gw import'\n"
+    "never reconciles them and 'gw prepare' skips them (it lists them as\n"
+    "unmapped). Decide per file, then use plain Git.\n"
+    "\n"
+    "  You removed it from P4 on purpose and want it out of Git too:\n"
+    "      git rm -r <path>            # or --cached to keep the file on disk\n"
+    "      git commit -m \"Drop <path>: no longer mapped from P4\"\n"
+    "    Safe as long as the path is unmanaged - that is what this list means -\n"
+    "    so it ships no 'p4 delete'. Confirm with 'gw prepare -n' if unsure.\n"
+    "\n"
+    "  You want it in Git only (.gitignore, a local script, notes):\n"
+    "    Nothing to do. This is the supported case, and the reason gw never\n"
+    "    deletes an unmanaged file on its own.\n"
+    "\n"
+    "  It should still be coming from P4:\n"
+    "    Its subtree is missing from p4gw.cfg, or an 'exclude' now covers it.\n"
+    "    Put the 'include' back (with the matching client view line), rerun\n"
+    "    'gw init' to refresh .gitignore, then 'gw import'.\n"
+    "\n"
+    "Removing a whole subtree from P4's side? Take it out of p4gw.cfg *first*\n"
+    "(drop the 'include' or add an 'exclude') and rerun 'gw init'. While a path\n"
+    "is still mapped, 'git rm' makes the next 'gw prepare' open a real\n"
+    "'p4 delete' against the depot.\n";
+
+// `gw doctor --unmanaged`: the detailed list plus the cleanup instructions.
+// Stands alone - no p4, none of the other checks - so it stays usable while the
+// rest of the environment is broken, and it never reports a failure: an
+// unmanaged file is a decision for the user, not a broken check.
+int reportUnmanaged() {
+    std::string root;
+    auto config = findAndLoadConfig(root);
+    if (!config) {
+        std::fprintf(stderr, "gw doctor: %s\n", config.error().c_str());
+        return 1;
+    }
+    if (!git::gitDir(root)) {
+        std::fprintf(stderr,
+                     "gw doctor: no Git repo at %s - run 'gw init' first\n",
+                     root.c_str());
+        return 1;
+    }
+    auto unmanaged = gatherUnmanaged(*config, root);
+    if (!unmanaged) {
+        std::fprintf(stderr, "gw doctor: %s\n", unmanaged.error().c_str());
+        return 1;
+    }
+
+    std::vector<UnmanagedFile> orphans;
+    std::vector<UnmanagedFile> gitOnly;
+    for (const auto& file : *unmanaged) {
+        (file.inBaseline ? orphans : gitOnly).push_back(file);
+    }
+
+    std::printf("Tracked files no mapping ships to P4, under %s\n\n",
+                root.c_str());
+    if (unmanaged->empty()) {
+        std::printf("None: every tracked file is shipped through a mapping.\n");
+        return 0;
+    }
+
+    if (!orphans.empty()) {
+        std::printf("Orphaned - came from P4, now outside every mapping (%zu "
+                    "file(s)):\n",
+                    orphans.size());
+        printUnmanagedGroups(orphans, /*limit=*/0);
+        std::printf("  These are in the depot baseline snapshot, so 'gw import' "
+                    "put them in Git - but\n  no 'include' covers them now, so "
+                    "nothing will ever update or remove them.\n  Their depot "
+                    "subtree left p4gw.cfg or the client view.\n"
+                    "  (A Git-only file you tracked before the first import is "
+                    "in the snapshot too,\n  so it can land here as well - "
+                    "'nothing to do' is a fine answer for those.)\n\n");
+    }
+    if (!gitOnly.empty()) {
+        std::printf("Git-only - never came from P4 (%zu file(s)):\n",
+                    gitOnly.size());
+        // Capped: a repo can deliberately track any number of pure-Git files,
+        // and this half of the list is the benign one.
+        printUnmanagedGroups(gitOnly, /*limit=*/20);
+        std::printf("\n");
+    }
+    std::printf("%s", kUnmanagedInstructions);
+    return 0;
+}
 
 }  // namespace
 
@@ -47,6 +210,7 @@ constexpr const char* kDoctorUsage =
 // ever loses the remap line, this is where it gets caught.
 int cmdDoctor(const Args& args) {
     bool verify = false;
+    bool unmanagedOnly = false;
     for (const auto& arg : args) {
         if (arg == "--help" || arg == "-h") {
             std::printf("%s", kDoctorUsage);
@@ -56,11 +220,17 @@ int cmdDoctor(const Args& args) {
             verify = true;
             continue;
         }
+        if (arg == "--unmanaged") {
+            unmanagedOnly = true;
+            continue;
+        }
         std::fprintf(stderr, "gw doctor: unexpected argument '%s'\n",
                      arg.c_str());
         std::fprintf(stderr, "%s", kDoctorUsage);
         return 1;
     }
+
+    if (unmanagedOnly) return reportUnmanaged();
 
     int failures = 0;
     int warnings = 0;
@@ -293,6 +463,46 @@ int cmdDoctor(const Args& args) {
                     std::printf("        %s\n", line.c_str());
                 }
                 ++failures;
+            }
+        }
+    }
+
+    // Orphaned tracked files. A file in Git that no mapping ships is normally
+    // deliberate (.gitignore, a local script) and gw leaves it alone - but the
+    // same state is what a subtree dropped from p4gw.cfg or from the client
+    // view decays into, and there nothing will ever update or remove it again.
+    // The depot baseline snapshot tells the two apart: a path gw itself
+    // imported is an orphan, anything else is the user's own Git-only file.
+    // Needs a git repo (doctor runs before 'gw init' too), never p4.
+    if (git::gitDir(root)) {
+        auto unmanaged = gatherUnmanaged(*config, root);
+        if (!unmanaged) {
+            std::printf("WARN  could not check for orphaned tracked files: %s\n",
+                        unmanaged.error().c_str());
+            ++warnings;
+        } else {
+            const auto orphans = orphanedFiles(*unmanaged);
+            if (orphans.empty()) {
+                std::printf("ok    no orphaned tracked files (%zu Git-only "
+                            "file(s): .gitignore, local scripts and the like)\n",
+                            unmanaged->size());
+            } else {
+                std::printf("WARN  %zu tracked file(s) came from P4 but no "
+                            "mapping ships them anymore - gw will\n      never "
+                            "update or delete them. Their depot subtree left "
+                            "p4gw.cfg or the\n      client view. Run 'gw doctor "
+                            "--unmanaged' for the list and how to clean\n      "
+                            "them up. First few:\n",
+                            orphans.size());
+                constexpr size_t kMaxListed = 5;
+                for (size_t i = 0; i < orphans.size() && i < kMaxListed; ++i) {
+                    std::printf("        %s\n", orphans[i].path.c_str());
+                }
+                if (orphans.size() > kMaxListed) {
+                    std::printf("        ... and %zu more\n",
+                                orphans.size() - kMaxListed);
+                }
+                ++warnings;
             }
         }
     }

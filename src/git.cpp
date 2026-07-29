@@ -20,6 +20,22 @@ std::string trimTrailing(std::string s) {
     return s;
 }
 
+// Splits command output into its non-empty lines, tolerating CRLF - the shape
+// every path-listing git command (ls-files, ls-tree) returns.
+std::vector<std::string> nonEmptyLines(const std::string& text) {
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) lines.push_back(std::move(line));
+    }
+    return lines;
+}
+
 }  // namespace
 
 std::expected<std::string, std::string> run(const std::vector<std::string>& args,
@@ -233,17 +249,16 @@ std::expected<std::vector<std::string>, std::string> lsFiles(
     if (!output) {
         return std::unexpected(output.error());
     }
-    std::vector<std::string> files;
-    size_t pos = 0;
-    while (pos < output->size()) {
-        size_t end = output->find('\n', pos);
-        if (end == std::string::npos) end = output->size();
-        std::string line = output->substr(pos, end - pos);
-        pos = end + 1;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty()) files.push_back(std::move(line));
+    return nonEmptyLines(*output);
+}
+
+std::expected<std::vector<std::string>, std::string> lsTreeFiles(
+    const std::string& ref, const std::string& cwd) {
+    auto output = run({"ls-tree", "-r", "--name-only", ref}, cwd);
+    if (!output) {
+        return std::unexpected(output.error());
     }
-    return files;
+    return nonEmptyLines(*output);
 }
 
 std::expected<std::string, std::string> addAll(const std::string& cwd) {

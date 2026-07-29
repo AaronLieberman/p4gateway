@@ -6,6 +6,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
+
+#include "mirror.h"
 
 namespace fs = std::filesystem;
 
@@ -917,6 +920,46 @@ bool rgignoreReopensRoot(const std::string& content) {
         if (pattern == "!/*" || pattern == "!/[!.]*") return true;
     }
     return false;
+}
+
+std::vector<UnmanagedFile> classifyUnmanaged(
+    const std::vector<ViewRule>& rules,
+    const std::vector<std::string>& trackedFiles,
+    const std::vector<std::string>& baselineFiles) {
+    const std::unordered_set<std::string> inBaseline(baselineFiles.begin(),
+                                                     baselineFiles.end());
+    std::vector<UnmanagedFile> unmanaged;
+    for (const auto& path : trackedFiles) {
+        UnmanagedFile file;
+        file.path = path;
+        // gw's own files are checked first: a whole-repo include would
+        // otherwise claim them as mapped, and they are Git-only by definition.
+        if (mirror::isGwMetadataPath(path)) {
+            file.kind = UnmanagedKind::GwMetadata;
+        } else {
+            const ViewRule* effective = effectiveRuleForRepo(rules, path);
+            if (effective != nullptr && !effective->exclude) continue;  // mapped
+            if (effective == nullptr) {
+                file.kind = UnmanagedKind::Unmapped;
+            } else {
+                file.kind = UnmanagedKind::Excluded;
+                file.excludedBy = effective->depotPath;
+            }
+        }
+        file.inBaseline = file.kind != UnmanagedKind::GwMetadata &&
+                          inBaseline.contains(path);
+        unmanaged.push_back(std::move(file));
+    }
+    return unmanaged;
+}
+
+std::vector<UnmanagedFile> orphanedFiles(
+    const std::vector<UnmanagedFile>& files) {
+    std::vector<UnmanagedFile> orphans;
+    for (const auto& file : files) {
+        if (file.inBaseline) orphans.push_back(file);
+    }
+    return orphans;
 }
 
 std::string depotTrackingRef(const Config& config) {

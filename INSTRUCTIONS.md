@@ -24,6 +24,7 @@ For building and first-time setup, see [SETUP.md](SETUP.md).
 | `gw shelf list` | List your pending and shelved changelists under the subtree. |
 | `gw shelf import <cl>` | Bring a P4 shelf into Git as a new branch off `main`. |
 | `gw doctor` | Check the environment and client view; run it when something smells off. |
+| `gw doctor --unmanaged` | List the tracked files no mapping ships to P4, and how to clean them up. |
 
 Every command takes `--help` (`-h`). The global `--verbose` flag (before or
 after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4`
@@ -275,6 +276,32 @@ interrupted import. `--verify` additionally compares every mirror file
 byte-for-byte against its working-tree copy and reports files `gw import`
 would wrongly skip (stale size+mtime stamps); fix those with
 `gw import --full`.
+
+Doctor also watches for **orphaned tracked files**. A file can live in Git
+without any mapping shipping it to P4 — that's how `.gitignore`, `p4gw.cfg`
+and your local-only scripts work, and gw deliberately never deletes such a
+file. The catch is that a subtree which *leaves* the config decays into the
+same state: drop an `include` from `p4gw.cfg` (or add an `exclude` over it),
+and its already-tracked files stay in Git forever, because `gw import` only
+reconciles *inside* a mapping's subtree and `gw prepare` skips unmapped
+paths. Doctor tells the two apart with the depot baseline snapshot — a file
+gw itself imported that nothing maps anymore is an orphan — and warns with a
+count and the first few paths.
+
+`gw doctor --unmanaged` skips every other check (no P4 connection needed) and
+prints the full list: orphans first, grouped by the `exclude` that carves
+them out or as covered by no rule, then the deliberate Git-only files, then
+instructions for deciding what to do with each. The short version:
+
+```
+git rm -r <path>     # gone from Git too (--cached keeps it on disk)
+```
+
+That ships no `p4 delete`, precisely because nothing maps the path. **Do the
+config edit first** when you're retiring a subtree: take it out of `p4gw.cfg`
+and rerun `gw init` *before* the `git rm`, since while a path is still mapped
+a `git rm` makes the next `gw prepare` open a real `p4 delete` against the
+depot.
 
 If ripgrep is installed and the repo uses the allowlist `.gitignore`, doctor
 also warns when nothing reopens what the allowlist hides from `rg` searches

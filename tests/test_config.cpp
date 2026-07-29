@@ -939,3 +939,126 @@ TEST(rgignore_reopens_root_detection) {
     CHECK(!p4gw::rgignoreReopensRoot("!/content/\n/bin/\n"));
     CHECK(!p4gw::rgignoreReopensRoot("# !/*\n"));
 }
+// ---- unmanaged tracked files (doctor's orphan check) ----
+
+namespace {
+
+// The kind of the entry for `path`, or a marker string when it is absent from
+// the classification (i.e. the path is mapped and shipped through the mirror).
+std::string kindOf(const std::vector<p4gw::UnmanagedFile>& files,
+                   const std::string& path) {
+    for (const auto& file : files) {
+        if (file.path != path) continue;
+        switch (file.kind) {
+        case p4gw::UnmanagedKind::GwMetadata: return "metadata";
+        case p4gw::UnmanagedKind::Excluded:   return "excluded";
+        case p4gw::UnmanagedKind::Unmapped:   return "unmapped";
+        }
+    }
+    return "<mapped>";
+}
+
+bool isOrphan(const std::vector<p4gw::UnmanagedFile>& files,
+              const std::string& path) {
+    for (const auto& file : files) {
+        if (file.path == path) return file.inBaseline;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(unmanaged_skips_mapped_files_and_classifies_the_rest) {
+    const std::vector<p4gw::ViewRule> rules = {inc("src"), exc("src/thirdparty")};
+    const std::vector<std::string> tracked = {
+        "src/main.cpp",              // mapped: shipped through the mirror
+        "src/thirdparty/zlib.h",     // carved out by the exclude
+        "bin/tool.exe",              // under no rule at all
+        ".gitignore",                // gw's own
+        "p4gw.cfg",
+    };
+    const auto files = p4gw::classifyUnmanaged(rules, tracked, {});
+    CHECK(files.size() == 4);
+    CHECK(kindOf(files, "src/main.cpp") == "<mapped>");
+    CHECK(kindOf(files, "src/thirdparty/zlib.h") == "excluded");
+    CHECK(kindOf(files, "bin/tool.exe") == "unmapped");
+    CHECK(kindOf(files, ".gitignore") == "metadata");
+    CHECK(kindOf(files, "p4gw.cfg") == "metadata");
+    // The exclude that carves a file out is named, for the grouped report.
+    for (const auto& file : files) {
+        if (file.path == "src/thirdparty/zlib.h") {
+            CHECK(file.excludedBy == "//depot/x/src/thirdparty/...");
+        }
+    }
+    // Input order is preserved.
+    CHECK(files[0].path == "src/thirdparty/zlib.h");
+    CHECK(files[1].path == "bin/tool.exe");
+}
+
+TEST(unmanaged_marks_baseline_files_as_orphans) {
+    const std::vector<p4gw::ViewRule> rules = {inc("src"), exc("src/thirdparty")};
+    const std::vector<std::string> tracked = {
+        "src/thirdparty/zlib.h",  // imported from P4, then excluded: orphan
+        "src/thirdparty/notes.md",  // hand-added under the carve-out: Git-only
+        "bin/tool.exe",
+    };
+    // The depot baseline snapshot still carries the file gw imported.
+    const std::vector<std::string> baseline = {"src/main.cpp",
+                                               "src/thirdparty/zlib.h"};
+    const auto files = p4gw::classifyUnmanaged(rules, tracked, baseline);
+    CHECK(isOrphan(files, "src/thirdparty/zlib.h"));
+    CHECK(!isOrphan(files, "src/thirdparty/notes.md"));
+    CHECK(!isOrphan(files, "bin/tool.exe"));
+
+    const auto orphans = p4gw::orphanedFiles(files);
+    CHECK(orphans.size() == 1);
+    CHECK(orphans[0].path == "src/thirdparty/zlib.h");
+}
+
+TEST(unmanaged_catches_a_dropped_include) {
+    // The whole `config` include was removed from p4gw.cfg; its files are still
+    // tracked, and nothing iterates that subtree anymore - the case 'gw import'
+    // can never clean up on its own.
+    const std::vector<p4gw::ViewRule> rules = {inc("src")};
+    const std::vector<std::string> tracked = {"src/main.cpp",
+                                              "config/app.ini"};
+    const std::vector<std::string> baseline = {"src/main.cpp",
+                                               "config/app.ini"};
+    const auto orphans =
+        p4gw::orphanedFiles(p4gw::classifyUnmanaged(rules, tracked, baseline));
+    CHECK(orphans.size() == 1);
+    CHECK(orphans[0].path == "config/app.ini");
+    CHECK(orphans[0].kind == p4gw::UnmanagedKind::Unmapped);
+    CHECK(orphans[0].excludedBy.empty());
+}
+
+TEST(unmanaged_keeps_gw_metadata_out_of_a_whole_repo_include) {
+    // A whole-repo include maps every path, so .gitignore/p4gw.cfg would read
+    // as mapped; they are gw's own files and stay Git-only regardless. The
+    // baseline snapshot does carry them (gw init commits them), which must not
+    // turn them into orphans to clean up.
+    const std::vector<p4gw::ViewRule> rules = {inc("")};
+    const std::vector<std::string> tracked = {"src/main.cpp", ".gitignore",
+                                              ".gitattributes", "p4gw.cfg"};
+    const auto files =
+        p4gw::classifyUnmanaged(rules, tracked, {".gitignore", "p4gw.cfg"});
+    CHECK(files.size() == 3);
+    CHECK(kindOf(files, "src/main.cpp") == "<mapped>");
+    CHECK(kindOf(files, ".gitattributes") == "metadata");
+    CHECK(p4gw::orphanedFiles(files).empty());
+}
+
+TEST(unmanaged_respects_a_deeper_re_include) {
+    // exclude src/lib, then re-include src/lib/public/win64: later-wins, so the
+    // re-included slice is mapped and only the rest of lib is carved out.
+    const std::vector<p4gw::ViewRule> rules = {inc("src"), exc("src/lib"),
+                                               inc("src/lib/public/win64")};
+    const std::vector<std::string> tracked = {
+        "src/lib/public/win64/api.h",  // back inside a mapping
+        "src/lib/linux/api.h",         // still carved out
+    };
+    const auto files = p4gw::classifyUnmanaged(rules, tracked, {});
+    CHECK(files.size() == 1);
+    CHECK(files[0].path == "src/lib/linux/api.h");
+    CHECK(files[0].excludedBy == "//depot/x/src/lib/...");
+}

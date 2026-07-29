@@ -273,6 +273,57 @@ bool rgignoreReopensRoot(const std::string& content);
 // doctor recommends. Pure; unit-tested.
 bool ripgrepConfigDisablesVcsIgnore(const std::string& content);
 
+// ---- unmanaged tracked files ----
+//
+// A file can sit in Git without any mapping shipping it to P4, and that is a
+// feature: it is how `.gitignore`, `p4gw.cfg` and any local-only script live in
+// the repo. Nothing deletes such a file - `gw import` only reconciles inside a
+// mapping's subtree, and `gw prepare` reports it as unmapped and skips it. The
+// cost of that is a trap: when a subtree leaves the config (an `include`
+// dropped, an `exclude` added) its already-tracked files land in exactly the
+// same state and stay in Git forever, silently, with nothing left to remove
+// them. `gw doctor` classifies both so the deliberate case stays quiet and the
+// orphaned one is visible.
+
+// Why a tracked file is not shipped through any mapping.
+enum class UnmanagedKind {
+    GwMetadata,  // p4gw.cfg/.gitignore/.gitattributes - gw's own, always Git-only
+    Excluded,    // its effective rule is an `exclude` carve-out
+    Unmapped,    // no rule covers it at all (bin/, README.md, local scripts)
+};
+
+// One tracked file no mapping ships, as `gw doctor` reports it.
+struct UnmanagedFile {
+    std::string path;  // repo-relative, forward slashes
+    UnmanagedKind kind = UnmanagedKind::Unmapped;
+
+    // Depot path of the `exclude` that carves it out; empty unless Excluded.
+    std::string excludedBy;
+
+    // True when the path is also in the depot baseline snapshot, i.e. `gw
+    // import` put it in Git and can no longer take it back out. This is the
+    // signal that separates an orphan from a deliberate Git-only file. Never
+    // set for GwMetadata: the baseline does carry `.gitignore` and friends, but
+    // they are gw's own files and `computeSyncActions` refuses to delete them
+    // by name, so they are Git-only by construction and never orphans.
+    bool inBaseline = false;
+};
+
+// Pure: the tracked files that no `include` governs, in `trackedFiles` order.
+// Files whose effective rule is an include are shipped through the mirror and
+// never returned. `baselineFiles` is the depot baseline snapshot's file list
+// (empty when there is no baseline yet), used only to set `inBaseline`.
+// Unit-tested.
+std::vector<UnmanagedFile> classifyUnmanaged(
+    const std::vector<ViewRule>& rules,
+    const std::vector<std::string>& trackedFiles,
+    const std::vector<std::string>& baselineFiles);
+
+// Of `files`, the ones that came from P4 and are now unmanaged (`inBaseline`),
+// in input order - the actionable subset of classifyUnmanaged's result, and the
+// only one `gw doctor` warns about. Pure; unit-tested.
+std::vector<UnmanagedFile> orphanedFiles(const std::vector<UnmanagedFile>& files);
+
 // The hidden Git ref that tracks pristine depot state - the `origin/main`
 // analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".
 // It lives outside refs/heads/ so it never shows up in `git branch`; `gw

@@ -161,6 +161,13 @@ std::expected<std::string, std::string> commitRelativeDate(
 std::expected<std::vector<std::string>, std::string> lsFiles(
     const std::string& cwd = {});
 
+// Every file in `ref`'s tree (`git ls-tree -r --name-only`), repo-relative with
+// forward slashes. Unlike lsFiles this reads a commit, not the index, so it
+// answers "was this path ever part of the depot baseline snapshot" without
+// checking anything out.
+std::expected<std::vector<std::string>, std::string> lsTreeFiles(
+    const std::string& ref, const std::string& cwd = {});
+
 std::expected<std::string, std::string> addAll(const std::string& cwd = {});
 
 // Of `paths`, the subset git treats as ignored: matched by a .gitignore rule

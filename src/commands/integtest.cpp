@@ -115,6 +115,9 @@ constexpr const char* kObliterateFiles[] = {
     // itSingleLevelInclude's fixture files (a direct file and a sub-directory
     // file under src/build); obliterated in-step, listed as an abort safety net.
     "src/build/keep.txt", "src/build/gen/drop.txt",
+    // itOrphanedFiles' retired subtree; obliterated in-step, listed here as a
+    // safety net so an aborted run's cleanup still removes it.
+    "src/vendor/lib.txt",
 };
 
 // Top-level names integtest itself creates under testRoot (== repoDir). The
@@ -2678,6 +2681,211 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     return {};
 }
 
+// The orphaned-file lifecycle, end to end: a subtree is imported into Git, then
+// retired from the client view and p4gw.cfg. Its files stay tracked - import
+// only reconciles *inside* a mapping, so once the mapping is gone nothing
+// deletes them, and prepare skips them as unmapped. That silent state is what
+// `gw doctor` must surface: the warning names them, `--unmanaged` lists them
+// apart from the deliberate Git-only files (.gitignore and friends), the
+// documented `git rm` cleanup ships no `p4 delete`, and doctor goes quiet
+// again. Runs on 'main', clean, after itSecondInclude.
+std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+
+    // "//.../src/..." -> "//.../src/", then the subtree that gets retired.
+    std::string srcBase = it.srcDepotPath;
+    srcBase.resize(srcBase.size() - 3);
+    const std::string vendorDepot = srcBase + "vendor/...";
+    const std::string vendorDepotFile = srcBase + "vendor/lib.txt";
+    const fs::path vendorMirror = fs::path(it.mirrorDir) / "vendor";
+    const std::string mirrorFile = (vendorMirror / "lib.txt").string();
+    const std::string trackedRel = "src/vendor/lib.txt";
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+    auto savedMain = git::revParse("main", it.repoDir);
+    if (!savedMain) return std::unexpected(savedMain.error());
+    auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!savedRef) return std::unexpected(savedRef.error());
+
+    auto tracked = [&](const std::string& rel) -> std::expected<bool, std::string> {
+        auto files = git::lsFiles(it.repoDir);
+        if (!files) return std::unexpected(files.error());
+        return std::find(files->begin(), files->end(), rel) != files->end();
+    };
+
+    // (1) Submit a file in the new subtree and import it, so Git holds it
+    // *through the mapping* - the only way to become an orphan later.
+    auto wrote = writeFile(fs::path(mirrorFile),
+                           "// vendored, imported while mapped\n");
+    if (!wrote) return wrote;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: vendor subtree");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto added = trace(it, "p4 add " + mirrorFile,
+                       p4::addFiles(it.p4, *addCl, {mirrorFile}));
+    if (!added) return std::unexpected(added.error());
+    auto submitted = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!submitted) return std::unexpected(submitted.error());
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) return std::unexpected(imported.error());
+    auto isTracked = tracked(trackedRel);
+    if (!isTracked) return std::unexpected(isTracked.error());
+    if (!*isTracked) {
+        return std::unexpected("the mapped vendor file never entered Git; the "
+                               "orphan scenario cannot start:\n" + *imported);
+    }
+
+    // Nothing is orphaned yet: the file is mapped, and the only unmanaged files
+    // are gw's own metadata.
+    auto clean = runGw(it, it.repoDir, {"doctor", "--unmanaged"});
+    if (!clean) return std::unexpected(clean.error());
+    if (clean->find("Orphaned") != std::string::npos) {
+        return std::unexpected("doctor --unmanaged reported an orphan while "
+                               "every file was still mapped:\n" + *clean);
+    }
+    if (clean->find(".gitignore") == std::string::npos) {
+        return std::unexpected("doctor --unmanaged did not list .gitignore as "
+                               "a deliberate Git-only file:\n" + *clean);
+    }
+
+    // (2) Retire the subtree exactly as a user would: drop it from the client
+    // view (a '-' exclusion line), declare the matching `exclude` in p4gw.cfg
+    // so the view check stays green, and sync - which takes the file out of the
+    // mirror.
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string vendorClient = p4::clientViewPath(
+        clientName, clientRoot, vendorMirror.string(), "/...");
+    if (vendorClient.empty()) {
+        return std::unexpected("cannot compute the vendor mirror's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({vendorDepot, vendorClient, /*exclude=*/true, false});
+    auto dropped = p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!dropped) return std::unexpected(dropped.error());
+    auto excludedCfg = appendFile(cfg, "\nexclude = " + vendorDepot + "\n");
+    if (!excludedCfg) return excludedCfg;
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+    if (fs::exists(mirrorFile)) {
+        return std::unexpected("p4 sync left " + mirrorFile +
+                               " in the mirror after the view dropped it");
+    }
+
+    // (3) Import cannot clean this up. The have-manifest fast path resolves the
+    // stored entries through the *current* rules, so the retired file is
+    // filtered out of both sides of the diff and yields no delete; the full
+    // walk would not see a dropped `include`'s subtree at all. Either way the
+    // file stays in Git with nothing left to remove it - the whole reason the
+    // doctor check exists. (If a future import learns to prune retired
+    // subtrees, this is the assertion to revisit.)
+    auto reimported = runGw(it, it.repoDir, {"import"});
+    if (!reimported) return std::unexpected(reimported.error());
+    auto stillTracked = tracked(trackedRel);
+    if (!stillTracked) return std::unexpected(stillTracked.error());
+    if (!*stillTracked) {
+        return std::unexpected("import removed the retired subtree's file - "
+                               "the orphan state this step exercises no longer "
+                               "happens:\n" + *reimported);
+    }
+
+    // (4) doctor warns (a warning, not a failure - it is the user's call) and
+    // names the file.
+    auto warned = runGw(it, it.repoDir, {"doctor"});
+    if (!warned) return std::unexpected(warned.error());
+    if (warned->find("came from P4 but no mapping ships them") ==
+            std::string::npos ||
+        warned->find(trackedRel) == std::string::npos) {
+        return std::unexpected("doctor did not warn about the orphaned file:\n" +
+                               *warned);
+    }
+
+    // (5) --unmanaged separates it from the Git-only files and explains the fix.
+    auto detail = runGw(it, it.repoDir, {"doctor", "--unmanaged"});
+    if (!detail) return std::unexpected(detail.error());
+    const auto orphanPos = detail->find("Orphaned");
+    const auto gitOnlyPos = detail->find("Git-only");
+    const auto filePos = detail->find(trackedRel);
+    if (orphanPos == std::string::npos || filePos == std::string::npos ||
+        (gitOnlyPos != std::string::npos && filePos > gitOnlyPos)) {
+        return std::unexpected("doctor --unmanaged did not list the retired "
+                               "file under Orphaned:\n" + *detail);
+    }
+    if (detail->find(vendorDepot) == std::string::npos) {
+        return std::unexpected("doctor --unmanaged did not name the 'exclude' "
+                               "that carves the file out:\n" + *detail);
+    }
+    if (detail->find("How to clean these up") == std::string::npos) {
+        return std::unexpected("doctor --unmanaged printed no cleanup "
+                               "instructions:\n" + *detail);
+    }
+
+    // (6) Follow those instructions: 'git rm' the orphan. Because nothing maps
+    // it, the next prepare must skip it rather than open a 'p4 delete' - the
+    // guarantee the instructions make.
+    auto removed = git::run({"rm", "-q", "-r", "src/vendor"}, it.repoDir);
+    if (!removed) return std::unexpected(removed.error());
+    auto committed = git::commit("Drop src/vendor: no longer mapped from P4",
+                                 it.repoDir);
+    if (!committed) return std::unexpected(committed.error());
+    auto preview = runGw(it, it.repoDir, {"prepare", "--dry-run"});
+    if (!preview) return std::unexpected(preview.error());
+    if (preview->find("delete  " + trackedRel) != std::string::npos) {
+        return std::unexpected("prepare planned a p4 delete for an unmanaged "
+                               "path - the documented cleanup would have hit "
+                               "the depot:\n" + *preview);
+    }
+    if (preview->find("skip    " + trackedRel) == std::string::npos) {
+        return std::unexpected("prepare did not report the removed orphan as "
+                               "unmapped:\n" + *preview);
+    }
+
+    // (7) And doctor is quiet again.
+    auto quiet = runGw(it, it.repoDir, {"doctor", "--unmanaged"});
+    if (!quiet) return std::unexpected(quiet.error());
+    if (quiet->find("Orphaned") != std::string::npos) {
+        return std::unexpected("doctor --unmanaged still reports an orphan "
+                               "after the cleanup:\n" + *quiet);
+    }
+
+    // (8) Restore the fixture exactly as inherited (same shape as
+    // itSecondInclude: opens dropped, both refs rolled back, config and client
+    // spec rewritten, the throwaway depot file obliterated).
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto backToMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!backToMain) return std::unexpected(backToMain.error());
+    auto resetMain = git::run({"reset", "--hard", *savedMain}, it.repoDir);
+    if (!resetMain) return std::unexpected(resetMain.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + vendorDepotFile,
+                             p4::obliterate(it.p4, vendorDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    std::error_code ec;
+    fs::remove_all(vendorMirror, ec);
+    fs::remove(manifest, ec);
+    return {};
+}
+
 // The managed .rgignore lifecycle against real imports: a refresh folds a
 // changed .ignore into the block without touching hand-written rules outside
 // it and without duplicating the block, and `rgignore = off` stops gw from
@@ -3534,6 +3742,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("second include: doctor flags it, gw init covers it, "
                            "import ships it",
                            [&] { return itSecondInclude(it); });
+        steps.emplace_back("retired subtree: doctor reports the orphans and the "
+                           "cleanup is p4-safe",
+                           [&] { return itOrphanedFiles(it); });
         steps.emplace_back("managed .rgignore: refreshed in place, hand rules "
                            "kept, off opts out",
                            [&] { return itRgignore(it); });
