@@ -962,6 +962,31 @@ std::vector<UnmanagedFile> orphanedFiles(
     return orphans;
 }
 
+PruneCheck checkPrune(const std::vector<ViewRule>& rules,
+                      const std::vector<std::string>& deleted,
+                      const std::vector<std::string>& otherwiseChanged) {
+    PruneCheck check;
+    check.notDeletes = otherwiseChanged;
+    for (const auto& path : deleted) {
+        if (mirror::isGwMetadataPath(path)) {
+            check.metadata.push_back(path);
+            continue;
+        }
+        const ViewRule* effective = effectiveRuleForRepo(rules, path);
+        if (effective != nullptr && !effective->exclude) {
+            check.managed.push_back(path);
+            continue;
+        }
+        check.deletes.push_back(path);
+    }
+    return check;
+}
+
+bool pruneAllowed(const PruneCheck& check) {
+    return !check.deletes.empty() && check.notDeletes.empty() &&
+           check.managed.empty() && check.metadata.empty();
+}
+
 std::string depotTrackingRef(const Config& config) {
     return "refs/p4gw/" + config.baselineBranch;
 }

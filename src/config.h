@@ -324,6 +324,51 @@ std::vector<UnmanagedFile> classifyUnmanaged(
 // only one `gw doctor` warns about. Pure; unit-tested.
 std::vector<UnmanagedFile> orphanedFiles(const std::vector<UnmanagedFile>& files);
 
+// ---- pruning orphans out of the depot baseline ----
+//
+// An orphan whose subtree left the config entirely is covered by no rule, so no
+// import can ever compute a delete for it: each snapshot is built on the last,
+// and whatever sits in the tree that no mapping governs is inherited forever.
+// The only way out is to cut it from the baseline commit itself. gw cannot
+// choose *which* files that is - a Git-only file is indistinguishable from a
+// stale one by rule alone - so the user says it in Git, by committing the
+// removals on top of the baseline, and gw's whole job is to verify that the
+// commit does nothing else before moving the ref.
+
+// The verdict on a candidate prune commit: the net diff from the depot baseline
+// to the user's HEAD, sorted into what may be applied and what forbids it. The
+// prune is allowed only when all three reject lists are empty.
+struct PruneCheck {
+    // Deletions of unmanaged files: exactly what a prune may remove.
+    std::vector<std::string> deletes;
+
+    // Paths changed some way other than deletion. A prune may only *remove*
+    // things: anything else would put content into the baseline that no p4
+    // sync produced, and `gw prepare` (which diffs against the baseline) would
+    // read it as already shipped and never send it to P4.
+    std::vector<std::string> notDeletes;
+
+    // Deletions of files a mapping still ships. Those are real depot files;
+    // removing one from the baseline would silently desynchronize Git from P4.
+    // The way to delete them is `gw prepare`, which opens a p4 delete.
+    std::vector<std::string> managed;
+
+    // Deletions of gw's own files (.gitignore and friends). They are Git-only
+    // by construction rather than orphans, and the baseline needs them.
+    std::vector<std::string> metadata;
+};
+
+// Pure: sorts a prune commit's net diff into PruneCheck. `deleted` holds the
+// paths the diff reports removed, `otherwiseChanged` every path it reports
+// changed any other way (add, modify, rename). Unit-tested.
+PruneCheck checkPrune(const std::vector<ViewRule>& rules,
+                      const std::vector<std::string>& deleted,
+                      const std::vector<std::string>& otherwiseChanged);
+
+// Whether `check` permits the prune: something to delete, and nothing that
+// forbids it. Pure; unit-tested.
+bool pruneAllowed(const PruneCheck& check);
+
 // The hidden Git ref that tracks pristine depot state - the `origin/main`
 // analog. Derived from the baseline branch name: "refs/p4gw/<baselineBranch>".
 // It lives outside refs/heads/ so it never shows up in `git branch`; `gw

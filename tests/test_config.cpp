@@ -1062,3 +1062,70 @@ TEST(unmanaged_respects_a_deeper_re_include) {
     CHECK(files[0].path == "src/lib/linux/api.h");
     CHECK(files[0].excludedBy == "//depot/x/src/lib/...");
 }
+
+// ---- pruning orphans out of the baseline (doctor --unmanaged --prune) ----
+
+TEST(prune_accepts_deletions_of_unmanaged_files_only) {
+    const std::vector<p4gw::ViewRule> rules = {inc("src"), exc("src/thirdparty")};
+    const auto check = p4gw::checkPrune(
+        rules, {"config/app.ini", "src/thirdparty/zlib.h", "bin/tool.exe"}, {});
+    CHECK(p4gw::pruneAllowed(check));
+    CHECK(check.deletes.size() == 3);
+    CHECK(check.notDeletes.empty());
+    CHECK(check.managed.empty());
+    CHECK(check.metadata.empty());
+}
+
+TEST(prune_refuses_a_commit_that_changes_anything) {
+    // A prune may only remove. An added or edited file would put content in the
+    // baseline that no p4 sync produced, and prepare would read it as shipped.
+    const std::vector<p4gw::ViewRule> rules = {inc("src")};
+    const auto check =
+        p4gw::checkPrune(rules, {"config/app.ini"}, {"src/main.cpp"});
+    CHECK(!p4gw::pruneAllowed(check));
+    CHECK(check.notDeletes.size() == 1);
+    CHECK(check.notDeletes[0] == "src/main.cpp");
+    CHECK(check.deletes.size() == 1);  // still reported, just not applied
+}
+
+TEST(prune_refuses_deleting_a_file_a_mapping_still_ships) {
+    // A real depot file: removing it from the baseline would desynchronize Git
+    // from P4 silently. That deletion belongs in 'gw prepare'.
+    const std::vector<p4gw::ViewRule> rules = {inc("src")};
+    const auto check =
+        p4gw::checkPrune(rules, {"src/main.cpp", "bin/tool.exe"}, {});
+    CHECK(!p4gw::pruneAllowed(check));
+    CHECK(check.managed.size() == 1);
+    CHECK(check.managed[0] == "src/main.cpp");
+    CHECK(check.deletes.size() == 1);
+    CHECK(check.deletes[0] == "bin/tool.exe");
+}
+
+TEST(prune_refuses_deleting_gw_metadata) {
+    const std::vector<p4gw::ViewRule> rules = {inc("src")};
+    const auto check =
+        p4gw::checkPrune(rules, {".gitignore", "p4gw.cfg", "bin/tool.exe"}, {});
+    CHECK(!p4gw::pruneAllowed(check));
+    CHECK(check.metadata.size() == 2);
+}
+
+TEST(prune_refuses_an_empty_diff) {
+    // Nothing removed means nothing to prune - moving the ref would be a no-op
+    // that silently absorbs whatever else the user has staged later.
+    const std::vector<p4gw::ViewRule> rules = {inc("src")};
+    CHECK(!p4gw::pruneAllowed(p4gw::checkPrune(rules, {}, {})));
+}
+
+TEST(prune_allows_a_re_included_subtrees_peer_but_not_the_subtree) {
+    // Later-wins: src/lib/public/win64 is mapped again, so deleting from it is
+    // refused; the rest of the carved-out lib is fair game.
+    const std::vector<p4gw::ViewRule> rules = {inc("src"), exc("src/lib"),
+                                               inc("src/lib/public/win64")};
+    const auto check = p4gw::checkPrune(
+        rules, {"src/lib/linux/api.h", "src/lib/public/win64/api.h"}, {});
+    CHECK(!p4gw::pruneAllowed(check));
+    CHECK(check.managed.size() == 1);
+    CHECK(check.managed[0] == "src/lib/public/win64/api.h");
+    CHECK(check.deletes.size() == 1);
+    CHECK(check.deletes[0] == "src/lib/linux/api.h");
+}

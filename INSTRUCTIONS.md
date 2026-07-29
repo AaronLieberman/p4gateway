@@ -25,6 +25,7 @@ For building and first-time setup, see [SETUP.md](SETUP.md).
 | `gw shelf import <cl>` | Bring a P4 shelf into Git as a new branch off `main`. |
 | `gw doctor` | Check the environment and client view; run it when something smells off. |
 | `gw doctor --unmanaged` | List the tracked files no mapping ships to P4, and how to clean them up. |
+| `gw doctor --unmanaged --prune` | Move the depot baseline past removals you committed, retiring an orphan for good. |
 
 Every command takes `--help` (`-h`). The global `--verbose` flag (before or
 after the command, e.g. `gw --verbose prepare`) echoes every `git` and `p4`
@@ -291,17 +292,47 @@ count and the first few paths.
 `gw doctor --unmanaged` skips every other check (no P4 connection needed) and
 prints the full list: orphans first, grouped by the `exclude` that carves
 them out or as covered by no rule, then the deliberate Git-only files, then
-instructions for deciding what to do with each. The short version:
+instructions for deciding what to do with each.
+
+### Getting rid of an orphan
+
+A plain `git rm` is not enough. Every import builds its snapshot on the
+previous one and only adds or removes what a mapping tells it to, so a file
+no mapping covers is **inherited by every future baseline** — your deletion
+lives on one branch as a patch you rebase forward forever, and the file
+reappears on every new branch you cut from `main`. To be rid of it, the
+baseline itself has to move past the removal:
 
 ```
-git rm -r <path>     # gone from Git too (--cached keeps it on disk)
+git rm -r <path>...
+git commit -m "Drop files no mapping ships"
+gw doctor --unmanaged --prune
 ```
 
-That ships no `p4 delete`, precisely because nothing maps the path. **Do the
-config edit first** when you're retiring a subtree: take it out of `p4gw.cfg`
-and rerun `gw init` *before* the `git rm`, since while a path is still mapped
-a `git rm` makes the next `gw prepare` open a real `p4 delete` against the
-depot.
+gw can't pick the files for you — a Git-only file you keep on purpose is
+indistinguishable from a stale one by rule alone — so you say it in Git and
+`--prune` checks your work. It compares the baseline to your `HEAD` and
+applies the move only if that diff **only removes unmanaged files**. It
+refuses, naming what blocked it, on:
+
+- a path changed rather than removed — content that entered the baseline
+  without a `p4 sync` would look already-shipped to `gw prepare`;
+- a deletion of a file a mapping still ships — that's a real depot file, and
+  `gw prepare` is what deletes it (with a `p4 delete`);
+- a deletion of gw's own `.gitignore`/`.gitattributes`/`p4gw.cfg`.
+
+On success it moves `refs/p4gw/<baseline>` and the baseline branch to your
+commit, rebinds the have manifest to the new snapshot (so the next import
+keeps its fast path instead of falling back to a full mirror walk), and
+prints the previous baseline SHA. **Keep that SHA** — `refs/p4gw/*` carries
+no reflog, so `git update-ref refs/p4gw/<baseline> <sha>` is the only way
+back. Rebase your other branches onto the baseline branch afterwards.
+
+No P4 state is touched and no `p4 delete` is sent, precisely because nothing
+maps these paths. **Do the config edit first** when you're retiring a
+subtree: take it out of `p4gw.cfg` and rerun `gw init` *before* the `git rm`,
+since while a path is still mapped a `git rm` makes the next `gw prepare`
+open a real `p4 delete` against the depot.
 
 If ripgrep is installed and the repo uses the allowlist `.gitignore`, doctor
 also warns when nothing reopens what the allowlist hides from `rg` searches

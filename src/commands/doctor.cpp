@@ -44,6 +44,12 @@ constexpr const char* kDoctorUsage =
     "                   P4 (orphans, whose subtree left the config or the client\n"
     "                   view) and deliberate Git-only files, with instructions\n"
     "                   for cleaning them up. Needs no P4 connection.\n"
+    "      --prune      Finish that cleanup: move the depot baseline past the\n"
+    "                   removals you committed on top of it, so an orphan no\n"
+    "                   mapping can delete stops being inherited by every future\n"
+    "                   snapshot. Refuses unless those commits *only* remove\n"
+    "                   unmanaged files. Implies --unmanaged; touches no P4\n"
+    "                   state.\n"
     "  -h, --help       Show this help\n"
     "\n";
 
@@ -117,35 +123,217 @@ void printUnmanagedGroups(const std::vector<UnmanagedFile>& files,
 constexpr const char* kUnmanagedInstructions =
     "How to clean these up\n"
     "\n"
-    "gw will not do it for you: no mapping covers these paths, so 'gw import'\n"
-    "never reconciles them and 'gw prepare' skips them (it lists them as\n"
-    "unmapped). Decide per file, then use plain Git.\n"
-    "\n"
-    "  You removed it from P4 on purpose and want it out of Git too:\n"
-    "      git rm -r <path>            # or --cached to keep the file on disk\n"
-    "      git commit -m \"Drop <path>: no longer mapped from P4\"\n"
-    "    Safe as long as the path is unmanaged - that is what this list means -\n"
-    "    so it ships no 'p4 delete'. Confirm with 'gw prepare -n' if unsure.\n"
+    "gw never deletes one of these on its own: it cannot tell a stale leftover\n"
+    "from a file you keep in Git on purpose. You decide, in Git, and gw checks\n"
+    "your work. Decide per file:\n"
     "\n"
     "  You want it in Git only (.gitignore, a local script, notes):\n"
-    "    Nothing to do. This is the supported case, and the reason gw never\n"
-    "    deletes an unmanaged file on its own.\n"
+    "    Nothing to do. This is the supported case.\n"
     "\n"
     "  It should still be coming from P4:\n"
     "    Its subtree is missing from p4gw.cfg, or an 'exclude' now covers it.\n"
     "    Put the 'include' back (with the matching client view line), rerun\n"
     "    'gw init' to refresh .gitignore, then 'gw import'.\n"
     "\n"
+    "  You want it gone:\n"
+    "    Commit the removal on top of the depot baseline, then let gw prune it\n"
+    "    out of the baseline itself:\n"
+    "\n"
+    "      git rm -r <path>...\n"
+    "      git commit -m \"Drop files no mapping ships\"\n"
+    "      gw doctor --unmanaged --prune\n"
+    "\n"
+    "    A plain 'git rm' alone is not enough for an orphan. Every import\n"
+    "    builds its snapshot on the previous one and only adds or removes what\n"
+    "    a mapping tells it to, so a file no mapping covers is inherited by\n"
+    "    every future baseline - and reappears on every branch you cut. The\n"
+    "    prune moves the baseline itself past your removal, which is the only\n"
+    "    way to break that inheritance.\n"
+    "\n"
+    "    --prune verifies before it moves anything: the commits on top of the\n"
+    "    baseline must *only* remove files from the list above. A modified\n"
+    "    file, a new one, or a delete of something a mapping still ships and\n"
+    "    it refuses and names what blocked it. It touches no p4 state and\n"
+    "    sends no 'p4 delete' - these paths are unmapped, which is the point.\n"
+    "\n"
     "Removing a whole subtree from P4's side? Take it out of p4gw.cfg *first*\n"
     "(drop the 'include' or add an 'exclude') and rerun 'gw init'. While a path\n"
     "is still mapped, 'git rm' makes the next 'gw prepare' open a real\n"
     "'p4 delete' against the depot.\n";
 
+// `gw doctor --unmanaged --prune`: cut the user's committed removals out of the
+// depot baseline itself. Verification only - the user chose the files by
+// committing their deletion on top of the baseline, and everything here exists
+// to prove that commit does nothing *but* remove unmanaged files before the
+// refs move. Returns the process exit code.
+int pruneUnmanaged(const Config& config, const std::string& root) {
+    const std::string depotRef = depotTrackingRef(config);
+    auto oldBaseline = git::revParse(depotRef, root);
+    if (!oldBaseline) {
+        std::fprintf(stderr,
+                     "gw doctor: no depot baseline yet (%s) - nothing to "
+                     "prune; run 'gw import' first\n", depotRef.c_str());
+        return 1;
+    }
+    auto head = git::revParse("HEAD", root);
+    if (!head) {
+        std::fprintf(stderr, "gw doctor: %s\n", head.error().c_str());
+        return 1;
+    }
+    if (*head == *oldBaseline) {
+        std::fprintf(stderr,
+                     "gw doctor: HEAD is the depot baseline - there is nothing "
+                     "to prune.\n  Commit the removals on top of it first:\n"
+                     "    git rm -r <path>...\n"
+                     "    git commit -m \"Drop files no mapping ships\"\n"
+                     "  then rerun 'gw doctor --unmanaged --prune'.\n");
+        return 1;
+    }
+    // The new baseline must be a descendant of the old one: the prune moves the
+    // ref forward, never sideways onto an unrelated history.
+    auto descends = git::isAncestor(*oldBaseline, *head, root);
+    if (!descends) {
+        std::fprintf(stderr, "gw doctor: %s\n", descends.error().c_str());
+        return 1;
+    }
+    if (!*descends) {
+        std::fprintf(stderr,
+                     "gw doctor: HEAD is not based on the depot baseline (%s) - "
+                     "rebase onto it before pruning.\n", depotRef.c_str());
+        return 1;
+    }
+
+    // The *net* diff is what matters, not the individual commits: whatever
+    // route the user took, the resulting tree must differ from the baseline by
+    // unmanaged deletions and nothing else.
+    auto changes = git::diffNameStatus(*oldBaseline, *head, root);
+    if (!changes) {
+        std::fprintf(stderr, "gw doctor: %s\n", changes.error().c_str());
+        return 1;
+    }
+    std::vector<std::string> deleted;
+    std::vector<std::string> otherwiseChanged;
+    for (const auto& change : *changes) {
+        if (change.status == 'D') {
+            deleted.push_back(change.path);
+        } else {
+            otherwiseChanged.push_back(change.path);
+            if (!change.newPath.empty()) {
+                otherwiseChanged.push_back(change.newPath);
+            }
+        }
+    }
+    const PruneCheck check = checkPrune(config.rules, deleted, otherwiseChanged);
+
+    if (!pruneAllowed(check)) {
+        auto reject = [](const char* why, const std::vector<std::string>& paths,
+                         const char* fix) {
+            if (paths.empty()) return;
+            std::fprintf(stderr, "  %s:\n", why);
+            for (const auto& path : paths) {
+                std::fprintf(stderr, "      %s\n", path.c_str());
+            }
+            std::fprintf(stderr, "    %s\n", fix);
+        };
+        std::fprintf(stderr, "gw doctor: refusing to prune - the commits on top "
+                             "of the baseline do more than\n  remove unmanaged "
+                             "files.\n");
+        reject("changed, not removed", check.notDeletes,
+               "A prune may only remove. Anything else would put content in the "
+               "baseline that\n    no p4 sync produced, and 'gw prepare' would "
+               "read it as already shipped.");
+        reject("still shipped by a mapping", check.managed,
+               "These are real depot files. Delete them with 'gw prepare', "
+               "which opens a\n    p4 delete - removing them here would "
+               "desynchronize Git from P4.");
+        reject("gw's own files", check.metadata,
+               "The baseline needs these; they are Git-only by construction, "
+               "not orphans.");
+        if (check.deletes.empty() && check.notDeletes.empty() &&
+            check.managed.empty() && check.metadata.empty()) {
+            std::fprintf(stderr, "  (the commits change nothing at all)\n");
+        }
+        return 1;
+    }
+
+    // Everything checks out: move the depot ref, and the convenience baseline
+    // branch with it when it is not the branch the user is standing on (HEAD is
+    // already there in that case).
+    auto currentBranch = git::currentBranch(root);
+    const std::string branch = currentBranch ? *currentBranch : std::string{};
+    auto moved = git::updateRef(depotRef, *head, root);
+    if (!moved) {
+        std::fprintf(stderr, "gw doctor: %s\n", moved.error().c_str());
+        return 1;
+    }
+    if (branch != config.baselineBranch) {
+        auto baselineExists = git::branchExists(config.baselineBranch, root);
+        if (baselineExists && *baselineExists) {
+            auto ff = git::isAncestor("refs/heads/" + config.baselineBranch,
+                                      *head, root);
+            if (ff && *ff) {
+                auto movedBranch = git::updateRef(
+                    "refs/heads/" + config.baselineBranch, *head, root);
+                if (!movedBranch) {
+                    std::fprintf(stderr, "gw doctor: the depot ref moved but "
+                                         "'%s' did not: %s\n",
+                                 config.baselineBranch.c_str(),
+                                 movedBranch.error().c_str());
+                    return 1;
+                }
+            }
+        }
+    }
+
+    // Rebind the have manifest instead of invalidating it. The mirror did not
+    // move - the prune only removed files p4 never had - so the recorded have
+    // state still describes the new snapshot exactly, and the next import keeps
+    // its fast path instead of falling back to a full mirror walk.
+    if (auto gitDirPath = git::gitDir(root)) {
+        const std::string manifestPath =
+            mirror::haveManifestPath(*gitDirPath, config.baselineBranch);
+        std::ifstream in(manifestPath, std::ios::binary);
+        if (in) {
+            std::ostringstream text;
+            text << in.rdbuf();
+            in.close();
+            std::string snapshot;
+            auto entries =
+                mirror::parseHaveManifest(std::move(text).str(), snapshot);
+            if (snapshot == *oldBaseline) {
+                std::ofstream out(manifestPath,
+                                  std::ios::binary | std::ios::trunc);
+                if (out) out << mirror::renderHaveManifest(*head, entries);
+            }
+        }
+    }
+
+    std::printf("Pruned %zu file(s) from the depot baseline:\n",
+                check.deletes.size());
+    for (const auto& path : check.deletes) {
+        std::printf("    %s\n", path.c_str());
+    }
+    std::printf("\n%s is now %s", depotRef.c_str(), head->c_str());
+    if (branch != config.baselineBranch) {
+        std::printf(", and so is '%s'", config.baselineBranch.c_str());
+    }
+    std::printf(
+        ".\nNothing will bring these back: no mapping produces them, so no "
+        "import can\nre-add them. Rebase your other branches onto '%s'.\n\n"
+        "To undo, restore the previous baseline:\n"
+        "    git update-ref %s %s\n"
+        "(%s carries no reflog, so this is the only way back - keep that SHA "
+        "until\nyou are satisfied.)\n",
+        config.baselineBranch.c_str(), depotRef.c_str(), oldBaseline->c_str(),
+        depotRef.c_str());
+    return 0;
+}
+
 // `gw doctor --unmanaged`: the detailed list plus the cleanup instructions.
 // Stands alone - no p4, none of the other checks - so it stays usable while the
 // rest of the environment is broken, and it never reports a failure: an
 // unmanaged file is a decision for the user, not a broken check.
-int reportUnmanaged() {
+int reportUnmanaged(bool prune) {
     std::string root;
     auto config = findAndLoadConfig(root);
     if (!config) {
@@ -158,6 +346,7 @@ int reportUnmanaged() {
                      root.c_str());
         return 1;
     }
+    if (prune) return pruneUnmanaged(*config, root);
     auto unmanaged = gatherUnmanaged(*config, root);
     if (!unmanaged) {
         std::fprintf(stderr, "gw doctor: %s\n", unmanaged.error().c_str());
@@ -211,6 +400,7 @@ int reportUnmanaged() {
 int cmdDoctor(const Args& args) {
     bool verify = false;
     bool unmanagedOnly = false;
+    bool prune = false;
     for (const auto& arg : args) {
         if (arg == "--help" || arg == "-h") {
             std::printf("%s", kDoctorUsage);
@@ -224,13 +414,18 @@ int cmdDoctor(const Args& args) {
             unmanagedOnly = true;
             continue;
         }
+        if (arg == "--prune") {
+            prune = true;
+            unmanagedOnly = true;  // --prune is an action on that same report
+            continue;
+        }
         std::fprintf(stderr, "gw doctor: unexpected argument '%s'\n",
                      arg.c_str());
         std::fprintf(stderr, "%s", kDoctorUsage);
         return 1;
     }
 
-    if (unmanagedOnly) return reportUnmanaged();
+    if (unmanagedOnly) return reportUnmanaged(prune);
 
     int failures = 0;
     int warnings = 0;

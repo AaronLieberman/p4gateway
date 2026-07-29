@@ -2856,7 +2856,63 @@ std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
                                "unmapped:\n" + *preview);
     }
 
-    // (7) And doctor is quiet again.
+    // (7) The prune's guard: a commit that does anything beyond removing
+    // unmanaged files must be refused, since whatever it adds would enter the
+    // baseline as depot state nobody synced.
+    auto tainted = appendFile(fs::path(it.srcWork) / "main.cpp",
+                              "// not a removal\n");
+    if (!tainted) return tainted;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: edit alongside the removal", it.repoDir);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    auto refused = runGw(it, it.repoDir, {"doctor", "--unmanaged", "--prune"});
+    if (refused) {
+        return std::unexpected("prune accepted a commit that edited a mapped "
+                               "file:\n" + *refused);
+    }
+    if (refused.error().find("changed, not removed") == std::string::npos) {
+        return std::unexpected("prune refused for the wrong reason - expected "
+                               "the not-a-removal guard:\n" + refused.error());
+    }
+    auto dropTaint = git::run({"reset", "--hard", "HEAD~1"}, it.repoDir);
+    if (!dropTaint) return std::unexpected(dropTaint.error());
+
+    // (8) The prune itself: the baseline moves past the removal, which is the
+    // only thing that stops the orphan being inherited by every later snapshot.
+    auto pruned = runGw(it, it.repoDir, {"doctor", "--unmanaged", "--prune"});
+    if (!pruned) return std::unexpected(pruned.error());
+    auto prunedTree = git::lsTreeFiles("refs/p4gw/main", it.repoDir);
+    if (!prunedTree) return std::unexpected(prunedTree.error());
+    if (std::find(prunedTree->begin(), prunedTree->end(), trackedRel) !=
+        prunedTree->end()) {
+        return std::unexpected("the orphan is still in the depot baseline after "
+                               "--prune:\n" + *pruned);
+    }
+    auto prunedHead = git::revParse("HEAD", it.repoDir);
+    auto prunedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!prunedHead) return std::unexpected(prunedHead.error());
+    if (!prunedRef) return std::unexpected(prunedRef.error());
+    if (*prunedHead != *prunedRef) {
+        return std::unexpected("--prune did not move the depot ref to the "
+                               "removal commit");
+    }
+
+    // And it stays gone: the next import must not resurrect it. (The manifest
+    // was rebound to the new snapshot, so this also proves the rebind is sound -
+    // a stale binding would have forced a full walk instead.)
+    auto afterPrune = runGw(it, it.repoDir, {"import"});
+    if (!afterPrune) return std::unexpected(afterPrune.error());
+    auto finalTree = git::lsTreeFiles("refs/p4gw/main", it.repoDir);
+    if (!finalTree) return std::unexpected(finalTree.error());
+    if (std::find(finalTree->begin(), finalTree->end(), trackedRel) !=
+        finalTree->end()) {
+        return std::unexpected("an import after --prune brought the orphan "
+                               "back:\n" + *afterPrune);
+    }
+
+    // (9) And doctor is quiet again.
     auto quiet = runGw(it, it.repoDir, {"doctor", "--unmanaged"});
     if (!quiet) return std::unexpected(quiet.error());
     if (quiet->find("Orphaned") != std::string::npos) {
@@ -2864,7 +2920,7 @@ std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
                                "after the cleanup:\n" + *quiet);
     }
 
-    // (8) Restore the fixture exactly as inherited (same shape as
+    // (10) Restore the fixture exactly as inherited (same shape as
     // itSecondInclude: opens dropped, both refs rolled back, config and client
     // spec rewritten, the throwaway depot file obliterated).
     auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
