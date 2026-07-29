@@ -2846,7 +2846,12 @@ std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
                                "path - the documented cleanup would have hit "
                                "the depot:\n" + *preview);
     }
-    if (preview->find("skip    " + trackedRel) == std::string::npos) {
+    // Either shape is a pass, and both say the same thing: with the orphan the
+    // only change in the slice, prepare short-circuits on "all outside the
+    // mappings"; alongside a mapped change it would list the orphan as a skip.
+    if (preview->find("outside the configured p4 mappings") ==
+            std::string::npos &&
+        preview->find("skip    " + trackedRel) == std::string::npos) {
         return std::unexpected("prepare did not report the removed orphan as "
                                "unmapped:\n" + *preview);
     }
