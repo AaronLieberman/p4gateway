@@ -140,3 +140,21 @@ wrapper function, not an inline `run("p4", ...)` call.
   (`actions_run_trigger`, or the Actions tab). Kick it off, wait for it, and
   report the result; a change to `gw integtest` itself is not verified until
   that run is green.
+- **Reading a failed integtest run's logs.** The workflow's last step dumps the
+  whole p4d log (thousands of lines), so a small `get_job_logs` tail shows only
+  that and never reaches the failure. Don't chase the `logs_url` blob link
+  either: `productionresultssa*.blob.core.windows.net` is blocked by the remote
+  environment's network policy and `curl` fails with `CONNECT tunnel failed,
+  response 403`. Instead call `get_job_logs` with `return_content: true` and
+  `tail_lines: 2200` — the response is too big for context, so the harness
+  saves it to a file and prints the path, which is the point. Then grep that
+  file. It arrives as one long line with escaped CRLFs, so split on the literal
+  `\r\n` first:
+
+  ```
+  python3 -c 'import re,sys; print("\n".join(re.split(r"\\r\\n", open(sys.argv[1]).read())))' <file> | grep -n -A20 "FAIL  "
+  ```
+
+  (Every line keeps its ISO timestamp prefix, so don't anchor the pattern.)
+  `FAIL <step name>` plus the step's own error message is what you want; the
+  p4d log below it is a useful record of the exact p4 commands the run issued.
