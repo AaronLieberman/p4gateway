@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT
+//
+// GENERATED FILE - do not edit and do not check in. cmake/GitVersion.cmake
+// rewrites it from git on every build; the template is cmake/version.cpp.in.
+// Only the raw facts live here so that a new commit recompiles this one small
+// translation unit and nothing else. The formatting lives in src/version.cpp.
+
+#include "version.h"
+
+namespace p4gw {
+
+const VersionInfo& buildVersion() {
+    static const VersionInfo info = {
+        .base = "@GW_VERSION_BASE@",
+        .commits = "@GW_VERSION_COMMITS@",
+        .commit = "@GW_VERSION_COMMIT@",
+        .commitDate = "@GW_VERSION_DATE@",
+        .branch = "@GW_VERSION_BRANCH@",
+        .dirty = @GW_VERSION_DIRTY@,
+        .shallow = @GW_VERSION_SHALLOW@,
+    };
+    return info;
+}
+
+}  // namespace p4gw

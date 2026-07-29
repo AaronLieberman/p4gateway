@@ -89,8 +89,20 @@ src/mirror.{h,cpp}  mirror <-> working tree sync actions (import)
 src/shelf.{h,cpp}   pure parsing of p4 changes/describe output (shelf list/import)
 src/statusview.{h,cpp}  pure status decision + formatting logic (status)
 src/config.{h,cpp}  p4gw.cfg config file (key = value), found by walking parents
+src/version.{h,cpp} build stamp: the VersionInfo facts + pure formatting
+cmake/GitVersion.cmake  derives that stamp from git; cmake/version.cpp.in is
+                    the template it configures into the build dir
 tests/              zero-dependency harness (test_framework.h), one file per unit
 ```
+
+The version is never hand-edited: only MAJOR.MINOR in the top-level
+`project()` call is set by a human. The patch number is `git rev-list --count
+HEAD` (main is linear, so it climbs monotonically) and the `+g<sha>` suffix
+ties a binary to its source; `.dirty` and `.shallow` mark builds whose stamp
+can't be trusted. The `gw_version` target reruns the script on every build, so
+a new commit restamps without a reconfigure, and `configure_file` skips the
+write when nothing changed, so only the generated TU recompiles. CI checkouts
+need `fetch-depth: 0` or the count is unavailable.
 
 Layering rule: commands call git/p4/config; git and p4 call process; nothing
 calls process directly from a command. New git or p4 invocations get a typed

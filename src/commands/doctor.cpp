@@ -17,6 +17,7 @@
 #include "mirror.h"
 #include "p4.h"
 #include "subprocess.h"
+#include "version.h"
 
 namespace fs = std::filesystem;
 
@@ -429,6 +430,10 @@ int cmdDoctor(const Args& args) {
 
     int failures = 0;
     int warnings = 0;
+
+    // Not a check - it just puts the build's provenance at the top of the
+    // report a user pastes when something is wrong.
+    std::printf("ok    gw %s\n", versionString(buildVersion()).c_str());
 
     auto gitVersion = run("git", {"--version"});
     if (gitVersion && gitVersion->exitCode == 0) {

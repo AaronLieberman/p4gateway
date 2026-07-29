@@ -33,6 +33,24 @@ command to stderr as it runs — handy for seeing exactly what gw does against
 your depot. It also makes `gw import` report each `include` separately
 instead of one tally for the whole view.
 
+`gw --version` reports the build and the exact source it came from:
+
+```
+gw 1.0.174+g547aba883
+  commit  547aba883c4b26ab318e6eef0471d4ce7c02317e
+  date    2026-07-29T05:26:44+00:00
+  branch  main
+```
+
+The patch number is the commit count on `main`, so it climbs with every
+commit, and the `+g...` suffix is the commit itself — `git show 547aba883`
+in the p4gateway repo lands on the source that produced the binary. Nobody
+edits a version by hand: the build derives all of it from git. A build from
+a modified working tree is tagged `.dirty` and a build from a shallow clone
+`.shallow` (with no trustworthy commit count, so the patch number reads 0).
+`gw doctor` repeats the one-line version at the top of its report, which is
+the line to include when you report a problem.
+
 ## Recipes
 
 ### The basic loop

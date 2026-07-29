@@ -7,10 +7,9 @@
 
 #include "commands.h"
 #include "subprocess.h"
+#include "version.h"
 
 namespace {
-
-constexpr const char* kVersion = "1.0.0";
 
 void printUsage() {
     std::printf(
@@ -36,9 +35,9 @@ void printUsage() {
         "global options:\n"
         "  --verbose  Echo every git/p4 command as it runs\n"
         "  --help     Show this help\n"
-        "  --version  Show version\n"
+        "  --version  Show the version and the commit it was built from\n"
         "\n",
-        kVersion);
+        p4gw::versionString(p4gw::buildVersion()).c_str());
 }
 
 }  // namespace
@@ -64,7 +63,7 @@ int main(int argc, char** argv) {
         return tokens.empty() ? 1 : 0;
     }
     if (tokens[0] == "--version") {
-        std::printf("gw %s\n", kVersion);
+        std::printf("%s", p4gw::versionDetail(p4gw::buildVersion()).c_str());
         return 0;
     }
 

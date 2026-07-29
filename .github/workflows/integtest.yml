@@ -29,7 +29,12 @@ jobs:
       P4USER: integtest
       P4CLIENT: integtest-ws
     steps:
+      # fetch-depth: 0 gives the build a full history: gw's version number
+      # is the commit count behind HEAD, and a shallow clone can only report
+      # it as unknown (see cmake/GitVersion.cmake).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Configure
         run: cmake -S . -B build

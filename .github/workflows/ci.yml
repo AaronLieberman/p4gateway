@@ -9,7 +9,12 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 gives the build a full history: gw's version number
+      # is the commit count behind HEAD, and a shallow clone can only report
+      # it as unknown (see cmake/GitVersion.cmake).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -20,7 +25,12 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
+      # fetch-depth: 0 gives the build a full history: gw's version number
+      # is the commit count behind HEAD, and a shallow clone can only report
+      # it as unknown (see cmake/GitVersion.cmake).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Configure
         run: cmake -S . -B build
       - name: Build

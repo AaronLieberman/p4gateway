@@ -10,8 +10,10 @@ add_executable(p4gw_tests
     test_shelf.cpp
     test_preflight.cpp
     test_subprocess.cpp
+    test_version.cpp
 )
 target_link_libraries(p4gw_tests PRIVATE p4gw_core)
 
 add_test(NAME unit COMMAND p4gw_tests)
 add_test(NAME cli_help COMMAND gw --help)
+add_test(NAME cli_version COMMAND gw --version)
