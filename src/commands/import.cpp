@@ -451,6 +451,17 @@ std::expected<std::string, std::string> ensureSnapshotWorktree(
     return wtPath;
 }
 
+// The ref a catch-up command should name: the convenience baseline branch when
+// it really holds `newDepot`, and the depot ref itself otherwise. Import leaves
+// the baseline branch where it is when it carries local commits of its own (see
+// the branch-update blocks below), and a 'git rebase <baseline>' onto that
+// stale branch would restack the user's work on *old* depot state.
+std::string catchUpRef(const std::string& baseline, const std::string& depotRef,
+                       const std::string& newDepot, const std::string& root) {
+    auto tip = git::revParse("refs/heads/" + baseline, root);
+    return (tip && *tip == newDepot) ? baseline : depotRef;
+}
+
 constexpr const char* kImportUsage =
     "usage: gw import [options]\n"
     "\n"
@@ -966,6 +977,16 @@ int cmdImport(const Args& args) {
             // divergent work through the sync on an ephemeral branch and detach
             // at its restacked tip afterward; a real branch just rides along on
             // its own.
+            // A branchless sync moves every visible stack at once, so "did
+            // anything happen" cannot be read off HEAD or off `importedNew`: an
+            // unchanged depot can still leave a stack that an earlier import
+            // was told to leave alone, and a moved depot can find every stack
+            // already on it. Snapshot the branch tips around the sync (before
+            // the carrier exists, after it is gone) and report only what
+            // actually moved.
+            auto tipsBefore = git::localBranchTips(root);
+            if (!tipsBefore) return fail(tipsBefore.error());
+
             const std::string carrier = "gw-import-restack";
             // Mode-independent: both modes reach here with HEAD detached at
             // originalHead (checkout mode restored it after staging; worktree
@@ -1032,15 +1053,35 @@ int cmdImport(const Args& args) {
                 auto det = git::switchDetached(newDepot, root);
                 if (!det) return fail(det.error());
             }
+            auto tipsAfter = git::localBranchTips(root);
+            if (!tipsAfter) return fail(tipsAfter.error());
+            auto headAfter = git::revParse("HEAD", root);
+            if (!headAfter) return fail(headAfter.error());
+            const bool restacked =
+                *tipsAfter != *tipsBefore || *headAfter != originalHead;
+
             if (mergedAway) {
                 std::printf("Restacked your visible commits. The commit you had "
                             "checked out was already in the depot state; HEAD is "
                             "detached at the new depot baseline.\n");
+            } else if (!restacked) {
+                std::printf("Nothing to restack - your commits are already on "
+                            "the depot baseline.\n");
             } else {
                 std::printf("Restacked your visible commits onto the new depot "
                             "state.\n");
             }
         } else {
+            // HEAD already containing the new baseline means git would print
+            // "up to date" and change nothing; say that instead of claiming a
+            // rebase. Same guard the branch epilogue applies via `behind`.
+            auto headHasDepot = git::isAncestor(newDepot, "HEAD", root);
+            if (!headHasDepot) return fail(headHasDepot.error());
+            if (*headHasDepot) {
+                std::printf("Nothing to rebase - your detached work is already "
+                            "on the depot baseline.\n");
+                return 0;
+            }
             auto rebased = git::rebase(newDepot, root);
             if (!rebased) {
                 std::fflush(stdout);  // keep messages ordered with stderr
@@ -1119,7 +1160,8 @@ int cmdImport(const Args& args) {
                     "imported to '%s', but '%s' was left as-is. Commit or "
                     "stash, then rerun 'gw import' (or git merge --ff-only "
                     "%s).\n",
-                    depotRef.c_str(), current.c_str(), baseline.c_str());
+                    depotRef.c_str(), current.c_str(),
+                    catchUpRef(baseline, depotRef, newDepot, root).c_str());
         return 0;
     }
 
@@ -1176,7 +1218,8 @@ int cmdImport(const Args& args) {
         std::printf("'%s' has local commits and was left as-is. Rebase onto "
                     "the new depot state with: gw import --rebase (or "
                     "git rebase %s)\n",
-                    current.c_str(), baseline.c_str());
+                    current.c_str(),
+                    catchUpRef(baseline, depotRef, newDepot, root).c_str());
     }
     return 0;
 }

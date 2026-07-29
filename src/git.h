@@ -161,6 +161,13 @@ std::expected<std::string, std::string> commitRelativeDate(
 std::expected<std::vector<std::string>, std::string> lsFiles(
     const std::string& cwd = {});
 
+// One "<sha> <refname>" line per local branch (`git for-each-ref refs/heads`),
+// in git's order. Used to tell whether an operation that rewrites history - a
+// branchless sync, which moves every visible stack at once - actually moved
+// anything, so import never reports a restack it did not perform.
+std::expected<std::vector<std::string>, std::string> localBranchTips(
+    const std::string& cwd = {});
+
 // Every file in `ref`'s tree (`git ls-tree -r --name-only`), repo-relative with
 // forward slashes. Unlike lsFiles this reads a commit, not the index, so it
 // answers "was this path ever part of the depot baseline snapshot" without

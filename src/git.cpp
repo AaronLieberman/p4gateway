@@ -252,6 +252,17 @@ std::expected<std::vector<std::string>, std::string> lsFiles(
     return nonEmptyLines(*output);
 }
 
+std::expected<std::vector<std::string>, std::string> localBranchTips(
+    const std::string& cwd) {
+    auto output = run(
+        {"for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"},
+        cwd);
+    if (!output) {
+        return std::unexpected(output.error());
+    }
+    return nonEmptyLines(*output);
+}
+
 std::expected<std::vector<std::string>, std::string> lsTreeFiles(
     const std::string& ref, const std::string& cwd) {
     auto output = run({"ls-tree", "-r", "--name-only", ref}, cwd);

@@ -3317,6 +3317,22 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
                                "import; expected it to stay detached");
     }
 
+    // --- D2: a --rebase run that finds nothing new must not claim a restack.
+    // HEAD sits on the baseline from D and no teammate change follows, so the
+    // sync moves nothing; before the fix this still reported "Restacked your
+    // visible commits onto the new depot state". ---
+    auto importNoop = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importNoop) return std::unexpected(importNoop.error());
+    if (importNoop->find("Restacked") != std::string::npos) {
+        return std::unexpected("import --rebase claimed a restack while the "
+                               "depot had not moved and nothing was behind:\n" +
+                               *importNoop);
+    }
+    if (importNoop->find("Nothing to restack") == std::string::npos) {
+        return std::unexpected("import --rebase did not report that there was "
+                               "nothing to restack:\n" + *importNoop);
+    }
+
     // --- C: after uninstall, gw treats the repo as plain git again. ---
     auto uninstall = git::run({"branchless", "init", "--uninstall"}, it.repoDir);
     if (!uninstall) {
@@ -3338,6 +3354,20 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         importC->find("Restacked") != std::string::npos) {
         return std::unexpected("after uninstall, import did not fall back to a "
                                "plain rebase:\n" + *importC);
+    }
+    // The same no-op guard on the plain-detached path: HEAD now contains the
+    // baseline, so a second --rebase has nothing to do and must say so instead
+    // of reporting a rebase git would decline as "up to date".
+    auto importCNoop = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importCNoop) return std::unexpected(importCNoop.error());
+    if (importCNoop->find("Rebased your detached work") != std::string::npos) {
+        return std::unexpected("import --rebase claimed a rebase while HEAD "
+                               "already contained the baseline:\n" +
+                               *importCNoop);
+    }
+    if (importCNoop->find("Nothing to rebase") == std::string::npos) {
+        return std::unexpected("import --rebase did not report that there was "
+                               "nothing to rebase:\n" + *importCNoop);
     }
 
     // Leave a clean main for cleanup (branchless is already uninstalled).
