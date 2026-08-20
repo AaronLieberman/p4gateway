@@ -187,11 +187,31 @@ std::vector<std::string> allowlistTrackingLines(
 // genuinely missing to track every mapped subtree (e.g. after an `include` was
 // added to p4gw.cfg without regenerating .gitignore, so `gw import` copies the
 // mirror in but `git add` ignores it). Only lines whose absence actually leaves
-// a mapped subtree untracked are reported: a redundant intermediate re-include
+// a mapped subtree *untracked* are reported: a redundant intermediate re-include
 // (a "!/src/devtools/" when "!/src/" already tracks src whole) is never flagged,
-// since Git tracks the subtree without it. Empty when the file already covers
-// every mapped subtree or the rules yield the denylist body. Pure; unit-tested.
+// since Git tracks the subtree without it. This is the under-tracking half of
+// the picture only - to repair a file, use `allowlistRepairLines`, which also
+// covers the child re-exclusions that keep the allowlist from over-tracking.
+// Empty when the file already covers every mapped subtree or the rules yield
+// the denylist body. Pure; unit-tested.
 std::vector<std::string> missingAllowlistTrackingLines(
+    const std::vector<ViewRule>& rules, const std::string& gitignoreContent);
+
+// The lines to append to an existing allowlist `gitignoreContent` so it tracks
+// exactly the mapped subtrees - the repair `gw init` writes and `gw doctor`
+// prints. This is the *whole* tracking chain, re-includes and child
+// re-exclusions alike, unlike `missingAllowlistTrackingLines`: a deep mapping
+// (`include = game/core/tools` under an unmapped `game/`) needs its "/game/*"
+// and "/game/core/*" as much as its "!/game/" re-includes, because re-including
+// an ancestor without re-excluding its other children hands Git the whole of
+// `game/` - unmapped depot content synced in place, which 'gw import's
+// `git add -A` would then commit. Returns the chain from the first line that is
+// missing (or out of order) onward, since appended lines land at the end of the
+// file and must stay in depth order to read correctly. Empty when the file is
+// already right or the rules yield the denylist body; adding these lines never
+// untracks a committed file, it only stops new ones being picked up. Pure;
+// unit-tested.
+std::vector<std::string> allowlistRepairLines(
     const std::vector<ViewRule>& rules, const std::string& gitignoreContent);
 
 // The starter `.gitattributes` gw init commits: a committed `* -text` so git

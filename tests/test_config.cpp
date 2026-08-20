@@ -737,6 +737,119 @@ TEST(missing_allowlist_lines_ignores_redundant_intermediate_reinclude) {
     CHECK(missing[0] == "!/src/devtools/datacache/");
 }
 
+TEST(allowlist_repair_lines_carry_the_child_reexclusions) {
+    // The remap-a-deep-subtree case: //depot/x/game/... syncs in place, and
+    // only game/core/tools is mapped through the mirror. Repairing an existing
+    // allowlist must add the '/game/*' and '/game/core/*' child re-exclusions
+    // along with the re-includes - without them '!/game/' hands Git the whole
+    // of game/, which is unmapped depot content 'gw import' would then commit.
+    const std::string existing = p4gw::buildGitignore({inc("src")});
+    const auto repair = p4gw::allowlistRepairLines(
+        {inc("src"), inc("game/core/tools")}, existing);
+    const std::vector<std::string> expected = {
+        "!/game/", "/game/*", "!/game/core/", "/game/core/*",
+        "!/game/core/tools/"};
+    CHECK(repair == expected);
+    // The under-tracking check reports only the re-includes, by design - which
+    // is exactly why the repair path must not use it.
+    const auto missing = p4gw::missingAllowlistTrackingLines(
+        {inc("src"), inc("game/core/tools")}, existing);
+    CHECK(missing.size() == 3);
+    CHECK(!contains_line(missing, "/game/*"));
+}
+
+TEST(allowlist_repair_lines_reemit_the_chain_below_the_first_gap) {
+    // A file left behind by the re-includes-only repair: the '!' lines are all
+    // there, the child re-exclusions are not. Appending a bare '/game/*' at the
+    // end of that file would sit *below* '!/game/core/' and re-ignore the
+    // mapped subtree, so the repair restarts at the first gap and re-emits the
+    // rest of the chain in depth order.
+    const std::string halfRepaired =
+        "/*\n"
+        "!/.gitignore\n"
+        "!/.gitattributes\n"
+        "!/game/\n"
+        "!/game/core/\n"
+        "!/game/core/tools/\n";
+    const auto repair =
+        p4gw::allowlistRepairLines({inc("game/core/tools")}, halfRepaired);
+    const std::vector<std::string> expected = {
+        "/game/*", "!/game/core/", "/game/core/*", "!/game/core/tools/"};
+    CHECK(repair == expected);
+    // Appending that block makes the file correct, so a second run is a no-op.
+    std::string repaired = halfRepaired;
+    for (const auto& line : repair) repaired += line + "\n";
+    CHECK(p4gw::allowlistRepairLines({inc("game/core/tools")}, repaired)
+              .empty());
+}
+
+TEST(allowlist_repair_lines_leave_unrelated_correct_chains_alone) {
+    // A hand-minimized .gitignore: src is mapped whole, so the "!/src/devtools/"
+    // intermediate gw would emit is redundant and the user dropped it. Adding a
+    // deep game mapping must repair only the game chain - re-emitting src's
+    // lines at the end would churn a file that already reads correctly.
+    const std::vector<p4gw::ViewRule> rules = {
+        inc("src"), exc("src/devtools"), inc("src/devtools/datacache"),
+        inc("game/core/tools")};
+    const std::string existing =
+        "/*\n"
+        "!/.gitignore\n"
+        "!/.gitattributes\n"
+        "!/src/\n"
+        "/src/devtools/*\n"
+        "!/src/devtools/datacache/\n";
+    const std::vector<std::string> expected = {
+        "!/game/", "/game/*", "!/game/core/", "/game/core/*",
+        "!/game/core/tools/"};
+    CHECK(p4gw::allowlistRepairLines(rules, existing) == expected);
+}
+
+TEST(allowlist_repair_lines_cover_the_carve_out_reexclusions) {
+    // An `exclude` added later needs its carve-out line, and a single-level
+    // re-include needs the "/src/build/*/" that drops the child directories -
+    // both are as load-bearing as a re-include, since without them Git tracks
+    // depot content that syncs in place.
+    const std::string existing = p4gw::buildGitignore({inc("src")});
+    const auto repair = p4gw::allowlistRepairLines(
+        {inc("src"), exc("src/thirdparty"), exc("src/build"),
+         incFiles("src/build")},
+        existing);
+    const std::vector<std::string> expected = {"/src/thirdparty/",
+                                               "/src/build/*/"};
+    CHECK(repair == expected);
+}
+
+TEST(allowlist_repair_lines_reemit_carve_outs_below_a_missing_reinclude) {
+    // "!/src/" is missing, so it is appended at the end - below the carve-out
+    // lines already in the file, which it would then override. The carve-outs
+    // are descendants of src, so they are re-emitted after it.
+    const std::string existing = "/*\n!/.gitignore\n/src/thirdparty/\n";
+    const auto repair = p4gw::allowlistRepairLines(
+        {inc("src"), exc("src/thirdparty")}, existing);
+    const std::vector<std::string> expected = {"!/src/", "/src/thirdparty/"};
+    CHECK(repair == expected);
+}
+
+TEST(allowlist_repair_lines_empty_for_a_generated_file) {
+    // Whatever buildGitignore writes needs no repair - the two must agree, or
+    // 'gw init' would keep appending to its own output.
+    const std::vector<p4gw::ViewRule> rules = {
+        inc("src"), exc("src/lib"), inc("src/lib/public/win64"),
+        exc("src/build"), incFiles("src/build"), inc("game/core/tools")};
+    const std::string generated = p4gw::buildGitignore(rules, {"/src/**/*.pdb"});
+    CHECK(p4gw::allowlistRepairLines(rules, generated).empty());
+    // ... and the denylist body has no chain to repair at all.
+    CHECK(p4gw::allowlistRepairLines({inc("")}, "p4gw.cfg\n").empty());
+}
+
+TEST(allowlist_repair_lines_leave_a_whole_tracked_ancestor_alone) {
+    // src is mapped whole, so a deeper include under it is redundant and must
+    // not pull in a '/src/*' that would re-exclude the rest of src.
+    const std::string existing = p4gw::buildGitignore({inc("src")});
+    CHECK(p4gw::allowlistRepairLines({inc("src"), inc("src/lib")}, existing)
+              .empty());
+}
+
 TEST(gitignore_allowlist_detection) {
     // The starter allowlist opens with the bare '/*' root-ignore line; the
     // whole-repo mapping falls back to a denylist without one.

@@ -481,11 +481,21 @@ Git:
   (`!/src/lib/public/win64/`) — the same nesting Git itself understands.
 - Each `ignore` line appends its pattern verbatim after the allowlist, so
   files P4 skips (build output, IDE state) stay out of Git too.
-- Adding an `include` to `p4gw.cfg` later needs the allowlist to grow a
-  matching `!/yourdir/` line, or Git ignores the new subtree and `gw import`
-  ships nothing through it. Rerun `gw init` — it appends the missing
-  re-includes to your existing `.gitignore` (then commit it). `gw doctor`
-  fails when a mapped subtree isn't covered, so this doesn't stay silent.
+- An `include` nested under an unmapped directory (`include =
+  game/core/tools/...` where the rest of `game/` syncs in place) needs the
+  allowlist to walk down to it: `!/game/` to let Git descend, then `/game/*`
+  to close the directory again, and so on per level, before the final
+  `!/game/core/tools/`. The re-includes alone would hand Git the whole of
+  `game/` — re-including a directory re-includes everything in it unless a
+  later line takes the rest back out.
+- Adding an `include` to `p4gw.cfg` later needs the allowlist to grow those
+  lines, or Git ignores the new subtree and `gw import` ships nothing
+  through it. Rerun `gw init` — it appends the whole chain to your existing
+  `.gitignore` (then commit it). `gw doctor` fails when a mapped subtree
+  isn't covered and warns when the allowlist opens more than the mapped
+  subtrees, so neither stays silent. Note that a `.gitignore` line only
+  stops Git picking a file up; anything already committed through the gap
+  stays tracked until you `git rm -r --cached` it.
 - To keep a directory that is Git-only (never in P4), add a `!/yourdir/`
   line.
 - gw never opens `p4gw.cfg` or `.gitignore` in a changelist.

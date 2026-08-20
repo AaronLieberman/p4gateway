@@ -115,6 +115,10 @@ constexpr const char* kObliterateFiles[] = {
     // itSingleLevelInclude's fixture files (a direct file and a sub-directory
     // file under src/build); obliterated in-step, listed as an abort safety net.
     "src/build/keep.txt", "src/build/gen/drop.txt",
+    // itNestedInclude's mapping under the in-place bin/ directory; obliterated
+    // in-step, listed here as a safety net so an aborted run's cleanup still
+    // removes it.
+    "bin/deep/nested.txt",
     // itOrphanedFiles' retired subtree; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/vendor/lib.txt",
@@ -2713,6 +2717,191 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     return {};
 }
 
+// Regression guard for the *nested* include: a mapping whose working-tree
+// subtree sits under an unmapped directory (bin/deep, while the rest of bin/
+// syncs in place). The allowlist has to walk down to it - "!/bin/" so Git
+// descends into bin at all, "/bin/*" to close it again, then "!/bin/deep/" -
+// and only the middle line keeps the unmapped siblings out. Before the fix
+// `gw init` appended re-includes alone, so "!/bin/" handed Git the whole of
+// bin/ and the next import committed depot content that syncs in place, which
+// nothing maps and nothing would ever update again. Maps bin/deep, checks that
+// doctor names the child re-exclusion, that init writes it, and that the import
+// ships the mapping without its unmapped siblings. Restores the fixture. Runs
+// on 'main', clean, after itSecondInclude.
+std::expected<void, std::string> itNestedInclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path gitignore = fs::path(it.repoDir) / ".gitignore";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    const fs::path deepMirror = fs::path(it.repoDir) / ".p4gw" / "bin" / "deep";
+    const std::string deepDepot = it.depotRoot + "/bin/deep/...";
+    const std::string deepDepotFile = it.depotRoot + "/bin/deep/nested.txt";
+    const std::string trackedRel = "bin/deep/nested.txt";
+    // The unmapped sibling that must never enter Git: it syncs in place from
+    // //depot/bin/... and only the "/bin/*" line keeps it out once bin/ is
+    // re-included.
+    const std::string siblingRel = "bin/tool.txt";
+    auto inBaseline = [&](const std::string& tree, const std::string& rel) {
+        return tree.find(rel) != std::string::npos;
+    };
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto savedIgnore = readFile(gitignore);
+    if (!savedIgnore) return std::unexpected(savedIgnore.error());
+    if (savedIgnore->find("!/bin/") != std::string::npos) {
+        return std::unexpected("fixture .gitignore already re-includes '/bin/' "
+                               "- this test needs it absent");
+    }
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+    auto savedMain = git::revParse("main", it.repoDir);
+    if (!savedMain) return std::unexpected(savedMain.error());
+    auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!savedRef) return std::unexpected(savedRef.error());
+
+    // (1) Remap the nested subtree into its own mirror and declare the matching
+    // `include`, leaving .gitignore untouched - the hand-edited-config path.
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string deepClient =
+        p4::clientViewPath(clientName, clientRoot, deepMirror.string(), "/...");
+    if (deepClient.empty()) {
+        return std::unexpected("cannot compute the nested mirror's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({deepDepot, deepClient, false, false});
+    auto remapped = p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!remapped) return std::unexpected(remapped.error());
+    auto includedCfg =
+        appendFile(cfg, "\ninclude = " + deepDepot + " .p4gw/bin/deep\n");
+    if (!includedCfg) return includedCfg;
+
+    // (2) Submit a file into the nested mapping, then sync the whole depot so
+    // the in-place bin/ siblings are on disk beside it.
+    auto wroteDeep = writeFile(deepMirror / "nested.txt",
+                               "// nested-include fixture: bin/deep/nested.txt\n");
+    if (!wroteDeep) return wroteDeep;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: nested include");
+    if (!addCl) return std::unexpected(addCl.error());
+    const std::string deepLocal = (deepMirror / "nested.txt").string();
+    auto added = trace(it, "p4 add " + deepLocal,
+                       p4::addFiles(it.p4, *addCl, {deepLocal}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit = trace(it, "p4 submit -c " + *addCl,
+                           p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+    if (!fs::exists(fs::path(it.repoDir) / siblingRel)) {
+        return std::unexpected("the in-place sibling " + siblingRel +
+                               " is not on disk - the guard cannot show that "
+                               "the allowlist keeps it out of Git");
+    }
+
+    // (3) doctor must FAIL on the uncovered subtree - and name the "/bin/*"
+    // child re-exclusion, not just the re-includes: appending the re-includes
+    // alone is exactly the bug this guards.
+    auto brokeDoctor = runGw(it, it.repoDir, {"doctor"});
+    if (brokeDoctor) {
+        return std::unexpected("doctor passed while the allowlist did not cover "
+                               "the nested include:\n" + *brokeDoctor);
+    }
+    for (const char* line : {"!/bin/", "/bin/*", "!/bin/deep/"}) {
+        if (brokeDoctor.error().find(line) == std::string::npos) {
+            return std::unexpected(
+                std::string("doctor did not name the allowlist line '") + line +
+                "' it must add:\n" + brokeDoctor.error());
+        }
+    }
+
+    // (4) `gw init` appends the whole chain, child re-exclusion included.
+    auto reinit = runGw(it, it.repoDir, {"init"});
+    if (!reinit) return std::unexpected(reinit.error());
+    if (reinit->find("Added /bin/*") == std::string::npos) {
+        return std::unexpected("gw init appended the re-includes without the "
+                               "'/bin/*' child re-exclusion - Git would track "
+                               "all of bin/:\n" + *reinit);
+    }
+    auto fixedIgnore = readFile(gitignore);
+    if (!fixedIgnore) return std::unexpected(fixedIgnore.error());
+    for (const char* line : {"!/bin/", "/bin/*", "!/bin/deep/"}) {
+        if (fixedIgnore->find(line) == std::string::npos) {
+            return std::unexpected(std::string("'") + line +
+                                   "' is missing from .gitignore after gw "
+                                   "init:\n" + *fixedIgnore);
+        }
+    }
+
+    // (5) Import ships the nested mapping - and nothing else under bin/.
+    auto trackImport = runGw(it, it.repoDir, {"import"});
+    if (!trackImport) {
+        return std::unexpected("import after fixing the allowlist failed:\n" +
+                               trackImport.error());
+    }
+    auto tree = git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!tree) return std::unexpected(tree.error());
+    if (!inBaseline(*tree, trackedRel)) {
+        return std::unexpected("import did not commit the nested mapping:\n" +
+                               *tree);
+    }
+    if (inBaseline(*tree, siblingRel)) {
+        return std::unexpected("import committed " + siblingRel +
+                               " - re-including bin/ swallowed the unmapped "
+                               "depot content beside the mapping:\n" + *tree);
+    }
+
+    // (6) And doctor is green: covered, and not over-covered.
+    auto healthy = runGw(it, it.repoDir, {"doctor"});
+    if (!healthy) {
+        return std::unexpected("doctor still failing after the allowlist was "
+                               "fixed:\n" + healthy.error());
+    }
+    if (healthy->find("allowlist tracks every mapped subtree") ==
+        std::string::npos) {
+        return std::unexpected("doctor did not report full allowlist coverage:"
+                               "\n" + *healthy);
+    }
+
+    // (7) Restore the fixture exactly as inherited (same shape as
+    // itSecondInclude: opens dropped, both refs rolled back, config and client
+    // spec rewritten, the throwaway depot file obliterated).
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto backToMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!backToMain) return std::unexpected(backToMain.error());
+    auto resetMain = git::run({"reset", "--hard", *savedMain}, it.repoDir);
+    if (!resetMain) return std::unexpected(resetMain.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    auto restoredIgnore = writeFile(gitignore, *savedIgnore);
+    if (!restoredIgnore) return restoredIgnore;
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + deepDepotFile,
+                             p4::obliterate(it.p4, deepDepotFile));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    std::error_code ec;
+    fs::remove_all(deepMirror, ec);
+    // Only the imported copy of the mapping - bin/ itself is in-place depot
+    // content the fixture keeps.
+    fs::remove_all(fs::path(it.repoDir) / "bin" / "deep", ec);
+    fs::remove(manifest, ec);
+    return {};
+}
+
 // The orphaned-file lifecycle, end to end: a subtree is imported into Git, then
 // retired from the client view and p4gw.cfg. Its files stay tracked - import
 // only reconciles *inside* a mapping, so once the mapping is gone nothing
@@ -3990,6 +4179,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("second include: doctor flags it, gw init covers it, "
                            "import ships it",
                            [&] { return itSecondInclude(it); });
+        steps.emplace_back("nested include: the allowlist walks down to it "
+                           "without swallowing its unmapped siblings",
+                           [&] { return itNestedInclude(it); });
         steps.emplace_back("retired subtree: doctor reports the orphans and the "
                            "cleanup is p4-safe",
                            [&] { return itOrphanedFiles(it); });

@@ -326,30 +326,36 @@ int cmdInit(const Args& args) {
                     wroteGitignore = true;
                 }
             }
+            for (const auto& entry : excludeEntries) {
+                if (content.find(entry) == std::string::npos) {
+                    out << "\n# carved out of the mirror ('exclude') - syncs in "
+                           "place, not for Git\n"
+                        << entry << "\n";
+                    std::printf("Added %s to .gitignore\n", entry.c_str());
+                    wroteGitignore = true;
+                }
+            }
         } else {
-            // The allowlist re-includes exactly the mapped subtrees, so an
-            // `include` added to p4gw.cfg after this file was written leaves its
-            // subtree ignored - 'gw import' copies the mirror in but 'git add'
-            // drops it. Append the missing re-includes (before the carve-out
-            // re-exclusions below, so a re-include always precedes its carve-out).
-            const auto missing =
-                missingAllowlistTrackingLines(config->rules, content);
-            if (!missing.empty()) {
-                out << "\n# newly mapped subtree(s) ('include') - re-included so "
-                       "the root '/*'\n# does not ignore them\n";
-                for (const auto& line : missing) {
+            // The allowlist body says exactly which subtrees Git tracks, so a
+            // rule added to p4gw.cfg after this file was written leaves it
+            // wrong in one of two ways: a new `include` whose re-include is
+            // absent is ignored outright ('gw import' copies the mirror in but
+            // 'git add' drops it), and a re-include that opens a directory the
+            // mapping only passes through, with no `/dir/*` to close it again,
+            // hands Git every unmapped sibling under it. Append whatever the
+            // file lacks - re-includes, child re-exclusions and `exclude`
+            // carve-outs alike, in the order the generated file writes them.
+            const auto repair = allowlistRepairLines(config->rules, content);
+            if (!repair.empty()) {
+                out << "\n# allowlist lines this .gitignore was missing: the "
+                       "mapped subtree(s) from\n# p4gw.cfg, re-included so the "
+                       "root '/*' does not ignore them, and the\n# "
+                       "directories they only pass through, re-excluded so "
+                       "nothing else shows\n# through.\n";
+                for (const auto& line : repair) {
                     out << line << "\n";
                     std::printf("Added %s to .gitignore\n", line.c_str());
                 }
-                wroteGitignore = true;
-            }
-        }
-        for (const auto& entry : excludeEntries) {
-            if (content.find(entry) == std::string::npos) {
-                out << "\n# carved out of the mirror ('exclude') - syncs in "
-                       "place, not for Git\n"
-                    << entry << "\n";
-                std::printf("Added %s to .gitignore\n", entry.c_str());
                 wroteGitignore = true;
             }
         }

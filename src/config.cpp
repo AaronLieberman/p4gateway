@@ -350,17 +350,40 @@ std::vector<std::string> trackingLinesFromLayout(const AllowlistLayout& layout) 
     return lines;
 }
 
-// The re-include lines that are *load-bearing* for tracking, in depth order: a
-// "!/dir/" is only needed when the directory would otherwise be excluded - the
-// root "/*" for a depth-1 subtree, or an intermediate ancestor's "/parent/*".
-// When the nearest tracked ancestor is tracked *whole* (a leaf, so no
-// "/parent/*"), its own "!/anc/" already tracks the descendant, making the
-// deeper re-include redundant. The child re-exclusions ("/dir/*") are never
-// load-bearing for tracking - their absence over-tracks, it never hides a
-// mapped subtree - so they are omitted. This is the subset a coverage check
-// must insist on; buildGitignore still emits the fuller, belt-and-suspenders
-// set (a generated .gitignore trivially satisfies this).
-std::vector<std::string> requiredTrackingLines(const AllowlistLayout& layout) {
+// One line of the allowlist body, paired with the directory it names. The
+// directory is what orders the lines against each other: Git resolves a path by
+// the last pattern that matches it, so a line only has to follow the lines of
+// its own ancestors ("/a/*" after "!/a/", "!/a/b/" after "/a/*"). Lines naming
+// unrelated subtrees may sit in any order.
+struct AllowlistLine {
+    std::string line;
+    std::vector<std::string> dir;
+};
+
+// Whether `comps` is `other` or one of its ancestors - the only relation that
+// constrains two allowlist lines' relative order.
+bool isAncestorOrSame(const std::vector<std::string>& comps,
+                      const std::vector<std::string>& other) {
+    if (comps.size() > other.size()) return false;
+    return std::equal(comps.begin(), comps.end(), other.begin());
+}
+
+// The allowlist body's *load-bearing* lines: the ones whose absence changes
+// what Git tracks, in the order buildGitignore emits them.
+//
+// A "!/dir/" re-include is load-bearing only when the directory would otherwise
+// be excluded - by the root "/*" for a depth-1 subtree, or by an intermediate
+// ancestor's "/parent/*". When the nearest tracked ancestor is tracked *whole*
+// (a leaf, so no "/parent/*"), its own "!/anc/" already tracks the descendant
+// and the deeper re-include is redundant; a hand-minimized .gitignore that
+// drops it is still correct, so it must not be demanded back.
+//
+// Every other line here is load-bearing as written: a "/dir/*" is what keeps a
+// re-included intermediate from handing Git the unmapped depot content beside
+// the mapped subtree, "/sub/*/" does the same for a single-level mapping's
+// child directories, and "/sub/" carves out an `exclude`. buildGitignore emits
+// this set plus the redundant re-includes, so a generated file satisfies it.
+std::vector<AllowlistLine> requiredAllowlistLines(const AllowlistLayout& layout) {
     auto emitsChildExclude = [&](const std::vector<std::string>& comps) {
         for (const auto& d : layout.dirs)
             if (d.components == comps) return !d.isLeaf;
@@ -369,7 +392,7 @@ std::vector<std::string> requiredTrackingLines(const AllowlistLayout& layout) {
     size_t maxDepth = 0;
     for (const auto& d : layout.dirs)
         maxDepth = std::max(maxDepth, d.components.size());
-    std::vector<std::string> lines;
+    std::vector<AllowlistLine> lines;
     for (size_t depth = 1; depth <= maxDepth; ++depth) {
         for (const auto& d : layout.dirs) {
             if (d.components.size() != depth) continue;
@@ -378,9 +401,34 @@ std::vector<std::string> requiredTrackingLines(const AllowlistLayout& layout) {
             // Depth-1 dirs sit directly under the root "/*"; deeper ones need a
             // re-include only when their parent re-excludes them.
             if (parent.empty() || emitsChildExclude(parent)) {
-                lines.push_back("!" + joinComponents(d.components) + "/");
+                lines.push_back(
+                    {"!" + joinComponents(d.components) + "/", d.components});
             }
         }
+        for (const auto& d : layout.dirs) {
+            if (d.components.size() == depth && !d.isLeaf) {
+                lines.push_back(
+                    {joinComponents(d.components) + "/*", d.components});
+            }
+        }
+    }
+    // The trailing re-exclusions, in buildGitignore's order: the plain
+    // carve-outs, then a single-level mapping's child directories.
+    for (const auto& sub : layout.plainCarveouts) {
+        lines.push_back({"/" + sub + "/", pathComponents(sub)});
+    }
+    for (const auto& sub : layout.singleLevelCarveouts) {
+        lines.push_back({"/" + sub + "/*/", pathComponents(sub)});
+    }
+    return lines;
+}
+
+// Just the re-include lines of the above - the subset that decides whether a
+// mapped subtree is tracked at all.
+std::vector<std::string> requiredTrackingLines(const AllowlistLayout& layout) {
+    std::vector<std::string> lines;
+    for (const auto& l : requiredAllowlistLines(layout)) {
+        if (l.line.starts_with("!")) lines.push_back(l.line);
     }
     return lines;
 }
@@ -395,6 +443,24 @@ bool hasExactLine(const std::string& content, const std::string& line) {
         if (trim(cur) == line) return true;
     }
     return false;
+}
+
+// The index of the first line of `content` equal to `line` (trimmed,
+// CR-tolerant) at or after line index `from`, or npos. Position matters
+// because Git resolves a path by the *last* pattern that matches it, so a
+// tracking line found only above the one that must precede it is as broken as
+// one that is missing.
+size_t lineIndexOf(const std::string& content, const std::string& line,
+                   size_t from) {
+    std::istringstream stream(content);
+    std::string cur;
+    size_t index = 0;
+    while (std::getline(stream, cur)) {
+        if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+        if (index >= from && trim(cur) == line) return index;
+        ++index;
+    }
+    return std::string::npos;
 }
 
 }  // namespace
@@ -503,6 +569,44 @@ std::vector<std::string> missingAllowlistTrackingLines(
         if (!hasExactLine(gitignoreContent, line)) missing.push_back(line);
     }
     return missing;
+}
+
+std::vector<std::string> allowlistRepairLines(
+    const std::vector<ViewRule>& rules, const std::string& gitignoreContent) {
+    const AllowlistLayout layout = computeAllowlistLayout(rules);
+    // The denylist body (whole-repo include, or nothing tracked) uses no
+    // re-includes, so there is nothing to repair line by line.
+    if (layout.wholeRepoMapped || !layout.anyTracked) return {};
+
+    // Walk the load-bearing lines in emission order and record where each one
+    // sits in the file. A line counts as present only *below* every line of its
+    // own ancestors: Git takes the last match, so a "/game/*" found above the
+    // "!/game/core/" it must precede is as broken as one that is missing.
+    //
+    // Repairs land at the end of the file, so an appended line takes effect
+    // after everything already there - which in turn breaks any descendant line
+    // still sitting above it. Carrying `kAppended` down the ancestor chain
+    // re-appends those too, in order, so the repaired tail reads correctly: a
+    // lone "/game/*" appended under an existing "!/game/core/" would otherwise
+    // re-ignore the very subtree it was added to expose.
+    static constexpr size_t kAppended = std::string::npos;
+    const std::vector<AllowlistLine> required = requiredAllowlistLines(layout);
+    std::vector<size_t> position(required.size(), kAppended);
+    std::vector<std::string> repair;
+    for (size_t i = 0; i < required.size(); ++i) {
+        size_t from = 0;  // first line index this line may occupy
+        bool ancestorAppended = false;
+        for (size_t j = 0; j < i && !ancestorAppended; ++j) {
+            if (!isAncestorOrSame(required[j].dir, required[i].dir)) continue;
+            if (position[j] == kAppended) ancestorAppended = true;
+            else from = std::max(from, position[j] + 1);
+        }
+        position[i] = ancestorAppended
+                          ? kAppended
+                          : lineIndexOf(gitignoreContent, required[i].line, from);
+        if (position[i] == kAppended) repair.push_back(required[i].line);
+    }
+    return repair;
 }
 
 std::expected<Config, std::string> loadConfig(const std::string& path) {

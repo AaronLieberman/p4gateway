@@ -650,19 +650,40 @@ int cmdDoctor(const Args& args) {
         if (gitignoreIsAllowlist(gitignore)) {
             const auto missing =
                 missingAllowlistTrackingLines(config->rules, gitignore);
-            if (missing.empty()) {
-                std::printf("ok    .gitignore allowlist tracks every mapped "
-                            "subtree\n");
-            } else {
+            // The lines that repair the file: every missing re-include plus the
+            // child re-exclusions that keep the allowlist from over-tracking.
+            const auto repair =
+                allowlistRepairLines(config->rules, gitignore);
+            auto printLines = [&] {
+                for (const auto& line : repair) {
+                    std::printf("        %s\n", line.c_str());
+                }
+            };
+            if (!missing.empty()) {
                 std::printf("FAIL  .gitignore allowlist does not track %zu "
                             "mapped subtree(s) - 'gw import' ships nothing "
                             "through them.\n      Add these line(s) to "
                             ".gitignore (or rerun 'gw init'):\n",
                             missing.size());
-                for (const auto& line : missing) {
-                    std::printf("        %s\n", line.c_str());
-                }
+                printLines();
                 ++failures;
+            } else if (!repair.empty()) {
+                // Every mapped subtree is reachable, but a `!/dir/` re-include
+                // opens a directory the mapping only passes through, and no
+                // `/dir/*` closes it again. Git then tracks that directory
+                // whole - unmapped depot content synced in place - and 'gw
+                // import's `git add -A` commits it.
+                std::printf("WARN  .gitignore allowlist re-includes more than "
+                            "the mapped subtrees: a directory a mapping only\n"
+                            "      passes through is opened whole, so Git "
+                            "tracks the unmapped depot content beside it\n"
+                            "      and 'gw import' would commit it. Add these "
+                            "line(s) to .gitignore (or rerun 'gw init'):\n");
+                printLines();
+                ++warnings;
+            } else {
+                std::printf("ok    .gitignore allowlist tracks every mapped "
+                            "subtree, and nothing else\n");
             }
         }
     }
