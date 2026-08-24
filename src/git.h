@@ -228,6 +228,27 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
 // user to resolve.
 std::expected<std::string, std::string> branchlessSync(const std::string& cwd = {});
 
+// One `git branchless sync` run, read back from its output.
+//
+// Sync exits 0 even when it could not move a stack: it rebases the stacks it
+// can, prints "Merge conflict ... for <commit>" for the ones it gave up on,
+// and returns success. The exit status therefore reads a partial restack as a
+// total one, and in a branchless repo (where stacks usually carry no branch at
+// all) no ref moves to give the lie away - so this output is the only record
+// of what actually happened. Each entry is the commit as branchless named it
+// ("70224ed C1"), suitable for quoting straight back at the user.
+struct BranchlessSyncOutcome {
+    std::vector<std::string> synced;      // "Synced <commit>": stacks it moved
+    std::vector<std::string> conflicted;  // stacks it skipped on a conflict
+    std::vector<std::string> upToDate;    // "Not moving up-to-date stack at ..."
+};
+
+// Parses `git branchless sync` output into the stacks it moved, skipped, and
+// found already on the trunk. Unrecognized lines (branchless's own progress
+// chatter) are ignored, so a future release adding lines cannot turn a clean
+// run into a reported failure - only the lines above are load-bearing.
+BranchlessSyncOutcome parseBranchlessSync(const std::string& output);
+
 // `git config <key> <value>`: set a repo-local config value. Used to point
 // branchless's main branch at the gw baseline so its restack lands on the
 // depot state.

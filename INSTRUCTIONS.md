@@ -114,6 +114,18 @@ Nothing forces you to take the latest now. When you do want it, sync
 everything and `gw import --rebase` as usual — the commit you submitted
 rebases away as an empty change.
 
+**Expect that restack to conflict on the file you resolved.** What you
+submitted is your change merged with theirs; the commit in your stack only
+ever had your half. When that merged content finally arrives in the baseline,
+replaying your commit onto it collides in the region you resolved. `gw import
+--rebase` reports the stack it could not restack and exits non-zero — finish
+it by hand and resolve once more:
+
+```
+git branchless move -s <commit> -d refs/p4gw/main --merge   # branchless repos
+git rebase refs/p4gw/main                                   # plain git
+```
+
 ### Handing off work as a shelf
 
 To hand work off for review without submitting:
@@ -397,6 +409,19 @@ config) and adapts:
   - back on your branch, if you were on one — or, when the branch held only
     work the depot now carries and branchless dropped it, on the baseline
     branch with a note saying so.
+- **A stack it could not restack fails the import.** `git branchless sync`
+  moves the stacks it can, prints the ones it gave up on, and exits 0 either
+  way — and in a branchless repo most stacks carry no branch, so nothing moves
+  to give that away. gw reads sync's own report: a skipped stack is named and
+  the import exits non-zero rather than passing for a completed restack. The
+  repo is *not* left mid-rebase (the in-memory rebase is discarded), so finish
+  a skipped stack with `git branchless move -s <commit> -d refs/p4gw/main
+  --merge`, not `git rebase --continue`.
+- **The baseline branch is the trunk the restack lands on**, not the depot ref.
+  If it ever picks up commits of its own, import can no longer fast-forward it
+  and every restacked stack would quietly land on old depot state, so import
+  says so before running the sync. Move those commits off it (`git log
+  refs/p4gw/main..main`) and the next `--rebase` behaves.
 
 ## Configuration
 

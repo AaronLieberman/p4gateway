@@ -8,6 +8,7 @@ add_executable(p4gw_tests
     test_syncback.cpp
     test_status.cpp
     test_shelf.cpp
+    test_branchless.cpp
     test_preflight.cpp
     test_subprocess.cpp
     test_version.cpp

@@ -977,6 +977,12 @@ int cmdImport(const Args& args) {
                         "baseline.\n");
         }
 
+        // Set when the baseline branch carries commits of its own, so it could
+        // not be fast-forwarded onto the snapshot. Not cosmetic in a branchless
+        // repo: `git branchless sync` restacks onto that branch, so a stale one
+        // silently lands the whole restack on old depot state.
+        bool baselineTrunkStale = false;
+
         // Keep the convenience baseline branch tracking the depot: create it if
         // missing, fast-forward it when it carries no local commits. Skip it
         // when the user is *on* that branch - moving its ref would drag HEAD,
@@ -992,12 +998,22 @@ int cmdImport(const Args& args) {
                     auto moved =
                         git::updateRef("refs/heads/" + baseline, newDepot, root);
                     if (!moved) return fail(moved.error());
+                } else {
+                    baselineTrunkStale = true;
                 }
             } else {
                 auto created =
                     git::updateRef("refs/heads/" + baseline, newDepot, root);
                 if (!created) return fail(created.error());
             }
+        } else {
+            // On the baseline branch itself: the restack below brings it up to
+            // date, so the ref is deliberately left alone - but it is still the
+            // trunk branchless syncs onto, so check it the same way.
+            auto branchFf =
+                git::isAncestor("refs/heads/" + baseline, newDepot, root);
+            if (!branchFf) return fail(branchFf.error());
+            baselineTrunkStale = !*branchFf;
         }
 
         // Dirty tree (worktree mode): the baseline is imported and the
@@ -1071,6 +1087,23 @@ int cmdImport(const Args& args) {
         // one case that genuinely needs a branchless command. A plain detached
         // HEAD has no such stack model, so rebase the one line HEAD points at.
         if (branchless) {
+            // `git branchless sync` restacks onto the baseline *branch*, not
+            // onto the depot ref, so a branch that could not be fast-forwarded
+            // sends the whole restack to old depot state - and every stack it
+            // moves lands there, looking restacked while sitting behind the
+            // snapshot. Say so before running it; repairing the branch is the
+            // user's call (it holds their commits).
+            if (baselineTrunkStale) {
+                std::printf("note  '%s' has commits of its own, so it still "
+                            "points at old depot state.\n      --rebase "
+                            "restacks onto that branch, not onto '%s'. Move "
+                            "those commits\n      off '%s' (git log %s..%s) "
+                            "and rerun, or the restack lands behind the "
+                            "snapshot.\n",
+                            baseline.c_str(), depotRef.c_str(), baseline.c_str(),
+                            depotRef.c_str(), baseline.c_str());
+            }
+
             // Does HEAD carry local work of its own, or is it sitting at/behind
             // the baseline (e.g. detached on the depot ref, tracking it like
             // origin/main)? If it has no divergent work, there is nothing to
@@ -1091,9 +1124,11 @@ int cmdImport(const Args& args) {
             // anything happen" cannot be read off HEAD or off `importedNew`: an
             // unchanged depot can still leave a stack that an earlier import
             // was told to leave alone, and a moved depot can find every stack
-            // already on it. Snapshot the branch tips around the sync (before
-            // the carrier exists, after it is gone) and report only what
-            // actually moved.
+            // already on it. Sync's own output is what answers that (parsed
+            // below); the branch tips snapshotted around it (before the carrier
+            // exists, after it is gone) are only a backstop for a ref that moved
+            // without branchless naming the stack. In a branchless repo most
+            // stacks carry no branch at all, so tips alone see almost nothing.
             auto tipsBefore = git::localBranchTips(root);
             if (!tipsBefore) return fail(tipsBefore.error());
 
@@ -1141,6 +1176,15 @@ int cmdImport(const Args& args) {
                 }
                 return 1;
             }
+            // A zero exit is not success: sync moves the stacks it can, reports
+            // the ones it could not, and returns 0 either way. A stack it gave
+            // up on stays on the old baseline while the rest move, which is
+            // invisible to every ref we watch - so read its own account of the
+            // run. (The repo is *not* left mid-rebase: the in-memory rebase is
+            // discarded, so the skipped stack needs a fresh command, not a
+            // 'git rebase --continue'.)
+            const git::BranchlessSyncOutcome outcome =
+                git::parseBranchlessSync(*synced);
             // Put HEAD back deterministically (sync repositions it - a detached
             // HEAD on a rewritten or dropped commit is left on main): detach at
             // the ephemeral branch's restacked tip and drop it, or return to the
@@ -1212,6 +1256,62 @@ int cmdImport(const Args& args) {
             const bool restacked =
                 *tipsAfter != *tipsBefore || *headAfter != originalHead;
 
+            // The one question the messages below all assume an answer to: is
+            // the user on the depot state now? Every intended landing above ends
+            // on or above `newDepot`, so a HEAD that does not contain it means
+            // the restack did not do its job, whatever moved. Ref movement is a
+            // relative test and cannot answer this; the plain-git path has
+            // always used exactly this containment check.
+            auto headOnBaseline = git::isAncestor(newDepot, "HEAD", root);
+            if (!headOnBaseline) return fail(headOnBaseline.error());
+
+            if (!outcome.conflicted.empty()) {
+                std::fflush(stdout);  // keep messages ordered with stderr
+                std::fprintf(stderr,
+                             "gw import: git-branchless could not restack %zu "
+                             "stack(s) - they conflict with the new depot "
+                             "state and were left on the old baseline:\n",
+                             outcome.conflicted.size());
+                for (const auto& stack : outcome.conflicted) {
+                    std::fprintf(stderr, "  %s\n", stack.c_str());
+                }
+                std::fprintf(stderr,
+                             "Restack each by hand and resolve: git branchless "
+                             "move -s <commit> -d %s --merge\n",
+                             depotRef.c_str());
+                std::fprintf(stderr,
+                             "A file you resolved in P4 does this: the depot "
+                             "carries the merged result, which no commit of "
+                             "yours produced.\n");
+                if (!*headOnBaseline) {
+                    std::fprintf(stderr,
+                                 "Your checkout was not restacked either - HEAD "
+                                 "is still on the pre-import baseline.\n");
+                }
+                return 1;
+            }
+
+            if (!*headOnBaseline) {
+                // No conflict, yet HEAD still does not carry the snapshot: the
+                // restack landed somewhere other than the new depot state. A
+                // stale baseline branch is the way this happens in practice
+                // (warned about above), so don't guess - report the fact.
+                std::fflush(stdout);  // keep messages ordered with stderr
+                std::fprintf(stderr,
+                             "gw import: the restack finished but HEAD is not "
+                             "on the new depot state - your work is still "
+                             "behind '%s'.\n",
+                             depotRef.c_str());
+                if (baselineTrunkStale) {
+                    std::fprintf(stderr,
+                                 "'%s' is the trunk git-branchless restacked "
+                                 "onto and it holds commits of its own; see the "
+                                 "note above.\n",
+                                 baseline.c_str());
+                }
+                return 1;
+            }
+
             if (mergedAway) {
                 std::printf("Restacked your visible commits. The commit you had "
                             "checked out was already in the depot state; HEAD is "
@@ -1222,12 +1322,19 @@ int cmdImport(const Args& args) {
                             "dropped it; you are on '%s'. Start new work with: "
                             "git switch -c <branch>\n",
                             originalBranch.c_str(), baseline.c_str());
-            } else if (!restacked) {
-                std::printf("Nothing to restack - your commits are already on "
-                            "the depot baseline.\n");
-            } else {
+            } else if (restacked) {
                 std::printf("Restacked your visible commits onto the new depot "
                             "state.\n");
+            } else if (!outcome.synced.empty()) {
+                // Your own stack sat still, but others moved - the message used
+                // to report only on the stack you happen to be standing on,
+                // which in a branchless repo is the only one any ref tracks.
+                std::printf("Your checkout was already based on the depot "
+                            "baseline; restacked %zu other visible stack(s).\n",
+                            outcome.synced.size());
+            } else {
+                std::printf("Nothing to restack - every visible stack is "
+                            "already based on the depot baseline.\n");
             }
         } else {
             // HEAD already containing the new baseline means git would print

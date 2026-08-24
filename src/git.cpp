@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 
 #include "subprocess.h"
@@ -402,6 +403,63 @@ std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
     // Plain `sync` restacks onto the local main branch without pulling a
     // remote, which is exactly what we want: the depot baseline is local-only.
     return run({"branchless", "sync"}, cwd);
+}
+
+namespace {
+
+// Drops ANSI SGR escapes ("\x1b[1;32m") from a line. Branchless writes plain
+// text to a pipe, but a colored line would silently defeat the prefix matches
+// below - and a missed conflict is exactly the failure this parsing exists to
+// catch - so strip them rather than trust the terminal detection.
+std::string stripAnsi(const std::string& line) {
+    std::string out;
+    out.reserve(line.size());
+    for (size_t i = 0; i < line.size(); ++i) {
+        if (line[i] == '\x1b' && i + 1 < line.size() && line[i + 1] == '[') {
+            i += 2;
+            while (i < line.size() && line[i] != 'm') ++i;
+            continue;  // the loop's ++i steps past the 'm'
+        }
+        out.push_back(line[i]);
+    }
+    return out;
+}
+
+// Trims trailing CR (Windows pipes) and surrounding spaces.
+std::string trimmed(std::string text) {
+    while (!text.empty() && (text.back() == '\r' || text.back() == ' '))
+        text.pop_back();
+    size_t start = text.find_first_not_of(' ');
+    return start == std::string::npos ? std::string{} : text.substr(start);
+}
+
+}  // namespace
+
+BranchlessSyncOutcome parseBranchlessSync(const std::string& output) {
+    BranchlessSyncOutcome outcome;
+    std::istringstream lines(output);
+    std::string raw;
+    while (std::getline(lines, raw)) {
+        const std::string line = trimmed(stripAnsi(raw));
+
+        // "Merge conflict (1 file) for 70224ed C1" - the parenthetical is not
+        // always there, so key off the prefix and take what follows " for ".
+        if (line.starts_with("Merge conflict")) {
+            const size_t at = line.find(" for ");
+            outcome.conflicted.push_back(
+                at == std::string::npos ? line : line.substr(at + 5));
+            continue;
+        }
+        if (line.starts_with("Synced ")) {
+            outcome.synced.push_back(line.substr(7));
+            continue;
+        }
+        constexpr std::string_view kUpToDate = "Not moving up-to-date stack at ";
+        if (line.starts_with(kUpToDate)) {
+            outcome.upToDate.push_back(line.substr(kUpToDate.size()));
+        }
+    }
+    return outcome;
 }
 
 std::expected<void, std::string> setConfig(const std::string& key,
