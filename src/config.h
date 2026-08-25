@@ -8,12 +8,33 @@
 
 namespace p4gw {
 
-// One line of the p4gw.cfg view - an `include` that maps a depot subtree into
-// the mirror, or an `exclude` that carves one back out. The list mirrors a p4
-// client view: rules are kept in declaration order and resolved *later-wins*
-// per path (see effectiveRuleFor*), so an `include` after an `exclude` can map
-// a deeper subtree back in (the win64/linux re-include pattern) exactly the way
-// a later p4 view line overrides an earlier one.
+// How much of the depot one `include` line maps - the p4 view wildcard, spelled
+// out on *both* sides of the line (`//depot/src/... .p4gw/src/...`). A config
+// that omits the mirror-side wildcard is still accepted and read as the depot
+// side's (see ViewRule::mirrorWildcardImplied), but the explicit form is what
+// `gw setup` writes and `gw doctor` recommends.
+enum class ViewScope {
+    // `/...` - the whole subtree. The default, and the only shape an
+    // `exclude` may take.
+    kRecursive,
+
+    // `/*` - only the files directly in that directory, no sub-directories,
+    // exactly the p4 single-level view wildcard. Pairs with a recursive
+    // `exclude` to keep a directory's own files while dropping its children.
+    kDirectFiles,
+
+    // No wildcard at all: the line maps exactly one file
+    // (`//depot/foo/bar.txt .p4gw/foo/bar.txt`). The depot path *is* that
+    // file, and the file's name is carried in ViewRule::fileName.
+    kSingleFile,
+};
+
+// One line of the p4gw.cfg view - an `include` that maps a depot subtree (or a
+// single file) into the mirror, or an `exclude` that carves one back out. The
+// list mirrors a p4 client view: rules are kept in declaration order and
+// resolved *later-wins* per path (see effectiveRuleFor*), so an `include` after
+// an `exclude` can map a deeper subtree back in (the win64/linux re-include
+// pattern) exactly the way a later p4 view line overrides an earlier one.
 struct ViewRule {
     // false = `include` (maps depotPath into the mirror); true = `exclude`
     // (carves depotPath out - the client view drops it or syncs it in place,
@@ -21,33 +42,49 @@ struct ViewRule {
     bool exclude = false;
 
     // Depot path of the subtree, e.g. "//depot/yourproject/src/...". Ends with
-    // "/..." (recursive) or "/*" (single-level - direct files only, like the p4
-    // view wildcards). Every p4 operation is scoped to the include rules' depot
-    // paths so we never touch (or crawl) the rest of the workspace.
+    // "/..." (recursive) or "/*" (single-level), or names one file outright
+    // ("//depot/yourproject/src/notes.txt") - see `scope`. Every p4 operation
+    // is scoped to the include rules' depot paths so we never touch (or crawl)
+    // the rest of the workspace.
     std::string depotPath;
 
     // Directory the client view remaps `depotPath` into - p4's staging area,
     // which p4 syncs and gw reads/writes. Always lives under the repo's single
     // `.p4gw` container; relative values resolve against the directory holding
-    // the p4gw.cfg file. Example: ".p4gw/src". Empty for an `exclude`.
+    // the p4gw.cfg file. Example: ".p4gw/src". Always a *directory*, wildcard
+    // stripped: for a kSingleFile rule it is the directory *containing* the
+    // mapped file, whose name is `fileName` (so `mirrorPath` + `fileName` is
+    // the mapped path - see mappedMirrorPath). Empty for an `exclude`.
     std::string mirrorPath;
 
     // Working-tree directory this rule governs (forward slashes, no trailing
     // slash). For an include it is `mirrorPath` with its leading `.p4gw`
     // container component dropped (".p4gw/src" -> "src", ".p4gw" -> "" i.e. the
-    // whole repo). For an exclude it is the carved-out subtree relative to the
-    // enclosing include (an exclude of "//d/src/lib/..." under a "src" include
-    // -> "src/lib").
+    // whole repo); like `mirrorPath` it is the *containing* directory for a
+    // kSingleFile rule (see mappedRepoPath). For an exclude it is the carved-out
+    // subtree relative to the enclosing include (an exclude of "//d/src/lib/..."
+    // under a "src" include -> "src/lib").
     std::string repoSubtree;
 
-    // Whether `depotPath` maps a whole subtree (`/...`, the default) or only the
-    // files directly in one directory (`/*`, no sub-directories) - exactly the
-    // recursive-vs-single-level distinction of a p4 client view. A single-level
-    // `include` pairs with a recursive `exclude` to keep the direct files of a
-    // directory while dropping its children. `exclude` lines are always
-    // recursive (`/...`), so this is only ever false for an `include`. Kept last
-    // so positional aggregate-inits of the earlier fields stay valid.
-    bool recursive = true;
+    // Name of the single file a kSingleFile `include` maps, within `mirrorPath`
+    // / `repoSubtree`; empty for every other rule (so a non-empty value and
+    // `scope == kSingleFile` always go together). It equals the depot path's
+    // last component: gw rejects a mirror path that would rename the file,
+    // because every depot<->mirror<->repo path is reconstructed by joining this
+    // name onto the three bases.
+    std::string fileName;
+
+    // Whether `depotPath` maps a whole subtree (`/...`, the default), the files
+    // directly in one directory (`/*`), or a single file - see ViewScope.
+    // `exclude` lines are always kRecursive.
+    ViewScope scope = ViewScope::kRecursive;
+
+    // True when the config line spelled the depot-side wildcard but not the
+    // mirror-side one (`include = //depot/src/... .p4gw/src`) and gw inferred
+    // it. Purely advisory: `gw doctor` uses it to recommend the explicit
+    // both-sides form. Never set for a kSingleFile rule (which has no
+    // wildcard to infer).
+    bool mirrorWildcardImplied = false;
 };
 
 // How `gw import` builds the depot snapshot.
@@ -104,20 +141,45 @@ std::vector<const ViewRule*> includeRules(const std::vector<ViewRule>& rules);
 // the view check. Pure; unit-tested.
 std::vector<std::string> excludeDepotPaths(const std::vector<ViewRule>& rules);
 
+// The depot directory a rule's paths are relative to, always ending in '/':
+// the wildcard stripped for a subtree rule ("//d/src/..." and "//d/src/*" ->
+// "//d/src/"), the containing directory for a single-file rule
+// ("//d/src/a.txt" -> "//d/src/"). Joining a rule-relative path onto it
+// reconstructs the depot file. Pure; unit-tested.
+std::string depotBaseOf(const ViewRule& rule);
+
+// The mirror path a rule actually maps, as a path on disk: `mirrorPath` for a
+// subtree rule, `mirrorPath` + `fileName` for a single-file one. This - not
+// the bare `mirrorPath` - is what the client view must remap `depotPath` to.
+// Pure; unit-tested.
+std::string mappedMirrorPath(const ViewRule& rule);
+
+// The working-tree path a rule governs: `repoSubtree` for a subtree rule,
+// `repoSubtree` + `fileName` for a single-file one. Empty means the whole repo
+// (a `.p4gw` mirror), which only a subtree include can be. Pure; unit-tested.
+std::string mappedRepoPath(const ViewRule& rule);
+
+// The mirror side of the rule as a p4gw.cfg line spells it, wildcard included:
+// ".p4gw/src/...", ".p4gw/src/*", ".p4gw/foo/bar.txt". Used by `gw doctor` to
+// echo the view and to recommend the explicit both-sides form. Pure.
+std::string mirrorSpecOf(const ViewRule& rule);
+
 // The rule that governs a depot file, resolved later-wins: the *last* rule (in
 // declaration order, not longest-prefix) whose depot path covers `depotFile`. A
 // recursive (`/...`) rule covers any descendant; a single-level (`/*`) rule
-// covers only files directly in the directory (no deeper path component).
-// nullptr if no rule covers it. An include result means the file maps to the
+// covers only files directly in the directory (no deeper path component); a
+// single-file rule covers only that exact depot file. nullptr if no rule
+// covers it. An include result means the file maps to the
 // mirror; an exclude result means it is carved out. Pure; unit-tested.
 const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
                                       const std::string& depotFile);
 
 // The rule that governs a repo-relative working-tree path, resolved later-wins:
-// the *last* rule whose `repoSubtree` covers `repoRel` (an empty subtree, i.e. a
-// whole-repo include, matches everything). A recursive rule covers the subtree
-// and every descendant; a single-level (`/*`) rule covers only files directly in
-// the subtree. nullptr if none. "Tracked / shipped through the mirror" iff the
+// the *last* rule whose governed path (see mappedRepoPath) covers `repoRel` (an
+// empty path, i.e. a whole-repo include, matches everything). A recursive rule
+// covers the subtree and every descendant; a single-level (`/*`) rule covers
+// only files directly in the subtree; a single-file rule covers only that one
+// path. nullptr if none. "Tracked / shipped through the mirror" iff the
 // result is an include. Pure; unit-tested.
 const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
                                      const std::string& repoRel);
@@ -164,6 +226,8 @@ std::string excludedRepoSubtree(const std::string& mappingDepotPath,
 // subtree (and `.gitignore` itself), applying the ordered include/exclude rules
 // later-wins so an `exclude` carves a directory back out (`/src/lib/`) and a
 // deeper re-`include` maps part of it back in (`!/src/lib/public/win64/`). A
+// single-file include re-includes just its own path (`!/foo/bar.txt`), with the
+// `/foo/*` chain above it that keeps its directory's other content out. A
 // whole-repo include (empty repoSubtree) has nothing unmapped to hide, so it
 // falls back to a plain denylist of just the gw-managed paths, still honoring
 // any `exclude` carve-outs. Any `ignorePatterns` (from `ignore` lines in

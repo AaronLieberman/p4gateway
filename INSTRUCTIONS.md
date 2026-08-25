@@ -407,13 +407,15 @@ config) and adapts:
 # Each 'include' ties a depot subtree (scoping every p4 command) to the
 # mirror directory the client view remaps it into. The mirror always lives
 # under the repo's single '.p4gw' container; its path below the container is
-# the working-tree directory the subtree occupies ('.p4gw/src' -> 'src/',
-# '.p4gw' -> the whole repo). Add one 'include' line per subtree; the starter
-# .gitignore tracks only the mapped subtrees, so unmapped directories (bin/,
-# content/) stay out of Git. At least one include required.
-#   include = <depot_path ending in /...>  <mirror_path>
-include = //depot/yourproject/src/...     .p4gw/src
-include = //depot/yourproject/config/...  .p4gw/config
+# the working-tree directory the subtree occupies ('.p4gw/src/...' -> 'src/',
+# '.p4gw/...' -> the whole repo). Both sides carry the same wildcard, so the
+# line reads like the client view line it stands for. Add one 'include' line
+# per subtree; the starter .gitignore tracks only the mapped subtrees, so
+# unmapped directories (bin/, content/) stay out of Git. At least one include
+# required.
+#   include = <depot_path>  <mirror_path>     (same wildcard on both sides)
+include = //depot/yourproject/src/...     .p4gw/src/...
+include = //depot/yourproject/config/...  .p4gw/config/...
 
 # 'include' and 'exclude' lines form an ordered view, resolved later-wins per
 # path - just like a p4 client view. An 'exclude' carves a depot subtree out of
@@ -424,11 +426,11 @@ include = //depot/yourproject/config/...  .p4gw/config
 # maps that part back into the mirror (the win64-yes-linux-no pattern). An
 # include's depot path ends in '/...' (map the whole subtree) or '/*' (map only
 # the files directly in that directory, no sub-directories - the p4 single-level
-# wildcard); an exclude is always recursive ('/...') and must fall under a
-# preceding include.
+# wildcard), or names a single file; an exclude is always recursive ('/...') and
+# must fall under a preceding include.
 exclude = //depot/yourproject/src/thirdparty/...
 exclude = //depot/yourproject/src/lib/...
-include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win64
+include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win64/...
 
 # Direct files of a directory only: carve the directory out recursively, then
 # re-include it with a '/*' depot path. Here src/build's own files are tracked
@@ -436,7 +438,15 @@ include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win
 # depot content). The starter .gitignore keeps '!/src/' and adds '/src/build/*/'
 # to re-exclude the child directories.
 exclude = //depot/yourproject/src/build/...
-include = //depot/yourproject/src/build/*  .p4gw/src/build
+include = //depot/yourproject/src/build/*  .p4gw/src/build/*
+
+# A single file: leave the wildcard off both sides and name the file. The file
+# keeps its own name (gw rejects a mirror path that renames it), and the mirror
+# path below '.p4gw' is where it lands in the working tree - so this one maps
+# to 'tools/go.bat'. Useful for a lone file in a directory that otherwise syncs
+# in place, and it pairs with an 'exclude' the same way a '/*' include does:
+# carve the directory out, then map back just the file you want.
+include = //depot/yourproject/tools/go.bat  .p4gw/tools/go.bat
 
 # Optional 'ignore' lines add extra .gitignore patterns (verbatim gitignore
 # syntax), one per line. The allowlist tracks a whole mapped subtree, but P4
@@ -553,6 +563,11 @@ A subtree need not sync as one solid block. These patterns are supported:
   remaps into the mirror and nothing re-includes into the repo outside it,
   `gw init` accepts the view; the absent peers simply never appear. No
   config needed.
+- **The wildcard goes on both sides.** An `include` spells the same wildcard
+  on the depot and the mirror path (`//depot/.../src/... .p4gw/src/...`), so
+  the config line reads like the client view line it stands for. A config
+  that leaves it off the mirror path still loads — gw reads it as the depot
+  side's — and `gw doctor` prints the explicit line to paste back.
 - **Unmapped directories under a mapped subtree.** Some directories under
   `src/` (vendored `thirdparty/`, generated `devtools/`) may belong to P4
   but not to your Git history. List them as `exclude` lines: gw leaves them
@@ -576,10 +591,20 @@ A subtree need not sync as one solid block. These patterns are supported:
   depot path — the p4 single-level wildcard. Carve the directory out
   recursively, then re-include it with `/*`: `exclude =
   //depot/.../src/build/...` followed by `include = //depot/.../src/build/*
-  .p4gw/src/build`. The direct files of `src/build/` are tracked and shipped,
+  .p4gw/src/build/*`. The direct files of `src/build/` are tracked and shipped,
   while every sub-directory is dropped (the exclude still covers them — `/*`
   only re-includes the one level). The matching client view line uses `*`
   too (`//depot/.../src/build/* //client/…/.p4gw/src/build/*`), and the
   starter `.gitignore` keeps `!/src/` and adds `/src/build/*/` to re-exclude
   the child directories. An `exclude` is always recursive, so `/*` is only
   ever used on an `include`.
+- **A single file.** Leave the wildcard off both sides and name the file:
+  `include = //depot/.../tools/go.bat .p4gw/tools/go.bat` maps exactly that
+  one file to `tools/go.bat` in the working tree. The client view line is a
+  plain file-to-file remap with no wildcard at all
+  (`//depot/.../tools/go.bat //client/…/.p4gw/tools/go.bat`), and the starter
+  `.gitignore` re-includes the file by name (`!/tools/` → `/tools/*` →
+  `!/tools/go.bat`) so nothing else in that directory is tracked. The file
+  keeps its own name — gw rejects a mirror path that would rename it. Like a
+  `/*` include, this composes with `exclude`: carve a directory out and then
+  map back just the one file you need from it.

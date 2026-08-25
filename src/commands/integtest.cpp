@@ -119,6 +119,9 @@ constexpr const char* kObliterateFiles[] = {
     // in-step, listed here as a safety net so an aborted run's cleanup still
     // removes it.
     "bin/deep/nested.txt",
+    // itSingleFileInclude's lone mapped file under the in-place bin/ directory;
+    // obliterated in-step, listed here as an abort safety net.
+    "bin/version.txt",
     // itOrphanedFiles' retired subtree; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/vendor/lib.txt",
@@ -2902,6 +2905,264 @@ std::expected<void, std::string> itNestedInclude(ItContext& it) {
     return {};
 }
 
+// The single-file `include`: one depot file mapped on its own
+// (`include = //depot/.../bin/version.txt .p4gw/bin/version.txt`) out of a
+// directory that otherwise syncs in place. Only a live server can show the
+// three things that matter here - the view check must accept a plain
+// file-to-file client line (no wildcard on either side), `p4 sync` must land
+// exactly that file in the mirror while its siblings stay in place, and the
+// allowlist must re-include the file *by name* (`!/bin/`, `/bin/*`,
+// `!/bin/version.txt`) without handing Git the rest of bin/. Then ships an edit
+// back through `gw prepare` to prove prepare routes a single-file mapping, and
+// restores the fixture. Runs on 'main', clean, after itNestedInclude.
+std::expected<void, std::string> itSingleFileInclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path gitignore = fs::path(it.repoDir) / ".gitignore";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+    const fs::path binMirror = fs::path(it.repoDir) / ".p4gw" / "bin";
+    const fs::path fileMirror = binMirror / "version.txt";
+    const std::string fileDepot = it.depotRoot + "/bin/version.txt";
+    const std::string trackedRel = "bin/version.txt";
+    // The in-place sibling that must never enter Git: it syncs from
+    // //depot/bin/... and only the "/bin/*" line keeps it out once bin/ is
+    // re-included for the mapped file.
+    const std::string siblingRel = "bin/tool.txt";
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto savedIgnore = readFile(gitignore);
+    if (!savedIgnore) return std::unexpected(savedIgnore.error());
+    if (savedIgnore->find("!/bin/") != std::string::npos) {
+        return std::unexpected("fixture .gitignore already re-includes '/bin/' "
+                               "- this test needs it absent");
+    }
+    auto originalSpec = p4::clientSpec(it.p4);
+    if (!originalSpec) return std::unexpected(originalSpec.error());
+    auto savedMain = git::revParse("main", it.repoDir);
+    if (!savedMain) return std::unexpected(savedMain.error());
+    auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!savedRef) return std::unexpected(savedRef.error());
+
+    // (1) Remap the single file into the mirror. The client line carries no
+    // wildcard at all - it is a file-to-file mapping, which is exactly what the
+    // config line spells.
+    const std::string clientName = p4::specField(*originalSpec, "Client");
+    const std::string clientRoot = p4::specField(*originalSpec, "Root");
+    const std::string fileClient =
+        p4::clientViewPath(clientName, clientRoot, fileMirror.string(), "");
+    if (fileClient.empty()) {
+        return std::unexpected("cannot compute the mapped file's client path");
+    }
+    const auto viewPos = originalSpec->find("\nView:");
+    if (viewPos == std::string::npos) {
+        return std::unexpected("client spec has no View: section");
+    }
+    const std::string header = originalSpec->substr(0, viewPos + 1);
+    std::vector<p4::ViewLine> view = p4::parseClientView(*originalSpec);
+    view.push_back({fileDepot, fileClient, false, false});
+    auto remapped = p4::writeClientSpec(it.p4, buildClientSpec(header, view));
+    if (!remapped) return std::unexpected(remapped.error());
+    auto includedCfg =
+        appendFile(cfg, "\ninclude = " + fileDepot + " .p4gw/bin/version.txt\n");
+    if (!includedCfg) return includedCfg;
+
+    // (2) Submit the file through the new mapping, then sync the whole depot so
+    // the in-place bin/ siblings are on disk beside the mirror copy.
+    auto wroteFile =
+        writeFile(fileMirror, "// single-file include fixture: v1\n");
+    if (!wroteFile) return wroteFile;
+    auto addCl = p4::createChangelist(it.p4, "gw integtest: single-file include");
+    if (!addCl) return std::unexpected(addCl.error());
+    const std::string fileLocal = fileMirror.string();
+    auto added = trace(it, "p4 add " + fileLocal,
+                       p4::addFiles(it.p4, *addCl, {fileLocal}));
+    if (!added) return std::unexpected(added.error());
+    auto addSubmit =
+        trace(it, "p4 submit -c " + *addCl, p4::submit(it.p4, *addCl));
+    if (!addSubmit) return std::unexpected(addSubmit.error());
+    auto synced = trace(it, "p4 sync " + it.p4DepotPath,
+                        p4::sync(it.p4, it.p4DepotPath));
+    if (!synced) return std::unexpected(synced.error());
+    if (!fs::exists(fileMirror)) {
+        return std::unexpected("the file-to-file view line did not land " +
+                               fileDepot + " in the mirror at " +
+                               fileMirror.string());
+    }
+    if (fs::exists(fs::path(it.repoDir) / trackedRel)) {
+        return std::unexpected("p4 synced " + fileDepot +
+                               " into the working tree as well as the mirror - "
+                               "the remap is not effective");
+    }
+    if (!fs::exists(fs::path(it.repoDir) / siblingRel)) {
+        return std::unexpected("the in-place sibling " + siblingRel +
+                               " is not on disk - the guard cannot show that "
+                               "the allowlist keeps it out of Git");
+    }
+
+    // (3) doctor must FAIL on the uncovered mapping, naming the whole chain -
+    // and the file's own line without a trailing slash, which would only ever
+    // match a directory.
+    auto brokeDoctor = runGw(it, it.repoDir, {"doctor"});
+    if (brokeDoctor) {
+        return std::unexpected("doctor passed while the allowlist did not cover "
+                               "the single-file include:\n" + *brokeDoctor);
+    }
+    for (const char* line : {"!/bin/", "/bin/*", "!/bin/version.txt"}) {
+        if (brokeDoctor.error().find(line) == std::string::npos) {
+            return std::unexpected(
+                std::string("doctor did not name the allowlist line '") + line +
+                "' it must add:\n" + brokeDoctor.error());
+        }
+    }
+
+    // (4) `gw init` appends the chain; the file line must carry no trailing
+    // slash.
+    auto reinit = runGw(it, it.repoDir, {"init"});
+    if (!reinit) return std::unexpected(reinit.error());
+    auto fixedIgnore = readFile(gitignore);
+    if (!fixedIgnore) return std::unexpected(fixedIgnore.error());
+    for (const char* line : {"!/bin/", "/bin/*", "!/bin/version.txt"}) {
+        if (fixedIgnore->find(line) == std::string::npos) {
+            return std::unexpected(std::string("'") + line +
+                                   "' is missing from .gitignore after gw "
+                                   "init:\n" + *fixedIgnore);
+        }
+    }
+    // The file's own line must carry no trailing slash - that would only ever
+    // match a directory, so Git would keep ignoring the file. (Checked by the
+    // absence of the slashed form rather than a line match, since the file's
+    // line endings are the platform's.)
+    if (fixedIgnore->find("!/bin/version.txt/") != std::string::npos) {
+        return std::unexpected("gw init re-included the mapped file with a "
+                               "trailing slash, which matches directories "
+                               "only:\n" + *fixedIgnore);
+    }
+
+    // (5) Import ships the one mapped file - and nothing else under bin/.
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) {
+        return std::unexpected("import after fixing the allowlist failed:\n" +
+                               imported.error());
+    }
+    auto tree = git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!tree) return std::unexpected(tree.error());
+    if (tree->find(trackedRel) == std::string::npos) {
+        return std::unexpected("import did not commit the mapped file " +
+                               trackedRel + ":\n" + *tree);
+    }
+    if (tree->find(siblingRel) != std::string::npos) {
+        return std::unexpected("import committed " + siblingRel +
+                               " - re-including bin/ for one mapped file "
+                               "swallowed the in-place depot content beside "
+                               "it:\n" + *tree);
+    }
+
+    // (6) `gw init` appended to .gitignore, so the tree was dirty and
+    // worktree-mode import advanced the ref while leaving `main` behind it.
+    // The new baseline already carries the appended .gitignore (import overlays
+    // the user's current root meta files), so adopting it both cleans the tree
+    // and puts HEAD on the latest depot state - which `gw prepare` requires.
+    auto ontoMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!ontoMain) return std::unexpected(ontoMain.error());
+    auto adopted = git::run({"reset", "--hard", "refs/p4gw/main"}, it.repoDir);
+    if (!adopted) return std::unexpected(adopted.error());
+    auto adoptedClean = git::isDirty(it.repoDir);
+    if (!adoptedClean) return std::unexpected(adoptedClean.error());
+    if (*adoptedClean) {
+        return std::unexpected("adopting the new baseline left the tree dirty; "
+                               "'gw prepare' needs a clean checkout");
+    }
+
+    // (7) And the round trip: an edit to the mapped file on a branch must be
+    // routed back through its own mirror by `gw prepare`.
+    auto branch = git::run({"switch", "-c", "it-single-file"}, it.repoDir);
+    if (!branch) return std::unexpected(branch.error());
+    if (auto r = appendFile(fs::path(it.repoDir) / trackedRel,
+                            "// edited through the single-file mapping\n");
+        !r) {
+        return r;
+    }
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest: edit the mapped file", it.repoDir);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    auto extractCl = [](const std::string& out) -> std::string {
+        const std::string marker = "Created pending changelist ";
+        auto pos = out.find(marker);
+        if (pos == std::string::npos) return {};
+        pos += marker.size();
+        auto end = pos;
+        while (end < out.size() &&
+               std::isdigit(static_cast<unsigned char>(out[end]))) {
+            ++end;
+        }
+        return out.substr(pos, end - pos);
+    };
+    auto prepared = runGw(it, it.repoDir, {"prepare"});
+    if (!prepared) return std::unexpected(prepared.error());
+    const std::string prepCl = extractCl(*prepared);
+    if (prepCl.empty()) {
+        return std::unexpected("prepare output has no changelist number:\n" +
+                               *prepared);
+    }
+    auto opened = p4::openedFilesTagged(it.p4);
+    if (!opened) return std::unexpected(opened.error());
+    bool openedTheFile = false;
+    for (const auto& file : *opened) {
+        if (file.depotFile == fileDepot) openedTheFile = true;
+    }
+    if (!openedTheFile) {
+        return std::unexpected("prepare did not open " + fileDepot +
+                               " - the single-file mapping is not routed");
+    }
+    auto stagedMirror = readFile(fileMirror);
+    if (!stagedMirror) return std::unexpected(stagedMirror.error());
+    if (stagedMirror->find("edited through the single-file mapping") ==
+        std::string::npos) {
+        return std::unexpected("prepare did not stage the edit into " +
+                               fileMirror.string());
+    }
+    auto abandoned = runGw(it, it.repoDir, {"prepare", "--abandon", prepCl});
+    if (!abandoned) return std::unexpected(abandoned.error());
+
+    // (8) Restore the fixture exactly as inherited (the itNestedInclude shape:
+    // opens dropped, both refs rolled back, config, .gitignore and client spec
+    // rewritten, the throwaway depot file obliterated).
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto backToMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!backToMain) return std::unexpected(backToMain.error());
+    auto droppedBranch = git::run({"branch", "-D", "it-single-file"},
+                                  it.repoDir);
+    if (!droppedBranch) return std::unexpected(droppedBranch.error());
+    auto resetMain = git::run({"reset", "--hard", *savedMain}, it.repoDir);
+    if (!resetMain) return std::unexpected(resetMain.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    auto restoredIgnore = writeFile(gitignore, *savedIgnore);
+    if (!restoredIgnore) return restoredIgnore;
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto restoredSpec = p4::writeClientSpec(it.p4, *originalSpec);
+    if (!restoredSpec) return std::unexpected(restoredSpec.error());
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    auto obliterated = trace(it, "p4 obliterate -y " + fileDepot,
+                             p4::obliterate(it.p4, fileDepot));
+    if (!obliterated) return std::unexpected(obliterated.error());
+    std::error_code ec;
+    fs::remove_all(binMirror, ec);
+    // Only the imported copy of the mapped file - bin/ itself is in-place depot
+    // content the fixture keeps.
+    fs::remove(fs::path(it.repoDir) / trackedRel, ec);
+    fs::remove(manifest, ec);
+    return {};
+}
+
 // The orphaned-file lifecycle, end to end: a subtree is imported into Git, then
 // retired from the client view and p4gw.cfg. Its files stay tracked - import
 // only reconciles *inside* a mapping, so once the mapping is gone nothing
@@ -4182,6 +4443,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("nested include: the allowlist walks down to it "
                            "without swallowing its unmapped siblings",
                            [&] { return itNestedInclude(it); });
+        steps.emplace_back("single-file include: one depot file mapped on its "
+                           "own",
+                           [&] { return itSingleFileInclude(it); });
         steps.emplace_back("retired subtree: doctor reports the orphans and the "
                            "cleanup is p4-safe",
                            [&] { return itOrphanedFiles(it); });

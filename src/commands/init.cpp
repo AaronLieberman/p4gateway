@@ -118,17 +118,18 @@ int cmdInit(const Args& args) {
     const auto includes = includeRules(config->rules);
     const auto allExcludes = excludeDepotPaths(config->rules);
     for (const auto* rule : includes) {
-        const std::string mirrorDir =
-            resolveMirrorPath(rule->mirrorPath, root);
+        const std::string mirrorTarget =
+            resolveMirrorPath(mappedMirrorPath(*rule), root);
         std::vector<std::string> otherMirrors;
         for (const auto* other : includes) {
             if (other != rule) {
                 otherMirrors.push_back(
-                    resolveMirrorPath(other->mirrorPath, root));
+                    resolveMirrorPath(mappedMirrorPath(*other), root));
             }
         }
         const auto mappingProblems = p4::checkSpecMapping(
-            *spec, rule->depotPath, root, mirrorDir, allExcludes, otherMirrors);
+            *spec, rule->depotPath, root, mirrorTarget, allExcludes,
+            otherMirrors);
         problems.insert(problems.end(), mappingProblems.begin(),
                         mappingProblems.end());
     }

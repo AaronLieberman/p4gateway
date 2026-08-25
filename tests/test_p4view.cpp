@@ -588,3 +588,151 @@ TEST(security_level_from_show) {
               "No configurables have been set.\n") == 0);
     CHECK(p4gw::p4::securityLevelFromShow("") == 0);
 }
+TEST(check_spec_mapping_single_file_include) {
+    // A single-file include is remapped by a plain file-to-file view line, with
+    // no wildcard on either side.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t//depot/project/tools/go.bat //c/.p4gw/tools/go.bat\n";
+    const std::vector<std::string> noExcludes;
+
+    const auto file = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/tools/go.bat", "/work",
+        "/work/.p4gw/tools/go.bat", noExcludes, {"/work/.p4gw/src"});
+    for (const auto& problem : file) {
+        std::printf("  unexpected file problem: %s\n", problem.message.c_str());
+    }
+    CHECK(file.empty());
+
+    // The recursive src include is unaffected: the file's line lands in a
+    // sibling mirror, so it is not a repo leak.
+    const auto src = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src", noExcludes,
+        {"/work/.p4gw/tools/go.bat"});
+    for (const auto& problem : src) {
+        std::printf("  unexpected src problem: %s\n", problem.message.c_str());
+    }
+    CHECK(src.empty());
+}
+
+TEST(check_spec_mapping_single_file_flags_a_wildcard_line) {
+    // A '/...' line covering the file's directory does sync it, but into the
+    // wrong place - the check must not accept it as the file's remap.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/tools/go.bat", "/work",
+        "/work/.p4gw/tools/go.bat");
+    CHECK(!problems.empty());
+}
+
+TEST(check_spec_mapping_single_file_inside_a_mapped_subtree) {
+    // A file mapped out of a subtree that otherwise syncs in place: the file's
+    // line sits under the include's depot path but lands in a mirror, so it is
+    // a legitimate diversion, not one that needs an 'exclude'.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t//depot/project/src/gen/version.h //c/.p4gw/gen/version.h\n";
+    const auto src = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src", {},
+        {"/work/.p4gw/gen/version.h"});
+    for (const auto& problem : src) {
+        std::printf("  unexpected src problem: %s\n", problem.message.c_str());
+    }
+    CHECK(src.empty());
+}
+
+
+TEST(check_spec_mapping_single_file_exclude_stops_at_a_path_boundary) {
+    // A single-file 'exclude' declares exactly one file. Its depot path has no
+    // wildcard and so no trailing '/', which a bare prefix test would let run
+    // past the path boundary: a sibling whose name merely *starts with* the
+    // carved-out one ('build.h.bak') must still be flagged as an undeclared
+    // diversion. The directory form never had this hole, because its base
+    // ends in '/'.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t//depot/project/src/gen/build.h.bak //c/src/gen/build.h.bak\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src",
+        {"//depot/project/src/gen/build.h"});
+    bool flagsTheSibling = false;
+    for (const auto& problem : problems) {
+        if (problem.excludePath == "//depot/project/src/gen/build.h.bak") {
+            flagsTheSibling = true;
+        }
+    }
+    CHECK(flagsTheSibling);
+}
+
+TEST(minimal_exclude_paths_does_not_swallow_a_file_lookalike_sibling) {
+    // A carved-out *file* contains nothing, so a sibling whose name starts
+    // with it is not covered by it and still needs its own 'exclude' line.
+    const auto minimal = p4gw::p4::minimalExcludePaths(
+        {"//depot/project/src/gen/build.h",
+         "//depot/project/src/gen/build.h.bak"});
+    CHECK(minimal.size() == 2);
+    // A real subtree relationship is still collapsed, as before.
+    const auto nested = p4gw::p4::minimalExcludePaths(
+        {"//depot/project/src/lib/...", "//depot/project/src/lib/public/..."});
+    CHECK(nested.size() == 1);
+    if (nested.size() == 1) {
+        CHECK(nested[0] == "//depot/project/src/lib/...");
+    }
+}
+
+TEST(check_spec_mapping_single_file_include_ignores_a_lookalike_sibling) {
+    // Nothing lies "under" a single-file include, so a sibling that merely
+    // shares its name as a prefix must not be reported as diverting part of
+    // it out of the mirror (which would suggest an 'exclude' that cannot even
+    // parse - the sibling is under no mapped subtree).
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/tools/go.bat //c/.p4gw/tools/go.bat\n"
+        "\t//depot/project/tools/go.bat.bak //c/other/go.bat.bak\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/tools/go.bat", "/work",
+        "/work/.p4gw/tools/go.bat");
+    for (const auto& problem : problems) {
+        CHECK(problem.excludePath != "//depot/project/tools/go.bat.bak");
+    }
+}
+
+TEST(check_spec_mapping_file_view_line_is_not_a_directory_remap) {
+    // A wildcard-less view line maps one file. It must not be picked as the
+    // effective mapping for an include of a *directory* whose path it happens
+    // to prefix, or the check would silently accept a spec that maps nothing.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/src/bar //c/.p4gw/src/bar\n";
+    const auto problems = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/bar/...", "/work", "/work/.p4gw/src/bar");
+    CHECK(!problems.empty());
+    bool saysUnmapped = false;
+    for (const auto& problem : problems) {
+        if (problem.message.find("is not mapped in the client view") !=
+            std::string::npos) {
+            saysUnmapped = true;
+        }
+    }
+    CHECK(saysUnmapped);
+}

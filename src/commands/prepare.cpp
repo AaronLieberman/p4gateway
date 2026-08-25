@@ -72,8 +72,7 @@ std::string mirrorPathForDepotFile(const std::vector<ResolvedMapping>& resolved,
     if (eff == nullptr || eff->exclude) return {};
     for (const auto& r : resolved) {
         if (r.rule != eff) continue;
-        const std::string within =
-            p4::depotRelativePath(eff->depotPath, depotFile);
+        const std::string within = p4::depotRelativePath(*eff, depotFile);
         return (fs::path(r.mirrorDir) / fs::path(within)).make_preferred()
             .string();
     }

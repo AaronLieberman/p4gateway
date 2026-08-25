@@ -237,13 +237,34 @@ TEST(filter_have_to_rule_drops_excluded_and_reincluded_entries) {
 }
 
 TEST(depot_relative_path_strips_subtree) {
-    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
+    p4gw::ViewRule recursive;
+    recursive.depotPath = "//depot/project/src/...";
+    CHECK(p4gw::p4::depotRelativePath(recursive,
                                       "//depot/project/src/sub/a.cpp") ==
           "sub/a.cpp");
-    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
+    CHECK(p4gw::p4::depotRelativePath(recursive,
                                       "//depot/project/src/a.cpp") == "a.cpp");
-    CHECK(p4gw::p4::depotRelativePath("//depot/project/src/...",
-                                      "//other/x.cpp") == "");
+    CHECK(p4gw::p4::depotRelativePath(recursive, "//other/x.cpp") == "");
+
+    // A single-level ('/*') mapping owns only the direct children.
+    p4gw::ViewRule direct;
+    direct.depotPath = "//depot/project/src/*";
+    direct.scope = p4gw::ViewScope::kDirectFiles;
+    CHECK(p4gw::p4::depotRelativePath(direct, "//depot/project/src/a.cpp") ==
+          "a.cpp");
+    CHECK(p4gw::p4::depotRelativePath(direct,
+                                      "//depot/project/src/sub/a.cpp") == "");
+
+    // A single-file mapping owns exactly its own file, whose relative path is
+    // just the name.
+    p4gw::ViewRule file;
+    file.depotPath = "//depot/project/src/notes.txt";
+    file.fileName = "notes.txt";
+    file.scope = p4gw::ViewScope::kSingleFile;
+    CHECK(p4gw::p4::depotRelativePath(file, "//depot/project/src/notes.txt") ==
+          "notes.txt");
+    CHECK(p4gw::p4::depotRelativePath(file, "//depot/project/src/other.txt") ==
+          "");
 }
 
 TEST(is_add_action_classifies_opens) {

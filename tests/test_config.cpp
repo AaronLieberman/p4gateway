@@ -129,10 +129,11 @@ TEST(config_parses_single_level_include) {
     CHECK(config.has_value());
     if (config) {
         CHECK(config->rules.size() == 3);
-        CHECK(config->rules[0].recursive);
-        CHECK(config->rules[1].exclude && config->rules[1].recursive);
+        CHECK(config->rules[0].scope == p4gw::ViewScope::kRecursive);
+        CHECK(config->rules[1].exclude &&
+              config->rules[1].scope == p4gw::ViewScope::kRecursive);
         CHECK(!config->rules[2].exclude);
-        CHECK(!config->rules[2].recursive);
+        CHECK(config->rules[2].scope == p4gw::ViewScope::kDirectFiles);
         CHECK(config->rules[2].depotPath == "//depot/main/src/build/*");
         CHECK(config->rules[2].mirrorPath == ".p4gw/src/build");
         CHECK(config->rules[2].repoSubtree == "src/build");
@@ -158,7 +159,8 @@ TEST(effective_rule_single_level_covers_only_direct_children) {
     // A file directly in src/build resolves to the single-level include.
     const auto* direct =
         p4gw::effectiveRuleForDepot(rules, "//depot/main/src/build/config.ini");
-    CHECK(direct != nullptr && !direct->exclude && !direct->recursive);
+    CHECK(direct != nullptr && !direct->exclude &&
+          direct->scope == p4gw::ViewScope::kDirectFiles);
     // A file in a sub-directory of src/build is NOT covered by the '/*' rule,
     // so it falls back to the recursive exclude.
     const auto* deep = p4gw::effectiveRuleForDepot(
@@ -174,7 +176,8 @@ TEST(effective_rule_single_level_covers_only_direct_children) {
     // A plain src file is unaffected.
     const auto* core =
         p4gw::effectiveRuleForDepot(rules, "//depot/main/src/core/main.cpp");
-    CHECK(core != nullptr && !core->exclude && core->recursive);
+    CHECK(core != nullptr && !core->exclude &&
+          core->scope == p4gw::ViewScope::kRecursive);
 }
 
 TEST(effective_rule_for_depot_is_later_wins) {
@@ -465,10 +468,24 @@ p4gw::ViewRule inc(const std::string& subtree) {
 p4gw::ViewRule incFiles(const std::string& subtree) {
     p4gw::ViewRule r;
     r.exclude = false;
-    r.recursive = false;
+    r.scope = p4gw::ViewScope::kDirectFiles;
     r.depotPath = "//depot/x/" + subtree + "/*";
     r.mirrorPath = ".p4gw/" + subtree;
     r.repoSubtree = subtree;
+    return r;
+}
+
+// A single-file include: `repoRel` (e.g. "tools/build.bat") is mapped on its
+// own, under its own name on both sides.
+p4gw::ViewRule incFile(const std::string& repoRel) {
+    const auto slash = repoRel.rfind('/');
+    p4gw::ViewRule r;
+    r.exclude = false;
+    r.scope = p4gw::ViewScope::kSingleFile;
+    r.depotPath = "//depot/x/" + repoRel;
+    r.fileName = slash == std::string::npos ? repoRel : repoRel.substr(slash + 1);
+    r.repoSubtree = slash == std::string::npos ? "" : repoRel.substr(0, slash);
+    r.mirrorPath = r.repoSubtree.empty() ? ".p4gw" : ".p4gw/" + r.repoSubtree;
     return r;
 }
 
@@ -1241,4 +1258,212 @@ TEST(prune_allows_a_re_included_subtrees_peer_but_not_the_subtree) {
     CHECK(check.managed[0] == "src/lib/public/win64/api.h");
     CHECK(check.deletes.size() == 1);
     CHECK(check.deletes[0] == "src/lib/linux/api.h");
+}
+
+// ---- single-file includes and the both-sides wildcard ----
+
+TEST(config_parses_a_single_file_include) {
+    auto config = loadFromString(
+        "include = //depot/main/src/...        .p4gw/src/...\n"
+        "include = //depot/main/tools/go.bat   .p4gw/tools/go.bat\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    CHECK(config->rules.size() == 2);
+    const auto& file = config->rules[1];
+    CHECK(file.scope == p4gw::ViewScope::kSingleFile);
+    CHECK(file.depotPath == "//depot/main/tools/go.bat");
+    CHECK(file.fileName == "go.bat");
+    // The stored bases are the *containing* directories; the mapped paths join
+    // the file name back on.
+    CHECK(file.mirrorPath == ".p4gw/tools");
+    CHECK(file.repoSubtree == "tools");
+    CHECK(p4gw::mappedMirrorPath(file) == ".p4gw/tools/go.bat");
+    CHECK(p4gw::mappedRepoPath(file) == "tools/go.bat");
+    CHECK(p4gw::depotBaseOf(file) == "//depot/main/tools/");
+    CHECK(p4gw::mirrorSpecOf(file) == ".p4gw/tools/go.bat");
+    CHECK(!file.mirrorWildcardImplied);
+}
+
+TEST(config_parses_a_single_file_include_at_the_repo_root) {
+    // The mirror container itself holds the file: it lands at the repo root.
+    auto config = loadFromString("include = //depot/main/version.txt "
+                                 ".p4gw/version.txt\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto& file = config->rules[0];
+    CHECK(file.mirrorPath == ".p4gw");
+    CHECK(file.repoSubtree.empty());
+    CHECK(p4gw::mappedRepoPath(file) == "version.txt");
+    // An empty repoSubtree here is NOT the whole-repo mapping, so the
+    // .gitignore stays an allowlist that tracks just the one file.
+    const std::string out =
+        p4gw::buildGitignore(config->rules, config->ignorePatterns);
+    CHECK(contains(out, "/*\n"));
+    CHECK(contains(out, "!/version.txt\n"));
+}
+
+TEST(config_single_file_include_scopes_to_that_file_only) {
+    auto config = loadFromString(
+        "include = //depot/main/tools/go.bat .p4gw/tools/go.bat\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto& rules = config->rules;
+    CHECK(p4gw::effectiveRuleForDepot(rules, "//depot/main/tools/go.bat") ==
+          &rules[0]);
+    // A sibling in the same depot directory is not mapped...
+    CHECK(p4gw::effectiveRuleForDepot(rules, "//depot/main/tools/other.bat") ==
+          nullptr);
+    // ...and neither is anything "below" the file.
+    CHECK(p4gw::effectiveRuleForDepot(rules,
+                                      "//depot/main/tools/go.bat/x") == nullptr);
+    CHECK(p4gw::effectiveRuleForRepo(rules, "tools/go.bat") == &rules[0]);
+    CHECK(p4gw::effectiveRuleForRepo(rules, "tools/other.bat") == nullptr);
+    CHECK(p4gw::effectiveRuleForRepo(rules, "tools") == nullptr);
+}
+
+TEST(config_single_file_include_resolves_later_wins) {
+    // A file re-included after the exclude that carves out its directory: the
+    // ordered rules resolve it back to the file's own mapping.
+    auto config = loadFromString(
+        "include = //depot/main/src/...             .p4gw/src/...\n"
+        "exclude = //depot/main/src/thirdparty/...\n"
+        "include = //depot/main/src/thirdparty/LICENSE.txt "
+        ".p4gw/src/thirdparty/LICENSE.txt\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto& rules = config->rules;
+    const auto* keep = p4gw::effectiveRuleForDepot(
+        rules, "//depot/main/src/thirdparty/LICENSE.txt");
+    CHECK(keep == &rules[2] && !keep->exclude);
+    const auto* dropped = p4gw::effectiveRuleForDepot(
+        rules, "//depot/main/src/thirdparty/zlib/zlib.c");
+    CHECK(dropped != nullptr && dropped->exclude);
+}
+
+TEST(config_rejects_a_renaming_single_file_include) {
+    // The mapped file keeps its own name; every depot<->mirror<->repo path is
+    // rebuilt by joining that name onto the three bases.
+    CHECK(!loadFromString("include = //depot/main/a.txt .p4gw/main/b.txt\n")
+               .has_value());
+}
+
+TEST(config_rejects_a_wildcard_mirror_for_a_single_file_include) {
+    CHECK(!loadFromString("include = //depot/main/a.txt .p4gw/main/...\n")
+               .has_value());
+    CHECK(!loadFromString("include = //depot/main/a.txt .p4gw/main/\n")
+               .has_value());
+    // The file must live under the mirror container, not be one.
+    CHECK(!loadFromString("include = //depot/main/a.txt a.txt\n").has_value());
+}
+
+TEST(config_rejects_mismatched_wildcards) {
+    CHECK(!loadFromString("include = //depot/x/... .p4gw/x/*\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/* .p4gw/x/...\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/... .p4gw/x/\n").has_value());
+    // A wildcard that is not its own path component names neither a subtree
+    // nor a file.
+    CHECK(!loadFromString("include = //depot/x... .p4gw/x/...\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/ .p4gw/x/...\n").has_value());
+}
+
+TEST(config_accepts_both_sides_wildcards) {
+    auto config = loadFromString(
+        "include = //depot/x/...        .p4gw/x/...\n"
+        "exclude = //depot/x/build/...\n"
+        "include = //depot/x/build/*    .p4gw/x/build/*\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    CHECK(config->rules[0].mirrorPath == ".p4gw/x");
+    CHECK(config->rules[0].scope == p4gw::ViewScope::kRecursive);
+    CHECK(!config->rules[0].mirrorWildcardImplied);
+    CHECK(config->rules[2].mirrorPath == ".p4gw/x/build");
+    CHECK(config->rules[2].scope == p4gw::ViewScope::kDirectFiles);
+    CHECK(p4gw::mirrorSpecOf(config->rules[0]) == ".p4gw/x/...");
+    CHECK(p4gw::mirrorSpecOf(config->rules[2]) == ".p4gw/x/build/*");
+}
+
+TEST(config_infers_a_missing_mirror_wildcard) {
+    // Back-compat: the old one-sided form still loads, flagged so doctor can
+    // recommend the explicit line.
+    auto config = loadFromString(
+        "include = //depot/x/...     .p4gw/x\n"
+        "include = //depot/y/*       .p4gw/y\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    CHECK(config->rules[0].mirrorPath == ".p4gw/x");
+    CHECK(config->rules[0].scope == p4gw::ViewScope::kRecursive);
+    CHECK(config->rules[0].mirrorWildcardImplied);
+    CHECK(config->rules[1].mirrorPath == ".p4gw/y");
+    CHECK(config->rules[1].scope == p4gw::ViewScope::kDirectFiles);
+    CHECK(config->rules[1].mirrorWildcardImplied);
+}
+
+TEST(config_rejects_two_includes_mapping_one_mirror_file) {
+    CHECK(!loadFromString(
+              "include = //depot/a/note.txt .p4gw/note.txt\n"
+              "include = //depot/b/note.txt .p4gw/note.txt\n")
+               .has_value());
+}
+
+TEST(config_rejects_an_exclude_under_a_single_file_include) {
+    // Nothing can be carved out of a single file, so the exclude finds no
+    // enclosing include.
+    CHECK(!loadFromString(
+              "include = //depot/x/a.txt .p4gw/x/a.txt\n"
+              "exclude = //depot/x/a.txt/...\n")
+               .has_value());
+}
+
+TEST(gitignore_tracks_a_single_file_include) {
+    // The file's directory is re-included, its other content re-excluded, and
+    // the file itself re-included by name (no trailing slash - that would only
+    // match a directory).
+    const std::string out = p4gw::buildGitignore({incFile("tools/go.bat")});
+    CHECK(contains(out, "/*\n"));
+    CHECK(contains(out, "!/tools/\n"));
+    CHECK(contains(out, "/tools/*\n"));
+    CHECK(contains(out, "!/tools/go.bat\n"));
+    CHECK(!contains(out, "!/tools/go.bat/\n"));
+    CHECK(out.find("/tools/*\n") < out.find("!/tools/go.bat\n"));
+}
+
+TEST(gitignore_skips_a_single_file_under_a_tracked_subtree) {
+    // A recursive include already tracks the whole subtree, so the file's own
+    // re-include would be redundant (and would force a `/src/*` that
+    // re-excludes the rest of src).
+    const std::string out =
+        p4gw::buildGitignore({inc("src"), incFile("src/notes.txt")});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(!contains(out, "/src/*\n"));
+}
+
+TEST(gitignore_repairs_a_missing_single_file_reinclude) {
+    const auto rules = std::vector<p4gw::ViewRule>{incFile("tools/go.bat")};
+    const auto missing = p4gw::missingAllowlistTrackingLines(
+        rules, "/*\n!/.gitignore\n");
+    CHECK(std::find(missing.begin(), missing.end(), "!/tools/go.bat") !=
+          missing.end());
+    const auto repair =
+        p4gw::allowlistRepairLines(rules, "/*\n!/.gitignore\n");
+    CHECK(std::find(repair.begin(), repair.end(), "/tools/*") != repair.end());
+    CHECK(std::find(repair.begin(), repair.end(), "!/tools/go.bat") !=
+          repair.end());
+}
+
+TEST(classify_unmanaged_keeps_a_mapped_single_file) {
+    const auto rules = std::vector<p4gw::ViewRule>{incFile("tools/go.bat")};
+    const auto unmanaged = p4gw::classifyUnmanaged(
+        rules, {"tools/go.bat", "tools/other.bat"}, {});
+    CHECK(unmanaged.size() == 1);
+    if (unmanaged.size() == 1) {
+        CHECK(unmanaged[0].path == "tools/other.bat");
+        CHECK(unmanaged[0].kind == p4gw::UnmanagedKind::Unmapped);
+    }
+}
+
+TEST(config_rejects_a_malformed_mirror_wildcard) {
+    // A wildcard that is not its own path component would otherwise be taken
+    // as part of the directory name.
+    CHECK(!loadFromString("include = //depot/x/... .p4gw/x...\n").has_value());
+    CHECK(!loadFromString("include = //depot/x/* .p4gw/x*\n").has_value());
 }

@@ -474,7 +474,28 @@ int cmdDoctor(const Args& args) {
                         "%s\n", rule.depotPath.c_str());
         } else {
             std::printf("      %s -> %s\n", rule.depotPath.c_str(),
-                        rule.mirrorPath.c_str());
+                        mirrorSpecOf(rule).c_str());
+        }
+    }
+
+    // The mirror side of an `include` takes the same wildcard as the depot
+    // side. gw still reads a line that leaves it off (older configs did), but
+    // the explicit form is what `gw setup` writes and what makes the line read
+    // like the client view line it stands for - so say so once, with the
+    // rewritten lines to paste back.
+    std::vector<const ViewRule*> implied;
+    for (const auto& rule : config->rules) {
+        if (rule.mirrorWildcardImplied) implied.push_back(&rule);
+    }
+    if (!implied.empty()) {
+        std::printf("note  %zu include line(s) leave the wildcard off the "
+                    "mirror path; gw reads them\n      as the depot "
+                    "side's, but spell both sides out:\n",
+                    implied.size());
+        for (const auto* rule : implied) {
+            std::printf("        include = %s %s\n",
+                        rule->depotPath.c_str(),
+                        mirrorSpecOf(*rule).c_str());
         }
     }
 
@@ -805,17 +826,17 @@ int cmdDoctor(const Args& args) {
             const auto includes = includeRules(config->rules);
             const auto allExcludes = excludeDepotPaths(config->rules);
             for (const auto* rule : includes) {
-                const std::string mirrorDir =
-                    resolveMirrorPath(rule->mirrorPath, root);
+                const std::string mirrorTarget =
+                    resolveMirrorPath(mappedMirrorPath(*rule), root);
                 std::vector<std::string> otherMirrors;
                 for (const auto* other : includes) {
                     if (other != rule) {
                         otherMirrors.push_back(
-                            resolveMirrorPath(other->mirrorPath, root));
+                            resolveMirrorPath(mappedMirrorPath(*other), root));
                     }
                 }
                 const auto problems = p4::checkSpecMapping(
-                    *spec, rule->depotPath, root, mirrorDir, allExcludes,
+                    *spec, rule->depotPath, root, mirrorTarget, allExcludes,
                     otherMirrors);
                 if (problems.empty()) {
                     std::printf("ok    client view maps %s to the mirror\n",
@@ -924,7 +945,7 @@ int cmdDoctor(const Args& args) {
                 std::unordered_set<std::string> haveRel;
                 for (const auto& entry : *haveDepot) {
                     std::string rel =
-                        p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                        p4::depotRelativePath(*rule, entry.depotFile);
                     if (!rel.empty()) haveRel.insert(std::move(rel));
                 }
                 std::vector<std::string> mirrorTracked;

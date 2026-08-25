@@ -23,7 +23,7 @@ constexpr const char* kSetupUsage =
     "\n"
     "options:\n"
     "  --depot-path <//depot/.../src/...>  Pre-fill the include's depot path\n"
-    "                                      (must end with '/...')\n"
+    "                                      ('/...', '/*', or a single file)\n"
     "  --mirror-path <dir>                 Mirror directory (default: .p4gw)\n"
     "  --client <name>                     Pre-fill the P4 client name\n"
     "  --force                             Overwrite an existing p4gw.cfg here\n"
@@ -60,11 +60,27 @@ int cmdSetup(const Args& args) {
             return 1;
         }
     }
-    if (!depotPath.empty() && !depotPath.ends_with("/...")) {
-        std::fprintf(stderr, "gw setup: --depot-path must end with '/...' "
-                             "(got '%s')\n", depotPath.c_str());
+    if (!depotPath.empty() &&
+        (depotPath.ends_with("/") ||
+         ((depotPath.ends_with("...") || depotPath.ends_with("*")) &&
+          !depotPath.ends_with("/...") && !depotPath.ends_with("/*")))) {
+        std::fprintf(stderr,
+                     "gw setup: --depot-path must end with '/...' (whole "
+                     "subtree), '/*' (direct files\nonly), or name a single "
+                     "file (got '%s')\n", depotPath.c_str());
         return 1;
     }
+
+    // The mirror side of an `include` carries the same wildcard as the depot
+    // side, so the config line reads like the client view line it stands for.
+    // A single-file include ends both sides with the file's own name.
+    auto mirrorSideOf = [&](const std::string& depot) {
+        if (depot.ends_with("/*")) return mirrorPath + "/*";
+        if (depot.ends_with("/...")) return mirrorPath + "/...";
+        const auto slash = depot.rfind('/');
+        return mirrorPath + "/" +
+               (slash == std::string::npos ? depot : depot.substr(slash + 1));
+    };
 
     const fs::path cwd = fs::current_path();
     const fs::path target = cwd / "p4gw.cfg";
@@ -106,7 +122,7 @@ int cmdSetup(const Args& args) {
                 "its path below\n"
                 "# the container is the working-tree directory the subtree "
                 "occupies\n"
-                "# ('.p4gw/src' -> 'src/', '.p4gw' -> the whole repo). Add one "
+                "# ('.p4gw/src/...' -> 'src/', '.p4gw/...' -> the whole repo). Add one "
                 "'include' per\n"
                 "# subtree; the starter .gitignore tracks only the mapped "
                 "subtrees, so\n"
@@ -122,25 +138,36 @@ int cmdSetup(const Args& args) {
                 "An include's\n"
                 "# depot path ends in '/...' (map the whole subtree) or '/*' "
                 "(map only the\n"
-                "# files directly in that directory, no sub-directories); an "
-                "exclude is always\n"
-                "# '/...' and must fall under a preceding include. Format and "
-                "examples:\n"
-                "#   include = <depot_path ending in /... or /*>  <mirror_path>\n"
-                "#   include = //depot/yourproject/src/...     .p4gw/src\n"
-                "#   include = //depot/yourproject/config/...  .p4gw/config\n"
+                "# files directly in that directory, no sub-directories), or "
+                "names a single\n"
+                "# file; the mirror path takes the same wildcard, so the line "
+                "reads like the\n"
+                "# client view line it stands for. An exclude is always '/...' "
+                "and must fall\n"
+                "# under a preceding include. Format and examples:\n"
+                "#   include = <depot_path>  <mirror_path>   (same wildcard on "
+                "both sides)\n"
+                "#   include = //depot/yourproject/src/...     .p4gw/src/...\n"
+                "#   include = //depot/yourproject/config/...  "
+                ".p4gw/config/...\n"
                 "#   exclude = //depot/yourproject/src/thirdparty/...\n"
                 "#   exclude = //depot/yourproject/src/lib/...\n"
                 "#   include = //depot/yourproject/src/lib/public/win64/... "
-                ".p4gw/src/lib/public/win64\n"
+                ".p4gw/src/lib/public/win64/...\n"
                 "# Direct files of a directory only (exclude it, then re-include "
                 "with '/*'):\n"
                 "#   exclude = //depot/yourproject/src/build/...\n"
-                "#   include = //depot/yourproject/src/build/*  .p4gw/src/build\n";
+                "#   include = //depot/yourproject/src/build/*  "
+                ".p4gw/src/build/*\n"
+                "# A single file, mapped under its own name on both sides:\n"
+                "#   include = //depot/yourproject/version.txt  "
+                ".p4gw/version.txt\n";
         if (depotPath.empty()) {
-            file << "#include = //depot/yourproject/src/... " << mirrorPath << "\n";
+            file << "#include = //depot/yourproject/src/... " << mirrorPath
+                 << "/...\n";
         } else {
-            file << "include = " << depotPath << " " << mirrorPath << "\n";
+            file << "include = " << depotPath << " " << mirrorSideOf(depotPath)
+                 << "\n";
         }
         file << "\n"
                 "# Optional 'ignore' lines add extra .gitignore patterns "
@@ -191,16 +218,24 @@ int cmdSetup(const Args& args) {
         std::printf("%d. Edit p4gw.cfg and add an 'include' line per depot "
                     "subtree.\n", step++);
     }
+    // The client line mirrors the include exactly, wildcard and all, so it can
+    // be pasted straight into `p4 client`.
+    const std::string clientSuffix =
+        depotPath.empty() || depotPath.ends_with("/...") ? "/..."
+        : depotPath.ends_with("/*")
+            ? "/*"
+            : mirrorSideOf(depotPath).substr(mirrorPath.size());
     std::printf(
         "%d. Add a remap line to your client view (p4 client) for each "
         "include:\n"
         "\n"
-        "     %s //%s/<workspace-relative path of %s>/...\n"
+        "     %s //%s/<workspace-relative path of %s>%s\n"
         "\n"
         "   so the depot subtree syncs into the mirror instead of this\n"
         "   directory. Later view lines win, so each remap must come after\n"
         "   any broader line it overlaps.\n",
-        step++, depotShown.c_str(), clientShown.c_str(), mirrorPath.c_str());
+        step++, depotShown.c_str(), clientShown.c_str(), mirrorPath.c_str(),
+        clientSuffix.c_str());
     std::printf("%d. Run 'gw init' to verify the include(s) and set up the "
                 "Git repo.\n", step);
     return 0;

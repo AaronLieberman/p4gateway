@@ -59,9 +59,10 @@ std::vector<ViewLine> parseClientView(const std::string& spec);
 // empty to skip) but not under the mirror. Either way P4 must never write into
 // a Git-tracked path. `extraMirrorPrefixes` are the client-side prefixes of the
 // config's *other* mirrors (a repo can map several subtrees, and a re-`include`
-// nests one mirror inside another): a line landing in any of them is a mirror
-// mapping, not a repo leak, so it is exempt too. Returns the problems found;
-// empty means consistent.
+// nests one mirror inside another, and a single-file include's mirror path is
+// one too): a line landing on or under any of them is a mirror mapping, not a
+// repo leak, so it is exempt too. Returns the problems found; empty means
+// consistent.
 std::vector<ViewProblem> checkViewMapping(
     const std::vector<ViewLine>& view, const std::string& depotPath,
     const std::string& expectedClientPath,
@@ -86,19 +87,23 @@ std::string clientViewPath(const std::string& clientName,
                            const std::string& suffix);
 
 // Full mapping consistency check against `p4 client -o` output: `depotPath`
-// must map into the mirror directory and nothing may map into the repo
-// directory. `excludedDepotPaths` are subtrees the config carves out of the
-// mirror (synced in place / gitignored), whose in-place view lines are exempt
-// from the repo-mapping rule. `otherMirrorDirs` are the config's *other* mirror
-// directories (from other includes / re-includes); their client-side prefixes
-// are exempted too, so a repo that maps several subtrees - or nests one mirror
-// inside another via a re-include - does not flag its sibling mirrors as repo
-// leaks. Returns the problems found; empty means consistent.
+// must map onto `mirrorTarget` and nothing may map into the repo directory.
+// `mirrorTarget` is the local path the include actually maps - the mirror
+// directory for a subtree include, the mirror *file* for a single-file one
+// (`mappedMirrorPath`) - and the expected client-side path takes the same
+// wildcard as `depotPath` (`/...`, `/*`, or none at all for a file).
+// `excludedDepotPaths` are subtrees the config carves out of the mirror (synced
+// in place / gitignored), whose in-place view lines are exempt from the
+// repo-mapping rule. `otherMirrorTargets` are the config's *other* mirror
+// targets (from other includes / re-includes); they are exempted too, so a repo
+// that maps several subtrees - or nests one mirror inside another via a
+// re-include, or maps a single file beside them - does not flag its sibling
+// mirrors as repo leaks. Returns the problems found; empty means consistent.
 std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
-    const std::string& repoDir, const std::string& mirrorDir,
+    const std::string& repoDir, const std::string& mirrorTarget,
     const std::vector<std::string>& excludedDepotPaths = {},
-    const std::vector<std::string>& otherMirrorDirs = {});
+    const std::vector<std::string>& otherMirrorTargets = {});
 
 // ---- wrappers over the p4 CLI ----
 
@@ -210,9 +215,15 @@ std::vector<OpenedFile> filterExcludedOpens(
     const std::vector<OpenedFile>& opened,
     const std::vector<ViewRule>& rules);
 
-// Repo-relative path (forward slashes) of `depotFile` within the `depotPath`
-// subtree ("//.../..."), or empty if it is not under it (pure).
-std::string depotRelativePath(const std::string& depotPath,
+// Path of `depotFile` relative to the mapping `rule` (forward slashes), or
+// empty when the rule does not cover it - which is also how callers tell a
+// depot file belonging to another mapping apart. Honors the rule's scope: a
+// recursive rule takes any descendant, a single-level (`/*`) one only a direct
+// child, and a single-file one only its own file (whose relative path is just
+// the file name). Joining the result onto `depotBaseOf(rule)`, the rule's
+// mirror directory, or its `repoSubtree` gives the file's three paths. Pure;
+// unit-tested.
+std::string depotRelativePath(const ViewRule& rule,
                               const std::string& depotFile);
 
 // True for p4 open actions that introduce a file with no head revision at

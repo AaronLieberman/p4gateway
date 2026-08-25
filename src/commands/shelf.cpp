@@ -149,8 +149,7 @@ int shelfImport(const Args& args) {
                       std::string& repoRel) -> bool {
         const ViewRule* rule = effectiveRuleForDepot(config->rules, depotFile);
         if (rule == nullptr || rule->exclude) return false;
-        const std::string rel =
-            p4::depotRelativePath(rule->depotPath, depotFile);
+        const std::string rel = p4::depotRelativePath(*rule, depotFile);
         if (rel.empty()) return false;
         repoRel = rule->repoSubtree.empty() ? rel
                                             : rule->repoSubtree + "/" + rel;

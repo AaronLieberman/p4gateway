@@ -124,6 +124,17 @@ std::string stripWildcard(const std::string& path) {
     return path;
 }
 
+// Whether `path` lies at or under the depot scope `base` (a wildcard-stripped
+// view line or rule path). A subtree base ends in '/', so a prefix test is
+// already anchored at a path boundary; a wildcard-less base names one file and
+// must match exactly, or a sibling whose name merely starts with it
+// ("build.h.bak" under "build.h") would read as being inside it.
+bool underDepotScope(const std::string& base, const std::string& path) {
+    if (base.empty()) return false;
+    if (base.back() == '/') return path.starts_with(base);
+    return path == base;
+}
+
 }  // namespace
 
 std::expected<std::string, std::string> run(const Config& config,
@@ -197,27 +208,45 @@ std::vector<ViewProblem> checkViewMapping(
     // so its client path is itself under the repo prefix. That mapping is the
     // whole point, so exempt anything under the mirror from the "maps into the
     // repo" check below while still catching every other line.
-    const std::string mirrorPrefix = stripWildcard(expectedClientPath);
+    // Mirror roots are compared without a trailing slash so the same test
+    // serves a directory mirror and a single-file one (whose client path is
+    // the file itself, with nothing below it).
+    auto trimSlash = [](std::string p) {
+        while (!p.empty() && p.back() == '/') p.pop_back();
+        return p;
+    };
+    const std::string mirrorPrefix = trimSlash(stripWildcard(expectedClientPath));
     const std::string depotBase = stripWildcard(depotPath);  // ends with '/'
 
     // A client path that lands in this include's mirror or any sibling mirror
-    // (another mapped subtree, or a re-include whose mirror nests inside this
-    // one) is a mirror mapping, not a repo leak.
+    // (another mapped subtree, a re-include whose mirror nests inside this one,
+    // or a single file mapped beside it) is a mirror mapping, not a repo leak.
+    auto isUnder = [&](const std::string& clientBase, const std::string& root) {
+        // Both sides are trimmed, so a caller may pass a mirror root with or
+        // without its trailing slash.
+        const std::string top = trimSlash(root);
+        if (top.empty()) return false;
+        const std::string base = trimSlash(clientBase);
+        return base == top || base.starts_with(top + "/");
+    };
     auto intoAnyMirror = [&](const std::string& clientBase) {
-        if (!mirrorPrefix.empty() && clientBase.starts_with(mirrorPrefix)) {
-            return true;
-        }
+        if (isUnder(clientBase, mirrorPrefix)) return true;
         for (const auto& prefix : extraMirrorPrefixes) {
-            if (!prefix.empty() && clientBase.starts_with(prefix)) return true;
+            if (isUnder(clientBase, prefix)) return true;
         }
         return false;
     };
 
-    // A depot path lies under one of the carved-out exclude subtrees, so its
-    // in-place client mapping is intentional (the config gitignores it).
+    // A depot path lies under one of the carved-out excludes, so its in-place
+    // client mapping is intentional (the config gitignores it). A subtree
+    // exclude ('/...') strips to a base ending in '/', so a prefix test is
+    // already anchored at a path boundary; a single-file exclude has no
+    // wildcard and so no trailing '/', and must match exactly - otherwise a
+    // sibling whose name merely starts with the carved-out one
+    // ('build.h.bak') would be silently accepted as declared.
     auto underExclude = [&](const std::string& lineDepotBase) {
         for (const auto& ex : excludedDepotPaths) {
-            if (lineDepotBase.starts_with(stripWildcard(ex))) return true;
+            if (underDepotScope(stripWildcard(ex), lineDepotBase)) return true;
         }
         return false;
     };
@@ -229,7 +258,7 @@ std::vector<ViewProblem> checkViewMapping(
     for (const auto& line : view) {
         const std::string lineBase = stripWildcard(line.depot);
         const std::string clientBase = stripWildcard(line.client);
-        if (depotBase.starts_with(lineBase)) {
+        if (underDepotScope(lineBase, depotBase)) {
             effective = &line;  // this line's scope covers all of depotPath
         }
 
@@ -247,7 +276,7 @@ std::vector<ViewProblem> checkViewMapping(
         // subtree, so it fires even when the repo is the client root and the
         // repo-prefix test below is disabled (every sync lands under the root).
         const bool underDepot =
-            lineBase.starts_with(depotBase) && lineBase != depotBase;
+            underDepotScope(depotBase, lineBase) && lineBase != depotBase;
         if (underDepot) {
             problems.push_back(
                 {"'" + line.depot + " " + line.client + "' diverts part of " +
@@ -305,7 +334,7 @@ std::vector<std::string> minimalExcludePaths(
             if (q == p) continue;
             const std::string qBase = stripWildcard(q);
             // p strictly under q: excluding q already covers p.
-            if (pBase.size() > qBase.size() && pBase.starts_with(qBase)) {
+            if (pBase != qBase && underDepotScope(qBase, pBase)) {
                 nested = true;
                 break;
             }
@@ -331,23 +360,26 @@ std::string clientViewPath(const std::string& clientName,
 
 std::vector<ViewProblem> checkSpecMapping(
     const std::string& spec, const std::string& depotPath,
-    const std::string& repoDir, const std::string& mirrorDir,
+    const std::string& repoDir, const std::string& mirrorTarget,
     const std::vector<std::string>& excludedDepotPaths,
-    const std::vector<std::string>& otherMirrorDirs) {
+    const std::vector<std::string>& otherMirrorTargets) {
     const std::string clientName = specField(spec, "Client");
     const std::string clientRoot = specField(spec, "Root");
     if (clientName.empty() || clientRoot.empty()) {
         return {{"client spec has no Client:/Root: field", ""}};
     }
-    // A single-level (`/*`) include is remapped by a single-level client view
-    // line; expect the matching `/*` client suffix so the effective-mapping
-    // check compares like for like. A recursive include expects `/...`.
-    const std::string clientSuffix =
-        depotPath.ends_with("/*") ? "/*" : "/...";
+    // The client view line carries the same wildcard as the include: a
+    // single-level (`/*`) include is remapped by a `/*` line, a recursive one
+    // by `/...`, and a single-file include by a plain file-to-file line with no
+    // wildcard at all. Expect the matching suffix so the effective-mapping
+    // check compares like for like.
+    const std::string clientSuffix = depotPath.ends_with("/...")  ? "/..."
+                                     : depotPath.ends_with("/*") ? "/*"
+                                                                 : "";
     const std::string expectedClientPath =
-        clientViewPath(clientName, clientRoot, mirrorDir, clientSuffix);
+        clientViewPath(clientName, clientRoot, mirrorTarget, clientSuffix);
     if (expectedClientPath.empty()) {
-        return {{"mirror " + mirrorDir + " is not inside the client root " +
+        return {{"mirror " + mirrorTarget + " is not inside the client root " +
                      clientRoot + " - p4 cannot map it",
                  ""}};
     }
@@ -357,9 +389,9 @@ std::vector<ViewProblem> checkSpecMapping(
     // (re-include) mirrors are not mistaken for repo leaks. A mirror outside the
     // client root has no client path; skip it.
     std::vector<std::string> extraMirrorPrefixes;
-    for (const auto& other : otherMirrorDirs) {
+    for (const auto& other : otherMirrorTargets) {
         const std::string prefix =
-            clientViewPath(clientName, clientRoot, other, "/");
+            clientViewPath(clientName, clientRoot, other, "");
         if (!prefix.empty()) extraMirrorPrefixes.push_back(prefix);
     }
     return checkViewMapping(parseClientView(spec), depotPath,
@@ -672,13 +704,21 @@ std::vector<std::string> parseTaggedDepotFiles(const std::string& ztagOutput) {
     return files;
 }
 
-std::string depotRelativePath(const std::string& depotPath,
+std::string depotRelativePath(const ViewRule& rule,
                               const std::string& depotFile) {
-    const std::string base = stripWildcard(depotPath);  // ends with '/'
-    if (!base.empty() && depotFile.starts_with(base)) {
-        return depotFile.substr(base.size());
+    if (rule.scope == ViewScope::kSingleFile) {
+        return depotFile == rule.depotPath ? rule.fileName : std::string{};
     }
-    return {};
+    const std::string base = depotBaseOf(rule);  // ends with '/'
+    if (base.empty() || !depotFile.starts_with(base)) return {};
+    std::string rel = depotFile.substr(base.size());
+    // A single-level ('/*') mapping owns only the files directly in the
+    // directory; a deeper file belongs to some other rule (or to none).
+    if (rule.scope == ViewScope::kDirectFiles &&
+        rel.find('/') != std::string::npos) {
+        return {};
+    }
+    return rel;
 }
 
 bool isAddAction(const std::string& action) {

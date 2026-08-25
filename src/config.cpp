@@ -3,6 +3,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -57,24 +58,65 @@ std::vector<std::string> tokenize(const std::string& value) {
 // "//depot/x/..." (or the single-level "//depot/x/*") -> "//depot/x/" so a
 // prefix test is anchored at a path boundary ("//d/src/" must not match
 // "//d/srclib/"). The recursive-vs-single-level distinction is carried
-// separately (ViewRule::recursive), not by the stripped base.
+// separately (ViewRule::scope), not by the stripped base. A path with no
+// wildcard (a single-file rule's depot path) is returned unchanged - use
+// `depotBaseOf` when the *containing directory* is what's wanted.
 std::string stripDepotWildcard(const std::string& path) {
     if (path.ends_with("...")) return path.substr(0, path.size() - 3);
     if (path.ends_with("*")) return path.substr(0, path.size() - 1);
     return path;
 }
 
-// Whether a rule with wildcard-stripped base `base` and the given recursion
-// covers `path`: a prefix match, plus - for a single-level (`/*`) rule - the
-// requirement that nothing follows the direct child (no deeper '/').
-bool wildcardCovers(bool recursive, const std::string& base,
-                    const std::string& path) {
+// Whether a rule's governed path `base` (a directory for kRecursive /
+// kDirectFiles, the path itself for kSingleFile) covers `path`. Directory
+// bases arrive with a trailing '/' so prefix tests stay anchored at a path
+// boundary.
+bool scopeCovers(ViewScope scope, const std::string& base,
+                 const std::string& path) {
+    if (scope == ViewScope::kSingleFile) return path == base;
     if (!path.starts_with(base)) return false;
-    if (recursive) return true;
+    if (scope == ViewScope::kRecursive) return true;
     return path.find('/', base.size()) == std::string::npos;
 }
 
+// Joins a mapping base with a path relative to it, tolerating an empty base
+// (a whole-repo include, whose subtree is the repo root).
+std::string joinSubpath(const std::string& base, const std::string& rel) {
+    if (base.empty()) return rel;
+    if (rel.empty()) return base;
+    return base + "/" + rel;
+}
+
 }  // namespace
+
+std::string depotBaseOf(const ViewRule& rule) {
+    if (rule.scope != ViewScope::kSingleFile) {
+        return stripDepotWildcard(rule.depotPath);  // already ends with '/'
+    }
+    const auto slash = rule.depotPath.rfind('/');
+    return slash == std::string::npos ? std::string{}
+                                      : rule.depotPath.substr(0, slash + 1);
+}
+
+std::string mappedMirrorPath(const ViewRule& rule) {
+    return joinSubpath(rule.mirrorPath, rule.fileName);
+}
+
+std::string mappedRepoPath(const ViewRule& rule) {
+    return joinSubpath(rule.repoSubtree, rule.fileName);
+}
+
+std::string mirrorSpecOf(const ViewRule& rule) {
+    switch (rule.scope) {
+        case ViewScope::kRecursive:
+            return joinSubpath(rule.mirrorPath, "...");
+        case ViewScope::kDirectFiles:
+            return joinSubpath(rule.mirrorPath, "*");
+        case ViewScope::kSingleFile:
+            break;
+    }
+    return mappedMirrorPath(rule);
+}
 
 std::string mirrorRepoSubtree(const std::string& mirrorPath) {
     fs::path normalized = fs::path(mirrorPath).lexically_normal();
@@ -121,8 +163,12 @@ const ViewRule* effectiveRuleForDepot(const std::vector<ViewRule>& rules,
                                       const std::string& depotFile) {
     const ViewRule* effective = nullptr;
     for (const auto& rule : rules) {
-        if (wildcardCovers(rule.recursive, stripDepotWildcard(rule.depotPath),
-                           depotFile)) {
+        // A single-file rule's base is the file itself (an exact match); a
+        // subtree rule's is the wildcard-stripped directory.
+        const std::string base = rule.scope == ViewScope::kSingleFile
+                                     ? rule.depotPath
+                                     : stripDepotWildcard(rule.depotPath);
+        if (scopeCovers(rule.scope, base, depotFile)) {
             effective = &rule;  // later declaration wins
         }
     }
@@ -133,16 +179,20 @@ const ViewRule* effectiveRuleForRepo(const std::vector<ViewRule>& rules,
                                      const std::string& repoRel) {
     const ViewRule* effective = nullptr;
     for (const auto& rule : rules) {
-        const std::string& sub = rule.repoSubtree;
+        const std::string sub = mappedRepoPath(rule);
         bool matches;
         if (sub.empty()) {
             matches = true;  // whole-repo include (always recursive)
         } else if (repoRel == sub) {
+            // The governed path itself: the file for a single-file rule, the
+            // subtree's own name for a directory one.
             matches = true;
+        } else if (rule.scope == ViewScope::kSingleFile) {
+            matches = false;  // one path and nothing below it
         } else if (repoRel.starts_with(sub + "/")) {
             // A single-level rule covers only direct children: nothing may
             // follow the component after the subtree prefix.
-            matches = rule.recursive ||
+            matches = rule.scope == ViewScope::kRecursive ||
                       repoRel.find('/', sub.size() + 1) == std::string::npos;
         } else {
             matches = false;
@@ -187,21 +237,23 @@ const std::string kGwDenylist =
     "\n# gw's mirror directory - P4-managed, not for Git\n"
     ".p4gw/\n";
 
-// A working-tree subtree named in the config and whether it is (last-wins)
+// A working-tree path named in the config and whether it is (last-wins)
 // tracked (an include) or carved out (an exclude).
 struct Boundary {
     std::string subtree;             // forward slashes, no trailing slash
     std::vector<std::string> comps;  // subtree split into components
     bool tracked;                    // include (true) vs exclude (false)
-    bool recursive;                  // whole subtree (true) vs direct files only
+    ViewScope scope;                 // how much of it the rule maps
 };
 
-// A directory the allowlist must name: a kept tracked subtree ("leaf",
-// re-included whole) or one of its ancestors ("intermediate", re-included but
-// with its other children re-excluded via `/dir/*`).
+// A path the allowlist must name: a kept tracked subtree ("leaf", re-included
+// whole) or one of its ancestors ("intermediate", re-included but with its
+// other children re-excluded via `/dir/*`). A single-file include is a leaf
+// too, flagged so its line is written without a trailing slash.
 struct LayoutDir {
     std::vector<std::string> components;
     bool isLeaf;
+    bool isFile = false;
 };
 
 // The shape both allowlist-style files are generated from: the .gitignore
@@ -231,21 +283,24 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
     // include, handled separately by the emitters.
     std::vector<Boundary> boundaries;
     for (const auto& rule : rules) {
-        if (rule.repoSubtree.empty()) {
+        // The path the rule governs, which for a single-file include is the
+        // file itself - never empty, so only a subtree include can be the
+        // whole-repo mapping.
+        const std::string governed = mappedRepoPath(rule);
+        if (governed.empty()) {
             if (!rule.exclude) layout.wholeRepoMapped = true;
             continue;
         }
         auto it = std::find_if(boundaries.begin(), boundaries.end(),
                                [&](const Boundary& b) {
-                                   return b.subtree == rule.repoSubtree;
+                                   return b.subtree == governed;
                                });
         if (it == boundaries.end()) {
-            boundaries.push_back({rule.repoSubtree,
-                                  pathComponents(rule.repoSubtree),
-                                  !rule.exclude, rule.recursive});
+            boundaries.push_back({governed, pathComponents(governed),
+                                  !rule.exclude, rule.scope});
         } else {
-            it->tracked = !rule.exclude;      // later rule wins
-            it->recursive = rule.recursive;   // ... and carries its wildcard
+            it->tracked = !rule.exclude;  // later rule wins
+            it->scope = rule.scope;       // ... and carries its wildcard
         }
     }
 
@@ -268,7 +323,7 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
     // sub-directories (`/sub/*/`), so it is neither a plain carve-out nor a
     // whole re-include.
     for (const auto& b : boundaries) {
-        if (b.tracked && !b.recursive) {
+        if (b.tracked && b.scope == ViewScope::kDirectFiles) {
             layout.singleLevelCarveouts.push_back(b.subtree);
         }
     }
@@ -289,12 +344,16 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
         }
         return best;
     };
-    std::vector<std::vector<std::string>> kept;
+    struct KeptLeaf {
+        std::vector<std::string> comps;
+        bool isFile;
+    };
+    std::vector<KeptLeaf> kept;
     for (const auto& b : boundaries) {
         if (!b.tracked) continue;
         const Boundary* anc = nearestBoundary(b.comps);
         if (anc != nullptr && anc->tracked) continue;  // already covered
-        kept.push_back(b.comps);
+        kept.push_back({b.comps, b.scope == ViewScope::kSingleFile});
     }
 
     // Every directory that must appear: each kept subtree plus all of its
@@ -307,13 +366,14 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
     };
     for (const auto& leaf : kept) {
         std::vector<std::string> prefix;
-        for (size_t i = 0; i < leaf.size(); ++i) {
-            prefix.push_back(leaf[i]);
-            const bool isLeaf = (i + 1 == leaf.size());
+        for (size_t i = 0; i < leaf.comps.size(); ++i) {
+            prefix.push_back(leaf.comps[i]);
+            const bool isLeaf = (i + 1 == leaf.comps.size());
             if (LayoutDir* existing = findDir(prefix)) {
                 existing->isLeaf = existing->isLeaf || isLeaf;
+                existing->isFile = existing->isFile || (isLeaf && leaf.isFile);
             } else {
-                layout.dirs.push_back({prefix, isLeaf});
+                layout.dirs.push_back({prefix, isLeaf, isLeaf && leaf.isFile});
             }
         }
     }
@@ -329,6 +389,13 @@ std::string joinComponents(const std::vector<std::string>& c) {
     return s;  // leading slash, no trailing slash, e.g. "/a/b"
 }
 
+// The re-include line for one layout entry: "!/dir/" for a directory, and
+// "!/dir/file.txt" (no trailing slash, which would only match a directory) for
+// a single-file include's leaf.
+std::string reincludeLine(const LayoutDir& d) {
+    return "!" + joinComponents(d.components) + (d.isFile ? "" : "/");
+}
+
 // The allowlist body's re-include / child-re-exclude lines, in depth order: a
 // "!/dir/" re-include for every directory the layout names, and a "/dir/*"
 // child re-exclusion for each intermediate one (so the next deeper re-include
@@ -341,8 +408,7 @@ std::vector<std::string> trackingLinesFromLayout(const AllowlistLayout& layout) 
         maxDepth = std::max(maxDepth, d.components.size());
     for (size_t depth = 1; depth <= maxDepth; ++depth) {
         for (const auto& d : layout.dirs)
-            if (d.components.size() == depth)
-                lines.push_back("!" + joinComponents(d.components) + "/");
+            if (d.components.size() == depth) lines.push_back(reincludeLine(d));
         for (const auto& d : layout.dirs)
             if (d.components.size() == depth && !d.isLeaf)
                 lines.push_back(joinComponents(d.components) + "/*");
@@ -401,8 +467,7 @@ std::vector<AllowlistLine> requiredAllowlistLines(const AllowlistLayout& layout)
             // Depth-1 dirs sit directly under the root "/*"; deeper ones need a
             // re-include only when their parent re-excludes them.
             if (parent.empty() || emitsChildExclude(parent)) {
-                lines.push_back(
-                    {"!" + joinComponents(d.components) + "/", d.components});
+                lines.push_back({reincludeLine(d), d.components});
             }
         }
         for (const auto& d : layout.dirs) {
@@ -639,23 +704,106 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                     where + ": 'include' takes two values: "
                     "<depot_path> <mirror_path>");
             }
+            const std::string& depot = tokens[0];
+            const std::string& mirror = tokens[1];
+
+            // The depot side names what to map, and its wildcard says how much:
+            // '/...' the whole subtree, '/*' only the files directly in that
+            // directory (the p4 single-level view wildcard, which pairs with a
+            // recursive 'exclude' to keep a directory's own files while
+            // dropping its sub-directories), and no wildcard at all a single
+            // file.
             ViewRule rule;
             rule.exclude = false;
-            rule.depotPath = tokens[0];
-            rule.mirrorPath = tokens[1];
-            rule.repoSubtree = mirrorRepoSubtree(tokens[1]);
-            // A depot path ends in '/...' (map the whole subtree) or '/*' (map
-            // only the files directly in that directory, like a p4 single-level
-            // view line). '/*' pairs with a recursive 'exclude' to keep a
-            // directory's own files while dropping its sub-directories.
-            if (!rule.depotPath.ends_with("/...") &&
-                !rule.depotPath.ends_with("/*")) {
+            rule.depotPath = depot;
+            if (depot.ends_with("/...")) {
+                rule.scope = ViewScope::kRecursive;
+            } else if (depot.ends_with("/*")) {
+                rule.scope = ViewScope::kDirectFiles;
+            } else if (depot.ends_with("...") || depot.ends_with("*") ||
+                       depot.ends_with("/") || depot.empty()) {
+                // A wildcard that is not its own path component ('src...'), or
+                // a bare directory with no wildcard: neither names a subtree
+                // nor a file.
                 return std::unexpected(
-                    where + ": depot path '" + rule.depotPath +
-                    "' must end with '/...' (whole subtree) or '/*' (direct "
-                    "files only)");
+                    where + ": depot path '" + depot +
+                    "' must end with '/...' (whole subtree), '/*' (direct "
+                    "files only), or name a single file");
+            } else {
+                rule.scope = ViewScope::kSingleFile;
             }
-            rule.recursive = rule.depotPath.ends_with("/...");
+
+            // The mirror side carries the same wildcard, so a config line reads
+            // like the client view line it stands for. Older configs left it
+            // off; those are still accepted, with the depot side's wildcard
+            // inferred (and doctor recommending the explicit form).
+            if (rule.scope == ViewScope::kSingleFile) {
+                if (mirror.ends_with("/...") || mirror.ends_with("/*") ||
+                    mirror.ends_with("/")) {
+                    return std::unexpected(
+                        where + ": mirror path '" + mirror +
+                        "' has a directory wildcard, but depot path '" + depot +
+                        "' maps a single file - end the mirror path with the "
+                        "file name");
+                }
+                const auto depotSlash = depot.rfind('/');
+                const std::string depotName = depot.substr(depotSlash + 1);
+                const auto mirrorSlash = mirror.rfind('/');
+                if (mirrorSlash == std::string::npos) {
+                    return std::unexpected(
+                        where + ": mirror path '" + mirror +
+                        "' must sit under the '.p4gw' mirror container, e.g. "
+                        "'.p4gw/" + depotName + "'");
+                }
+                rule.fileName = mirror.substr(mirrorSlash + 1);
+                if (rule.fileName != depotName) {
+                    return std::unexpected(
+                        where + ": mirror path '" + mirror + "' renames '" +
+                        depotName + "' to '" + rule.fileName +
+                        "' - gw maps a file under its own name; use '" +
+                        mirror.substr(0, mirrorSlash + 1) + depotName + "'");
+                }
+                rule.mirrorPath = mirror.substr(0, mirrorSlash);
+            } else {
+                const char* wildcard =
+                    rule.scope == ViewScope::kRecursive ? "/..." : "/*";
+                const char* other =
+                    rule.scope == ViewScope::kRecursive ? "/*" : "/...";
+                if (mirror.ends_with(other)) {
+                    return std::unexpected(
+                        where + ": depot path '" + depot + "' ends with '" +
+                        wildcard + "' but mirror path '" + mirror +
+                        "' ends with '" + other +
+                        "' - both sides take the same wildcard");
+                }
+                if (mirror.ends_with(wildcard)) {
+                    rule.mirrorPath =
+                        mirror.substr(0, mirror.size() - std::strlen(wildcard));
+                } else if (mirror.ends_with("/")) {
+                    return std::unexpected(
+                        where + ": mirror path '" + mirror +
+                        "' must end with '" + wildcard +
+                        "' to match depot path '" + depot + "'");
+                } else if (mirror.ends_with("...") || mirror.ends_with("*")) {
+                    // A wildcard that is not its own path component would be
+                    // silently taken as part of the directory name.
+                    return std::unexpected(
+                        where + ": mirror path '" + mirror +
+                        "' ends with a wildcard that is not its own path "
+                        "component - write '" + stripDepotWildcard(mirror) +
+                        wildcard + "'");
+                } else {
+                    rule.mirrorPath = mirror;
+                    rule.mirrorWildcardImplied = true;
+                }
+                if (rule.mirrorPath.empty()) {
+                    return std::unexpected(where + ": mirror path '" + mirror +
+                                           "' names no mirror directory");
+                }
+            }
+            rule.repoSubtree = mirrorRepoSubtree(rule.mirrorPath);
+
+            const std::string mapped = mappedMirrorPath(rule);
             for (const auto& existing : config.rules) {
                 if (existing.exclude) continue;
                 if (existing.depotPath == rule.depotPath) {
@@ -663,9 +811,8 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                                            rule.depotPath +
                                            "' is mapped twice");
                 }
-                if (existing.mirrorPath == rule.mirrorPath) {
-                    return std::unexpected(where + ": mirror path '" +
-                                           rule.mirrorPath +
+                if (mappedMirrorPath(existing) == mapped) {
+                    return std::unexpected(where + ": mirror path '" + mapped +
                                            "' is used by two includes");
                 }
             }
@@ -696,7 +843,9 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             std::string subtree;
             for (auto it = config.rules.rbegin(); it != config.rules.rend();
                  ++it) {
-                if (it->exclude) continue;
+                // A single-file include maps one file, so nothing can be
+                // carved out of it; only subtree includes can enclose.
+                if (it->exclude || it->scope == ViewScope::kSingleFile) continue;
                 subtree = excludedRepoSubtree(it->depotPath, it->repoSubtree,
                                               excludePath);
                 if (!subtree.empty()) break;
@@ -763,7 +912,8 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
     if (includeRules(config.rules).empty()) {
         return std::unexpected(path + ": no 'include' lines - add at least one "
                                "('gw setup' writes the template). Format: "
-                               "include = //depot/yourproject/src/... .p4gw/src");
+                               "include = //depot/yourproject/src/... "
+                               ".p4gw/src/...");
     }
     return config;
 }

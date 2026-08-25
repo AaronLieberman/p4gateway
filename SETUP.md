@@ -33,8 +33,8 @@ gw setup --depot-path //depot/project/main/src/... --client aaron-dev
 This writes `p4gw.cfg`; anything not given as a flag is left as a commented
 placeholder to edit. See the
 [configuration reference](INSTRUCTIONS.md#configuration) for the full file
-format — including mapping several subtrees into one repo and carving
-directories out of a subtree.
+format — including mapping several subtrees into one repo, carving
+directories out of a subtree, and mapping a single file on its own.
 
 ## 2. Add the client-view line
 

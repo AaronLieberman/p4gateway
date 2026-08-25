@@ -23,12 +23,25 @@ Rules may be intermixed freely, and a later `include` **deeper** than an
 win64-yes-linux-no pattern: `exclude src/lib`, then `include
 src/lib/public/win64`). An `include` depot path ends in `/...` (recursive) or
 `/*` (single-level — only the files directly in that directory, the p4 view
-wildcard); a `/*` include pairs with a recursive `exclude` to keep a
+wildcard), or names a single file outright (`include = //depot/tools/go.bat
+.p4gw/tools/go.bat`); a `/*` include pairs with a recursive `exclude` to keep a
 directory's own files while dropping its sub-directories (`exclude src/build`,
-then `include src/build/*`). The recursive-vs-single-level bit is carried on
-`ViewRule::recursive` and threaded through `effectiveRuleFor*` (single-level
-covers only direct children) and `buildGitignore` (a `/src/build/*/` line
-re-excludes the child dirs). Excludes are always `/...`. The view check tolerates all of this plus per-platform
+then `include src/build/*`). **The wildcard goes on both sides** — the mirror
+path carries the same `/...`, `/*`, or file name, so a config line reads like
+the client view line it stands for; a config that omits the mirror-side
+wildcard still loads (read as the depot side's, with
+`ViewRule::mirrorWildcardImplied` set) and `gw doctor` prints the explicit line
+to paste back. The three-way distinction is carried on `ViewRule::scope`
+(`ViewScope::kRecursive` / `kDirectFiles` / `kSingleFile`) and threaded through
+`effectiveRuleFor*` (single-level covers only direct children, single-file only
+its own path), `p4::depotRelativePath` (rule-aware, and also how callers tell
+"belongs to another mapping" apart), and `buildGitignore` (a `/src/build/*/`
+line re-excludes the child dirs; a file include emits `!/tools/go.bat` with the
+`/tools/*` chain above it). `mirrorPath`/`repoSubtree` are always
+*directories* — for a single-file rule the file's *containing* directory, with
+the name in `ViewRule::fileName`; `mappedMirrorPath`/`mappedRepoPath` join them
+back and `depotBaseOf` gives the matching depot directory. Excludes are always
+`/...`. The view check tolerates all of this plus per-platform
 peer carve-outs done purely in the client view (keep `win64/`, drop its
 `linux/` peer); its one hard rule is that nothing may map into the repo outside
 a mirror unless an `exclude` declares it. The starter `.gitignore` `gw init`

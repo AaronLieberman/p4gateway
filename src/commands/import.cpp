@@ -214,7 +214,7 @@ std::expected<std::string, std::string> buildSnapshot(
         nowRel.reserve(owned.size());
         for (const auto& entry : owned) {
             std::string rel =
-                p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                p4::depotRelativePath(*rule, entry.depotFile);
             if (!rel.empty()) nowRel.emplace_back(std::move(rel), entry.rev);
         }
         for (const auto& entry : owned) {
@@ -238,7 +238,7 @@ std::expected<std::string, std::string> buildSnapshot(
                     continue;
                 }
                 std::string rel =
-                    p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                    p4::depotRelativePath(*rule, entry.depotFile);
                 if (!rel.empty()) thenRel.emplace_back(std::move(rel), entry.rev);
             }
             actions = mirror::diffHaveState(thenRel, nowRel);
@@ -281,7 +281,7 @@ std::expected<std::string, std::string> buildSnapshot(
             std::unordered_set<std::string> haveRel;
             for (const auto& entry : *haveDepot) {
                 std::string rel =
-                    p4::depotRelativePath(rule->depotPath, entry.depotFile);
+                    p4::depotRelativePath(*rule, entry.depotFile);
                 if (!rel.empty()) haveRel.insert(std::move(rel));
             }
             std::vector<std::string> mirrorTracked;
@@ -308,7 +308,7 @@ std::expected<std::string, std::string> buildSnapshot(
         std::vector<mirror::OpenedMirrorFile> openedMirror;
         for (const auto& o : *opened) {
             std::string rel =
-                p4::depotRelativePath(rule->depotPath, o.depotFile);
+                p4::depotRelativePath(*rule, o.depotFile);
             if (rel.empty()) continue;  // belongs to a different mapping
             openedMirror.push_back({std::move(rel), !p4::isAddAction(o.action)});
         }
@@ -384,10 +384,7 @@ std::expected<std::string, std::string> buildSnapshot(
 
         // Restore depot-head content for files open in the mirror.
         if (!plan.depotReads.empty()) {
-            std::string depotBase = item.rule->depotPath;
-            if (depotBase.ends_with("...")) {
-                depotBase.resize(depotBase.size() - 3);
-            }
+            const std::string depotBase = depotBaseOf(*item.rule);
             for (const auto& rel : plan.depotReads) {
                 const fs::path dest =
                     fs::path(item.worktreeDir) / fs::path(rel);
@@ -795,11 +792,12 @@ int cmdImport(const Args& args) {
             }
             std::vector<std::string> subtrees;
             for (const auto* rule : includeRules(config->rules)) {
-                if (rule->repoSubtree.empty()) {
+                const std::string mapped = mappedRepoPath(*rule);
+                if (mapped.empty()) {
                     subtrees.clear();  // a whole-repo include: sweep everywhere
                     break;
                 }
-                subtrees.push_back(rule->repoSubtree);
+                subtrees.push_back(mapped);
             }
             if (restored && git::cleanUntracked(subtrees, root).has_value()) {
                 std::fprintf(stderr,
