@@ -142,9 +142,11 @@ int cmdSetup(const Args& args) {
                 "names a single\n"
                 "# file; the mirror path takes the same wildcard, so the line "
                 "reads like the\n"
-                "# client view line it stands for. An exclude is always '/...' "
-                "and must fall\n"
-                "# under a preceding include. Format and examples:\n"
+                "# client view line it stands for. An exclude ends in '/...' "
+                "(a whole carved-out\n"
+                "# subtree) or names a single file, and must fall under a "
+                "preceding include.\n"
+                "# Format and examples:\n"
                 "#   include = <depot_path>  <mirror_path>   (same wildcard on "
                 "both sides)\n"
                 "#   include = //depot/yourproject/src/...     .p4gw/src/...\n"
@@ -161,7 +163,10 @@ int cmdSetup(const Args& args) {
                 ".p4gw/src/build/*\n"
                 "# A single file, mapped under its own name on both sides:\n"
                 "#   include = //depot/yourproject/version.txt  "
-                ".p4gw/version.txt\n";
+                ".p4gw/version.txt\n"
+                "# A single file carved back out of a mapped subtree (its "
+                "siblings stay mapped):\n"
+                "#   exclude = //depot/yourproject/src/gen/build.h\n";
         if (depotPath.empty()) {
             file << "#include = //depot/yourproject/src/... " << mirrorPath
                  << "/...\n";

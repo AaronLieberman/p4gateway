@@ -122,6 +122,9 @@ constexpr const char* kObliterateFiles[] = {
     // itSingleFileInclude's lone mapped file under the in-place bin/ directory;
     // obliterated in-step, listed here as an abort safety net.
     "bin/version.txt",
+    // itSingleFileExclude's carved-out file and its mapped sibling; obliterated
+    // in-step, listed here as an abort safety net.
+    "src/gen/build.h", "src/gen/keep.h",
     // itOrphanedFiles' retired subtree; obliterated in-step, listed here as a
     // safety net so an aborted run's cleanup still removes it.
     "src/vendor/lib.txt",
@@ -3163,6 +3166,142 @@ std::expected<void, std::string> itSingleFileInclude(ItContext& it) {
     return {};
 }
 
+// The single-file `exclude`: one depot file carved back out of a mapped
+// subtree (`exclude = //depot/.../src/gen/build.h`) while its siblings stay
+// mapped. The live payoff is that the carve-out is enforced by the .gitignore
+// line and nothing else - the file is still under the recursive src remap, so
+// p4 syncs it into the mirror and import's full walk still copies it into the
+// staging tree; only the `/src/gen/build.h` re-exclusion (no trailing slash,
+// or it would match a directory and never the file) keeps it out of the
+// baseline. Checks that `gw init` writes that line and that import ships the
+// sibling but not the carved-out file, then restores the fixture. Runs on
+// 'main', clean, after itSingleFileInclude.
+std::expected<void, std::string> itSingleFileExclude(ItContext& it) {
+    const fs::path cfg = fs::path(it.repoDir) / "p4gw.cfg";
+    const fs::path gitignore = fs::path(it.repoDir) / ".gitignore";
+    const fs::path manifest =
+        fs::path(it.repoDir) / ".git" / "p4gw" / "have-main";
+
+    // "//.../src/..." -> "//.../src/", then the two fixture files.
+    std::string srcBase = it.srcDepotPath;
+    srcBase.resize(srcBase.size() - 3);
+    const std::string carvedDepot = srcBase + "gen/build.h";
+    const std::string keptDepot = srcBase + "gen/keep.h";
+    const std::string carvedRel = "src/gen/build.h";
+    const std::string keptRel = "src/gen/keep.h";
+    const std::string carveoutLine = "/src/gen/build.h";
+
+    const fs::path genMirror = fs::path(it.mirrorDir) / "gen";
+
+    auto savedCfg = readFile(cfg);
+    if (!savedCfg) return std::unexpected(savedCfg.error());
+    auto savedIgnore = readFile(gitignore);
+    if (!savedIgnore) return std::unexpected(savedIgnore.error());
+    auto savedMain = git::revParse("main", it.repoDir);
+    if (!savedMain) return std::unexpected(savedMain.error());
+    auto savedRef = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!savedRef) return std::unexpected(savedRef.error());
+
+    // (1) Submit both files through the *existing* recursive src mapping, so
+    // they land in the mirror together and only the config tells them apart.
+    if (auto r = writeFile(genMirror / "build.h",
+                           "// generated, carved out by a single-file exclude\n");
+        !r) {
+        return r;
+    }
+    if (auto r = writeFile(genMirror / "keep.h",
+                           "// the sibling that stays mapped\n");
+        !r) {
+        return r;
+    }
+    auto addCl =
+        p4::createChangelist(it.p4, "gw integtest: single-file exclude fixture");
+    if (!addCl) return std::unexpected(addCl.error());
+    auto reconciled =
+        trace(it, "p4 reconcile -c " + *addCl + " " + it.srcDepotPath,
+              p4::reconcileToCl(it.p4, *addCl, it.srcDepotPath));
+    if (!reconciled) return std::unexpected(reconciled.error());
+    auto submitted =
+        trace(it, "p4 submit -c " + *addCl, p4::submit(it.p4, *addCl));
+    if (!submitted) return std::unexpected(submitted.error());
+
+    // (2) Carve the one file out. No client-view change: it keeps syncing into
+    // the mirror, which is what makes the .gitignore line load-bearing.
+    auto wroteCfg = appendFile(cfg, "\nexclude = " + carvedDepot + "\n");
+    if (!wroteCfg) return wroteCfg;
+
+    // (3) `gw init` appends the carve-out re-exclusion, by file name.
+    auto reinit = runGw(it, it.repoDir, {"init"});
+    if (!reinit) return std::unexpected(reinit.error());
+    auto fixedIgnore = readFile(gitignore);
+    if (!fixedIgnore) return std::unexpected(fixedIgnore.error());
+    if (fixedIgnore->find(carveoutLine) == std::string::npos) {
+        return std::unexpected("'" + carveoutLine +
+                               "' is missing from .gitignore after gw init:\n" +
+                               *fixedIgnore);
+    }
+    if (fixedIgnore->find(carveoutLine + "/") != std::string::npos) {
+        return std::unexpected("gw init wrote the carve-out with a trailing "
+                               "slash, which only matches a directory - the "
+                               "file would still be tracked:\n" + *fixedIgnore);
+    }
+
+    // (4) Import ships the sibling and drops the carved-out file. Force the
+    // full walk (delete the manifest) so the mirror listing - which still
+    // contains build.h - is what import reconciles against.
+    std::error_code ec;
+    fs::remove(manifest, ec);
+    auto imported = runGw(it, it.repoDir, {"import"});
+    if (!imported) return std::unexpected(imported.error());
+    auto tree = git::run({"ls-tree", "-r", "--name-only", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!tree) return std::unexpected(tree.error());
+    if (tree->find(keptRel) == std::string::npos) {
+        return std::unexpected("import dropped the sibling " + keptRel +
+                               " - the exclude carved out more than its "
+                               "file:\n" + *tree);
+    }
+    if (tree->find(carvedRel) != std::string::npos) {
+        return std::unexpected("import shipped " + carvedRel +
+                               ", which a single-file 'exclude' carves out:\n" +
+                               *tree);
+    }
+
+    // (5) Restore: opens dropped, both refs rolled back, config and .gitignore
+    // rewritten, the throwaway depot files obliterated, and the mirror's gen
+    // directory cleared so a later full walk does not see them again.
+    auto reverted = trace(it, "p4 revert " + it.p4DepotPath,
+                          p4::revert(it.p4, it.p4DepotPath));
+    if (!reverted) return std::unexpected(reverted.error());
+    auto backToMain = git::run({"switch", "-f", "main"}, it.repoDir);
+    if (!backToMain) return std::unexpected(backToMain.error());
+    auto resetMain = git::run({"reset", "--hard", *savedMain}, it.repoDir);
+    if (!resetMain) return std::unexpected(resetMain.error());
+    auto rolledBack = git::updateRef("refs/p4gw/main", *savedRef, it.repoDir);
+    if (!rolledBack) return std::unexpected(rolledBack.error());
+    auto restoredIgnore = writeFile(gitignore, *savedIgnore);
+    if (!restoredIgnore) return restoredIgnore;
+    auto restoredCfg = writeFile(cfg, *savedCfg);
+    if (!restoredCfg) return restoredCfg;
+    auto guard = itVerifyThrowaway(it);
+    if (!guard) return std::unexpected(guard.error());
+    for (const std::string& depotFile : {carvedDepot, keptDepot}) {
+        auto obliterated = trace(it, "p4 obliterate -y " + depotFile,
+                                 p4::obliterate(it.p4, depotFile));
+        if (!obliterated) return std::unexpected(obliterated.error());
+    }
+    fs::remove_all(genMirror, ec);
+    fs::remove_all(fs::path(it.repoDir) / "src" / "gen", ec);
+    fs::remove(manifest, ec);
+    auto dirty = git::isDirty(it.repoDir);
+    if (!dirty) return std::unexpected(dirty.error());
+    if (*dirty) {
+        return std::unexpected("restore left the working tree dirty; later "
+                               "steps need a clean checkout");
+    }
+    return {};
+}
+
 // The orphaned-file lifecycle, end to end: a subtree is imported into Git, then
 // retired from the client view and p4gw.cfg. Its files stay tracked - import
 // only reconciles *inside* a mapping, so once the mapping is gone nothing
@@ -4446,6 +4585,9 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("single-file include: one depot file mapped on its "
                            "own",
                            [&] { return itSingleFileInclude(it); });
+        steps.emplace_back("single-file exclude: one depot file carved out of "
+                           "a mapped subtree",
+                           [&] { return itSingleFileExclude(it); });
         steps.emplace_back("retired subtree: doctor reports the orphans and the "
                            "cleanup is p4-safe",
                            [&] { return itOrphanedFiles(it); });

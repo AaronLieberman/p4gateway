@@ -256,15 +256,24 @@ struct LayoutDir {
     bool isFile = false;
 };
 
+// A carved-out path the allowlist must re-exclude, and whether it names a file
+// (a single-file `exclude`) rather than a directory.
+struct Carveout {
+    std::string subtree;
+    bool isFile;
+};
+
 // The shape both allowlist-style files are generated from: the .gitignore
 // emits it as ignore/re-include lines and the .rgignore managed block as the
 // inverse reopen lines, so the two stay in lockstep by construction.
 struct AllowlistLayout {
     bool wholeRepoMapped = false;
     bool anyTracked = false;
-    // Carved-out subtrees with no re-included descendant, first-seen order.
-    // (A carve-out that has one shows up as an intermediate in `dirs`.)
-    std::vector<std::string> plainCarveouts;
+    // Carved-out paths with no re-included descendant, first-seen order.
+    // (A carve-out that has one shows up as an intermediate in `dirs`.) A
+    // single-file `exclude` is one of these too, flagged so its line is written
+    // without a trailing slash.
+    std::vector<Carveout> plainCarveouts;
     // Tracked subtrees mapped single-level (`/*`): their own files are kept
     // (by the subtree's re-include), but their sub-directories must be
     // re-excluded with a `/sub/*/` line. First-seen order.
@@ -316,7 +325,10 @@ AllowlistLayout computeAllowlistLayout(const std::vector<ViewRule>& rules) {
                             return o.tracked &&
                                    isStrictAncestor(b.comps, o.comps);
                         });
-        if (!hasReinclude) layout.plainCarveouts.push_back(b.subtree);
+        if (!hasReinclude) {
+            layout.plainCarveouts.push_back(
+                {b.subtree, b.scope == ViewScope::kSingleFile});
+        }
     }
 
     // A tracked single-level subtree keeps its own files but re-excludes its
@@ -394,6 +406,13 @@ std::string joinComponents(const std::vector<std::string>& c) {
 // a single-file include's leaf.
 std::string reincludeLine(const LayoutDir& d) {
     return "!" + joinComponents(d.components) + (d.isFile ? "" : "/");
+}
+
+// The re-exclusion line for one plain carve-out - the mirror image:
+// "/src/thirdparty/" for a carved-out directory, "/src/notes.txt" for a
+// single-file `exclude`.
+std::string carveoutLine(const Carveout& c) {
+    return "/" + c.subtree + (c.isFile ? "" : "/");
 }
 
 // The allowlist body's re-include / child-re-exclude lines, in depth order: a
@@ -479,8 +498,8 @@ std::vector<AllowlistLine> requiredAllowlistLines(const AllowlistLayout& layout)
     }
     // The trailing re-exclusions, in buildGitignore's order: the plain
     // carve-outs, then a single-level mapping's child directories.
-    for (const auto& sub : layout.plainCarveouts) {
-        lines.push_back({"/" + sub + "/", pathComponents(sub)});
+    for (const auto& c : layout.plainCarveouts) {
+        lines.push_back({carveoutLine(c), pathComponents(c.subtree)});
     }
     for (const auto& sub : layout.singleLevelCarveouts) {
         lines.push_back({"/" + sub + "/*/", pathComponents(sub)});
@@ -540,11 +559,11 @@ std::string buildGitignore(const std::vector<ViewRule>& rules,
     // body instead (via `layout.dirs`), so it is not in this list.
     auto appendExclusions = [&](std::string& out) {
         if (layout.plainCarveouts.empty()) return;
-        out += "\n# Directories under a mapped subtree that are carved out of "
+        out += "\n# Paths under a mapped subtree that are carved out of "
                "the mirror\n# (an 'exclude' line): they sync in place / are "
                "unsynced, like unmapped\n# depot content, so Git ignores "
                "them.\n";
-        for (const auto& sub : layout.plainCarveouts) out += "/" + sub + "/\n";
+        for (const auto& c : layout.plainCarveouts) out += carveoutLine(c) + "\n";
     };
 
     // Re-excludes the sub-directories of a single-level (`/*`) mapped subtree,
@@ -830,15 +849,26 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                     where + ": 'exclude' takes one value: <depot_path>");
             }
             const std::string& excludePath = tokens[0];
-            if (excludePath.ends_with("/*")) {
+            // A subtree carve-out is always recursive ('/...'); a wildcard-less
+            // path carves out that one file. '/*' is neither.
+            ViewScope excludeScope = ViewScope::kRecursive;
+            if (excludePath.ends_with("/...")) {
+                excludeScope = ViewScope::kRecursive;
+            } else if (excludePath.ends_with("/*")) {
                 return std::unexpected(
                     where + ": exclude path '" + excludePath +
-                    "' cannot use '/*'; an exclude is always recursive - end it "
-                    "with '/...'");
-            }
-            if (!excludePath.ends_with("/...")) {
-                return std::unexpected(where + ": exclude path '" + excludePath +
-                                       "' must end with '/...'");
+                    "' cannot use '/*'; a subtree exclude is always recursive - "
+                    "end it with '/...', or name a single file to carve out "
+                    "just that file");
+            } else if (excludePath.ends_with("...") ||
+                       excludePath.ends_with("*") ||
+                       excludePath.ends_with("/") || excludePath.empty()) {
+                return std::unexpected(
+                    where + ": exclude path '" + excludePath +
+                    "' must end with '/...' (whole subtree) or name a single "
+                    "file");
+            } else {
+                excludeScope = ViewScope::kSingleFile;
             }
             std::string subtree;
             for (auto it = config.rules.rbegin(); it != config.rules.rend();
@@ -865,7 +895,23 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
             ViewRule rule;
             rule.exclude = true;
             rule.depotPath = excludePath;
-            rule.repoSubtree = subtree;
+            rule.scope = excludeScope;
+            // `subtree` is the whole carved-out path relative to the repo. For
+            // a single-file exclude that path *is* the file, so split its name
+            // off to keep `repoSubtree` a directory, exactly as an `include`
+            // carries it (mappedRepoPath joins the two back).
+            if (excludeScope == ViewScope::kSingleFile) {
+                const auto slash = subtree.rfind('/');
+                if (slash == std::string::npos) {
+                    rule.fileName = subtree;
+                    rule.repoSubtree.clear();
+                } else {
+                    rule.fileName = subtree.substr(slash + 1);
+                    rule.repoSubtree = subtree.substr(0, slash);
+                }
+            } else {
+                rule.repoSubtree = subtree;
+            }
             config.rules.push_back(std::move(rule));
         } else if (key == "client") {
             config.client = value;
@@ -1055,7 +1101,7 @@ std::string buildRgignoreSection(const std::vector<ViewRule>& rules,
     for (const auto& d : layout.dirs) {
         if (!d.isLeaf) out += "!" + joinComponents(d.components) + "/[!.]*\n";
     }
-    for (const auto& sub : layout.plainCarveouts) out += "!/" + sub + "/\n";
+    for (const auto& c : layout.plainCarveouts) out += "!" + carveoutLine(c) + "\n";
 
     // The reopens above outrank every ignore file per path, including the
     // denylists, so anything that must stay hidden from searches is repeated

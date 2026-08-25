@@ -40,8 +40,11 @@ line re-excludes the child dirs; a file include emits `!/tools/go.bat` with the
 `/tools/*` chain above it). `mirrorPath`/`repoSubtree` are always
 *directories* — for a single-file rule the file's *containing* directory, with
 the name in `ViewRule::fileName`; `mappedMirrorPath`/`mappedRepoPath` join them
-back and `depotBaseOf` gives the matching depot directory. Excludes are always
-`/...`. The view check tolerates all of this plus per-platform
+back and `depotBaseOf` gives the matching depot directory. An `exclude` is
+`/...` (a carved-out subtree) or, the same way, a single file
+(`exclude = //depot/src/gen/build.h` drops one file while its siblings stay
+mapped, gitignored as `/src/gen/build.h` with no trailing slash); `/*` is only
+ever an `include`. The view check tolerates all of this plus per-platform
 peer carve-outs done purely in the client view (keep `win64/`, drop its
 `linux/` peer); its one hard rule is that nothing may map into the repo outside
 a mirror unless an `exclude` declares it. The starter `.gitignore` `gw init`

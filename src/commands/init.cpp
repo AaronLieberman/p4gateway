@@ -272,7 +272,9 @@ int cmdInit(const Args& args) {
     // for an existing .gitignore we append any that are missing below.
     std::vector<std::string> excludeEntries;
     for (const auto& rule : config->rules) {
-        if (!rule.exclude || rule.repoSubtree.empty()) continue;
+        if (!rule.exclude) continue;
+        const std::string carved = mappedRepoPath(rule);
+        if (carved.empty()) continue;
         // A carve-out with a deeper re-`include` is not a plain re-exclusion
         // (that would hide the re-included subtree); buildGitignore handles it
         // as a nested allowlist. Only append the plain carve-outs here.
@@ -280,11 +282,14 @@ int cmdInit(const Args& args) {
             std::any_of(config->rules.begin(), config->rules.end(),
                         [&](const ViewRule& o) {
                             return !o.exclude &&
-                                   o.repoSubtree.starts_with(
-                                       rule.repoSubtree + "/");
+                                   mappedRepoPath(o).starts_with(carved + "/");
                         });
         if (hasReinclude) continue;
-        const std::string entry = "/" + rule.repoSubtree + "/";
+        // A single-file exclude names a file, so no trailing slash - that
+        // would only ever match a directory.
+        const std::string entry =
+            "/" + carved +
+            (rule.scope == ViewScope::kSingleFile ? "" : "/");
         if (std::find(excludeEntries.begin(), excludeEntries.end(), entry) ==
             excludeEntries.end()) {
             excludeEntries.push_back(entry);

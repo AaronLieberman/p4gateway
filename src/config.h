@@ -66,8 +66,8 @@ struct ViewRule {
     // under a "src" include -> "src/lib").
     std::string repoSubtree;
 
-    // Name of the single file a kSingleFile `include` maps, within `mirrorPath`
-    // / `repoSubtree`; empty for every other rule (so a non-empty value and
+    // Name of the single file a kSingleFile rule maps (an `include`) or carves
+    // out (an `exclude`), within `mirrorPath` / `repoSubtree`; empty otherwise (so a non-empty value and
     // `scope == kSingleFile` always go together). It equals the depot path's
     // last component: gw rejects a mirror path that would rename the file,
     // because every depot<->mirror<->repo path is reconstructed by joining this
@@ -75,8 +75,9 @@ struct ViewRule {
     std::string fileName;
 
     // Whether `depotPath` maps a whole subtree (`/...`, the default), the files
-    // directly in one directory (`/*`), or a single file - see ViewScope.
-    // `exclude` lines are always kRecursive.
+    // directly in one directory (`/*`), or a single file - see ViewScope. An
+    // `exclude` is either kRecursive (a carved-out subtree) or kSingleFile (one
+    // carved-out file); only an `include` is ever kDirectFiles.
     ViewScope scope = ViewScope::kRecursive;
 
     // True when the config line spelled the depot-side wildcard but not the
@@ -137,8 +138,8 @@ struct Config {
 std::vector<const ViewRule*> includeRules(const std::vector<ViewRule>& rules);
 
 // The depot paths of the `exclude` rules of `rules`, in declaration order (each
-// ends "/..."). Used to exempt intentional in-place / dropped view lines from
-// the view check. Pure; unit-tested.
+// ends "/..." or names a single carved-out file). Used to exempt intentional
+// in-place / dropped view lines from the view check. Pure; unit-tested.
 std::vector<std::string> excludeDepotPaths(const std::vector<ViewRule>& rules);
 
 // The depot directory a rule's paths are relative to, always ending in '/':

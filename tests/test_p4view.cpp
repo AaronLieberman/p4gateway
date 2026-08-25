@@ -653,6 +653,37 @@ TEST(check_spec_mapping_single_file_inside_a_mapped_subtree) {
     CHECK(src.empty());
 }
 
+TEST(check_spec_mapping_exempts_a_declared_single_file_exclude) {
+    // One file of a mapped subtree syncs in place instead of into the mirror.
+    // Undeclared that is a diversion; a single-file 'exclude' declares it, and
+    // the check must then let it pass exactly as a subtree exclude would.
+    const std::string spec =
+        "Client:\tc\n"
+        "Root:\t/work\n"
+        "View:\n"
+        "\t//depot/project/... //c/...\n"
+        "\t//depot/project/src/... //c/.p4gw/src/...\n"
+        "\t//depot/project/src/gen/build.h //c/src/gen/build.h\n";
+
+    const auto flagged = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src");
+    CHECK(!flagged.empty());
+    bool namesTheFile = false;
+    for (const auto& problem : flagged) {
+        if (problem.excludePath == "//depot/project/src/gen/build.h") {
+            namesTheFile = true;
+        }
+    }
+    CHECK(namesTheFile);
+
+    const auto declared = p4gw::p4::checkSpecMapping(
+        spec, "//depot/project/src/...", "/work", "/work/.p4gw/src",
+        {"//depot/project/src/gen/build.h"});
+    for (const auto& problem : declared) {
+        std::printf("  unexpected problem: %s\n", problem.message.c_str());
+    }
+    CHECK(declared.empty());
+}
 
 TEST(check_spec_mapping_single_file_exclude_stops_at_a_path_boundary) {
     // A single-file 'exclude' declares exactly one file. Its depot path has no

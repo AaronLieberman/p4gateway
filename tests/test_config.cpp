@@ -278,11 +278,17 @@ TEST(config_rejects_exclude_at_include_root) {
                .has_value());
 }
 
-TEST(config_rejects_exclude_without_wildcard) {
-    CHECK(!loadFromString(
-              "include = //depot/x/... .p4gw/x\n"
-              "exclude = //depot/x/lib\n")
-               .has_value());
+TEST(config_rejects_a_malformed_exclude_path) {
+    // A wildcard-less exclude now names a single file, so the rejections are
+    // the shapes that are neither a subtree nor a file.
+    auto bad = [](const std::string& path) {
+        return !loadFromString("include = //depot/x/... .p4gw/x/...\n"
+                               "exclude = " + path + "\n")
+                    .has_value();
+    };
+    CHECK(bad("//depot/x/lib/"));    // a bare directory, no wildcard
+    CHECK(bad("//depot/x/lib..."));  // wildcard not its own path component
+    CHECK(bad("//depot/x/lib*"));
 }
 
 TEST(config_rejects_duplicate_exclude) {
@@ -486,6 +492,18 @@ p4gw::ViewRule incFile(const std::string& repoRel) {
     r.fileName = slash == std::string::npos ? repoRel : repoRel.substr(slash + 1);
     r.repoSubtree = slash == std::string::npos ? "" : repoRel.substr(0, slash);
     r.mirrorPath = r.repoSubtree.empty() ? ".p4gw" : ".p4gw/" + r.repoSubtree;
+    return r;
+}
+
+// A carved-out single file - the exclude half, for one file only.
+p4gw::ViewRule excFile(const std::string& repoRel) {
+    const auto slash = repoRel.rfind('/');
+    p4gw::ViewRule r;
+    r.exclude = true;
+    r.scope = p4gw::ViewScope::kSingleFile;
+    r.depotPath = "//depot/x/" + repoRel;
+    r.fileName = slash == std::string::npos ? repoRel : repoRel.substr(slash + 1);
+    r.repoSubtree = slash == std::string::npos ? "" : repoRel.substr(0, slash);
     return r;
 }
 
@@ -1466,4 +1484,115 @@ TEST(config_rejects_a_malformed_mirror_wildcard) {
     // as part of the directory name.
     CHECK(!loadFromString("include = //depot/x/... .p4gw/x...\n").has_value());
     CHECK(!loadFromString("include = //depot/x/* .p4gw/x*\n").has_value());
+}
+
+// ---- single-file excludes ----
+
+TEST(config_parses_a_single_file_exclude) {
+    auto config = loadFromString(
+        "include = //depot/main/src/...            .p4gw/src/...\n"
+        "exclude = //depot/main/src/gen/build.h\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    CHECK(config->rules.size() == 2);
+    const auto& carve = config->rules[1];
+    CHECK(carve.exclude);
+    CHECK(carve.scope == p4gw::ViewScope::kSingleFile);
+    CHECK(carve.depotPath == "//depot/main/src/gen/build.h");
+    // Like an include, the base stays a directory and the name rides alongside.
+    CHECK(carve.repoSubtree == "src/gen");
+    CHECK(carve.fileName == "build.h");
+    CHECK(p4gw::mappedRepoPath(carve) == "src/gen/build.h");
+    // An exclude has no mirror at all.
+    CHECK(carve.mirrorPath.empty());
+}
+
+TEST(config_single_file_exclude_carves_out_only_that_file) {
+    auto config = loadFromString(
+        "include = //depot/main/src/...          .p4gw/src/...\n"
+        "exclude = //depot/main/src/gen/build.h\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto& rules = config->rules;
+    // The carved-out file resolves to the exclude...
+    const auto* carved =
+        p4gw::effectiveRuleForDepot(rules, "//depot/main/src/gen/build.h");
+    CHECK(carved != nullptr && carved->exclude);
+    // ...while its siblings stay mapped by the enclosing include.
+    const auto* sibling =
+        p4gw::effectiveRuleForDepot(rules, "//depot/main/src/gen/other.h");
+    CHECK(sibling != nullptr && !sibling->exclude);
+    // And the same resolved on the repo side.
+    const auto* carvedRepo =
+        p4gw::effectiveRuleForRepo(rules, "src/gen/build.h");
+    CHECK(carvedRepo != nullptr && carvedRepo->exclude);
+    const auto* siblingRepo =
+        p4gw::effectiveRuleForRepo(rules, "src/gen/other.h");
+    CHECK(siblingRepo != nullptr && !siblingRepo->exclude);
+}
+
+TEST(config_single_file_exclude_can_be_re_included) {
+    // Ordered, later-wins: an `include` after the file's `exclude` maps it back.
+    auto config = loadFromString(
+        "include = //depot/main/src/...        .p4gw/src/...\n"
+        "exclude = //depot/main/src/note.txt\n"
+        "include = //depot/main/src/note.txt   .p4gw/src/note.txt\n");
+    CHECK(config.has_value());
+    if (!config) return;
+    const auto* back =
+        p4gw::effectiveRuleForDepot(config->rules, "//depot/main/src/note.txt");
+    CHECK(back == &config->rules[2] && !back->exclude);
+}
+
+TEST(config_rejects_a_single_file_exclude_outside_every_include) {
+    CHECK(!loadFromString(
+              "include = //depot/x/... .p4gw/x/...\n"
+              "exclude = //depot/other/note.txt\n")
+               .has_value());
+}
+
+TEST(gitignore_reexcludes_a_carved_out_file) {
+    // The subtree is tracked whole; the one carved-out file is re-excluded by
+    // name, with no trailing slash (that would only match a directory).
+    const std::string out =
+        p4gw::buildGitignore({inc("src"), excFile("src/gen/build.h")});
+    CHECK(contains(out, "!/src/\n"));
+    CHECK(contains(out, "/src/gen/build.h\n"));
+    CHECK(!contains(out, "/src/gen/build.h/\n"));
+    // The re-exclusion must come after the subtree's re-include, or Git's
+    // last-match-wins would track the file anyway.
+    CHECK(out.find("!/src/\n") < out.find("/src/gen/build.h\n"));
+}
+
+TEST(gitignore_carved_out_file_is_required_and_repairable) {
+    const auto rules =
+        std::vector<p4gw::ViewRule>{inc("src"), excFile("src/gen/build.h")};
+    // The carve-out line is load-bearing: without it the allowlist tracks a
+    // file no mapping ships.
+    const auto repair =
+        p4gw::allowlistRepairLines(rules, "/*\n!/.gitignore\n!/src/\n");
+    CHECK(std::find(repair.begin(), repair.end(), "/src/gen/build.h") !=
+          repair.end());
+}
+
+TEST(rgignore_reopens_a_carved_out_file) {
+    // The carved-out file is hidden from Git but still on disk, so ripgrep
+    // must see it - the reopen mirrors the .gitignore line exactly.
+    const std::string out = p4gw::buildRgignoreSection(
+        {inc("src"), excFile("src/gen/build.h")}, {}, "");
+    CHECK(contains(out, "!/src/gen/build.h\n"));
+    CHECK(!contains(out, "!/src/gen/build.h/\n"));
+}
+
+TEST(classify_unmanaged_reports_a_carved_out_file) {
+    const auto rules =
+        std::vector<p4gw::ViewRule>{inc("src"), excFile("src/gen/build.h")};
+    const auto unmanaged = p4gw::classifyUnmanaged(
+        rules, {"src/gen/build.h", "src/gen/other.h"}, {});
+    CHECK(unmanaged.size() == 1);
+    if (unmanaged.size() == 1) {
+        CHECK(unmanaged[0].path == "src/gen/build.h");
+        CHECK(unmanaged[0].kind == p4gw::UnmanagedKind::Excluded);
+        CHECK(unmanaged[0].excludedBy == "//depot/x/src/gen/build.h");
+    }
 }

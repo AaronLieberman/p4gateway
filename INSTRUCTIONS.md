@@ -426,8 +426,9 @@ include = //depot/yourproject/config/...  .p4gw/config/...
 # maps that part back into the mirror (the win64-yes-linux-no pattern). An
 # include's depot path ends in '/...' (map the whole subtree) or '/*' (map only
 # the files directly in that directory, no sub-directories - the p4 single-level
-# wildcard), or names a single file; an exclude is always recursive ('/...') and
-# must fall under a preceding include.
+# wildcard), or names a single file; an exclude ends in '/...' (carve out a
+# whole subtree) or names a single file, and must fall under a preceding
+# include.
 exclude = //depot/yourproject/src/thirdparty/...
 exclude = //depot/yourproject/src/lib/...
 include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win64/...
@@ -439,6 +440,12 @@ include = //depot/yourproject/src/lib/public/win64/...  .p4gw/src/lib/public/win
 # to re-exclude the child directories.
 exclude = //depot/yourproject/src/build/...
 include = //depot/yourproject/src/build/*  .p4gw/src/build/*
+
+# A single file carved back out of a mapped subtree: name the file on an
+# 'exclude' line. Its siblings stay mapped; this one file is gitignored and
+# nothing ships through it (it syncs in place or not at all, like unmapped
+# depot content).
+exclude = //depot/yourproject/src/gen/build.h
 
 # A single file: leave the wildcard off both sides and name the file. The file
 # keeps its own name (gw rejects a mirror path that renames it), and the mirror
@@ -598,6 +605,12 @@ A subtree need not sync as one solid block. These patterns are supported:
   starter `.gitignore` keeps `!/src/` and adds `/src/build/*/` to re-exclude
   the child directories. An `exclude` is always recursive, so `/*` is only
   ever used on an `include`.
+- **Carving out one file.** An `exclude` may name a single file instead of a
+  subtree: `exclude = //depot/.../src/gen/build.h` drops just that file while
+  its siblings stay mapped. It behaves like any other carve-out — gitignored
+  (`/src/gen/build.h`, no trailing slash), nothing ships through it, and the
+  client view may sync it in place or drop it. A later `include` naming the
+  same file maps it back, later-wins as usual.
 - **A single file.** Leave the wildcard off both sides and name the file:
   `include = //depot/.../tools/go.bat .p4gw/tools/go.bat` maps exactly that
   one file to `tools/go.bat` in the working tree. The client view line is a
