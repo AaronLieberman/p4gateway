@@ -126,6 +126,15 @@ struct Config {
     // `import_mode = checkout` opts back into the original in-checkout staging.
     ImportMode importMode = ImportMode::kWorktree;
 
+    // How many restacks may go by without you touching a stack before
+    // `gw import --rebase` stops carrying it forward. 0 keeps only work you
+    // have written since the last restack; the default gives it one more round.
+    // Stacks past the limit are parked - left where they are until you check
+    // one out or pass --restack-all. See restack.h for why this counts author
+    // time against the restack anchor rather than a stack's distance from the
+    // depot tip (which resets every time the stack is carried).
+    int restackDepth = 1;
+
     // Whether gw maintains the managed block in the repo's `.rgignore` (see
     // buildRgignoreSection) and doctor checks for it. `rgignore = off` in
     // p4gw.cfg opts out: gw never touches `.rgignore` and doctor stays quiet.
@@ -461,5 +470,14 @@ bool pruneAllowed(const PruneCheck& check);
 // baseline. The like-named local branch is just a convenience pointer kept
 // fast-forwarded to it. Pure; unit-tested.
 std::string depotTrackingRef(const Config& config);
+
+// The hidden Git ref logging the restacks `gw import --rebase` has run:
+// "refs/p4gw/<baselineBranch>.restacked". One commit per restack, each parented
+// on the last, so its first-parent chain is when every past restack happened -
+// which is the clock stack age is measured against. A bare `gw import` writes
+// nothing here, so shipping never ages a stack out. Missing (a repo that
+// predates this, or a hand-deleted ref) means "no restack on record", and
+// import carries everything and then starts the log. Pure; unit-tested.
+std::string restackAnchorRef(const Config& config);
 
 }  // namespace p4gw

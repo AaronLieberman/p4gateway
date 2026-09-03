@@ -187,6 +187,26 @@ std::expected<std::string, std::string> runGw(const ItContext& it,
     return result->combined();
 }
 
+// Same, for a command that is *supposed* to fail: returns the combined output
+// on a non-zero exit and an error when gw unexpectedly succeeded. Used where
+// the exit code is itself the thing under test (a restack gw could not finish
+// must not report success).
+std::expected<std::string, std::string> runGwExpectingFailure(
+    const ItContext& it, const std::string& cwd,
+    const std::vector<std::string>& args) {
+    std::string display = it.gw;
+    for (const auto& arg : args) display += " " + arg;
+    vlog(it, "$ " + display + "   (in " + cwd + ")   [expecting failure]");
+    auto result = p4gw::run(it.gw, args, cwd);
+    if (!result) return std::unexpected(result.error());
+    vlog(it, result->combined());
+    if (result->exitCode == 0) {
+        return std::unexpected(display + " exited 0; expected a failure:\n" +
+                               result->combined());
+    }
+    return result->combined();
+}
+
 std::expected<void, std::string> writeFile(const fs::path& path,
                                            const std::string& content) {
     std::error_code ec;
@@ -3839,7 +3859,7 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 // run (a plain-git repo) never touches. Skipped with a note when git-branchless
 // is not on PATH, so `gw integtest run` still passes without it; CI installs a
 // pinned release so these run there. Initializes branchless in the fixture repo,
-// checks three behaviors, then uninstalls - all after the plain-git steps.
+// checks each behavior below, then uninstalls - all after the plain-git steps.
 //   A) A detached HEAD's local commit is restacked via `git branchless sync`
 //      (not a plain rebase) and left detached at the rewrite, not on a branch.
 //   B) When the checked-out commit was itself already submitted, branchless
@@ -3850,6 +3870,16 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 //      rewritten descendant, not on the baseline.
 //   F) A *branch* holding only absorbed work is dropped by the sync; import
 //      lands on the baseline and says so instead of failing to switch back.
+//   G) A sync that moves another stack but not the one HEAD is on is reported
+//      as the restack it was, not as a no-op - branchless stacks carry no
+//      branch, so no ref import watches moves.
+//   H) A stack the sync could not rebase (it exits 0 and only names the
+//      conflict in its output) fails the import instead of passing for a
+//      completed restack.
+//   I) A baseline branch carrying commits of its own - the trunk the sync
+//      restacks onto - is called out rather than silently left stale.
+//   J) Work left untouched past the restack limit is parked rather than
+//      dragged onto every new snapshot, and --restack-all takes it anyway.
 //   C) After `git branchless init --uninstall`, gw detects the repo as plain
 //      again and falls back to `git rebase`.
 std::expected<void, std::string> itBranchless(ItContext& it) {
@@ -4011,9 +4041,15 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
                                "depot had not moved and nothing was behind:\n" +
                                *importNoop);
     }
-    if (importNoop->find("Nothing to restack") == std::string::npos) {
-        return std::unexpected("import --rebase did not report that there was "
-                               "nothing to restack:\n" + *importNoop);
+    // Either wording is the honest one here. The stacks earlier cases left
+    // behind have not been written in since, so by now some are old enough to
+    // park - and once a stack is parked, saying "every visible stack is already
+    // based on the baseline" would be false. The parked report is then the
+    // whole account of the run.
+    if (importNoop->find("Nothing to restack") == std::string::npos &&
+        importNoop->find("Parked") == std::string::npos) {
+        return std::unexpected("import --rebase reported neither a no-op nor "
+                               "the stacks it parked:\n" + *importNoop);
     }
 
     // --- D3: the same no-op, without --rebase. The depot has not moved, so
@@ -4125,6 +4161,185 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (importF->find("dropped it") == std::string::npos) {
         return std::unexpected("import did not explain that the absorbed branch "
                                "was dropped:\n" + *importF);
+    }
+
+    // Returns to the depot baseline and sweeps every draft commit out of the
+    // smartlog, so each case below starts from the same state - a stack one
+    // case leaves behind must not decide the next one's assertions, and a
+    // conflicting one would poison every sync that follows.
+    auto resetToBaseline = [&]() -> std::expected<void, std::string> {
+        auto sw = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                           it.repoDir);
+        if (!sw) return std::unexpected(sw.error());
+        auto hidden =
+            git::run({"branchless", "hide", "-r", "draft()"}, it.repoDir);
+        if (!hidden) return std::unexpected(hidden.error());
+        return {};
+    };
+
+    // --- G: the sync moves someone else's stack but not the one you are
+    // standing on. Branchless stacks usually carry no branch, so no ref import
+    // watches moves, and the run was reported as a flat no-op ("Nothing to
+    // restack") even though a stack really had been restacked. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = appendFile(util, "// branchless stack left behind\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: stack left behind",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    // A bare import advances the baseline and deliberately leaves that stack
+    // alone, so it is genuinely behind by the time the --rebase run arrives.
+    if (auto r = teammate("// branchless behind-stack teammate\n"); !r) return r;
+    if (auto bare = runGw(it, it.repoDir, {"import"}); !bare)
+        return std::unexpected(bare.error());
+    auto swG = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swG) return std::unexpected(swG.error());
+    if (auto r = appendFile(main, "// branchless stack on the baseline\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: stack on the baseline",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    auto tipG = git::revParse("HEAD", it.repoDir);
+    if (!tipG) return std::unexpected(tipG.error());
+    auto importG = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importG) return std::unexpected(importG.error());
+    if (importG->find("Nothing to restack") != std::string::npos) {
+        return std::unexpected("import called the run a no-op while the sync "
+                               "restacked another stack:\n" + *importG);
+    }
+    if (importG->find("other visible stack") == std::string::npos) {
+        return std::unexpected("import did not report the stacks the sync "
+                               "actually moved:\n" + *importG);
+    }
+    auto headG = git::revParse("HEAD", it.repoDir);
+    if (!headG) return std::unexpected(headG.error());
+    if (*headG != *tipG) {
+        return std::unexpected("import moved a stack that was already on the "
+                               "depot baseline");
+    }
+
+    // --- H: a stack that conflicts with the new depot state. `git branchless
+    // sync` skips it, names it, and still exits 0 - so import read a partial
+    // restack as a complete one and left the user on the pre-import baseline
+    // believing they had been moved. Any ordinary drift between the depot and
+    // a stack does this - the depot moved on under work that has been sitting
+    // a while; a file resolved in P4 is only one way to get there. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = appendFile(main, "// branchless conflicting local\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: conflicts with the depot",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    auto tipH = git::revParse("HEAD", it.repoDir);
+    if (!tipH) return std::unexpected(tipH.error());
+    // The depot takes a *different* last line, so replaying the local commit
+    // onto the snapshot collides in the same region of the same file.
+    if (auto r = teammate("// branchless conflicting depot\n"); !r) return r;
+    auto importH =
+        runGwExpectingFailure(it, it.repoDir, {"import", "--rebase"});
+    if (!importH) return std::unexpected(importH.error());
+    if (importH->find("could not restack") == std::string::npos) {
+        return std::unexpected("import did not report the stack the sync "
+                               "skipped on a conflict:\n" + *importH);
+    }
+    if (importH->find("Nothing to restack") != std::string::npos) {
+        return std::unexpected("import reported a conflicted restack as a "
+                               "no-op:\n" + *importH);
+    }
+    auto headH = git::revParse("HEAD", it.repoDir);
+    if (!headH) return std::unexpected(headH.error());
+    if (*headH != *tipH) {
+        return std::unexpected("import moved HEAD off the commit the sync "
+                               "could not restack");
+    }
+    // The carrier is an implementation detail on the failure path too.
+    auto carrierH = git::branchExists("gw-import-restack", it.repoDir);
+    if (!carrierH) return std::unexpected(carrierH.error());
+    if (*carrierH) {
+        return std::unexpected("import left its temporary restack branch "
+                               "behind after a conflicted sync");
+    }
+
+    // --- I: the baseline branch carries commits of its own, so import cannot
+    // fast-forward it onto the snapshot. That branch is the trunk
+    // `git branchless sync` restacks onto, so leaving it stale silently sends
+    // every restacked stack to old depot state; import must say so. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    auto swI = git::run({"switch", "main"}, it.repoDir);
+    if (!swI) return std::unexpected(swI.error());
+    if (auto r = appendFile(util, "// branchless stray commit on main\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: stray commit on the "
+                             "baseline branch",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    auto swI2 = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!swI2) return std::unexpected(swI2.error());
+    if (auto r = teammate("// branchless stale-trunk teammate\n"); !r) return r;
+    auto importI = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importI) return std::unexpected(importI.error());
+    if (importI->find("has commits of its own") == std::string::npos) {
+        return std::unexpected("import did not warn that the baseline branch "
+                               "could not be fast-forwarded onto the "
+                               "snapshot:\n" + *importI);
+    }
+    // Put the trunk back, so the cases after this run against a healthy one.
+    auto snapI = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!snapI) return std::unexpected(snapI.error());
+    auto restoredI = git::updateRef("refs/heads/main", *snapI, it.repoDir);
+    if (!restoredI) return std::unexpected(restoredI.error());
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+
+    // --- J: work you have not touched in a while is parked instead of being
+    // dragged onto every new snapshot, and comes back on demand. The clock is
+    // restacks, not imports: --date backdates the stack's author time (the one
+    // property that survives being rebased), and each --rebase adds one entry
+    // to the anchor log. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    auto oldWork = git::run({"commit", "--allow-empty",
+                             "--date=2020-01-01T00:00:00Z", "-m",
+                             "integtest branchless: work parked long ago"},
+                            it.repoDir);
+    if (!oldWork) return std::unexpected(oldWork.error());
+    // Step off it: HEAD's own stack is carried whatever its age.
+    auto swJ = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swJ) return std::unexpected(swJ.error());
+    // Three restacks: the first starts the log (nothing on record, so it
+    // carries everything), the second finds one entry past 2020, the third two.
+    std::string importJ;
+    for (int run = 0; run < 3; ++run) {
+        auto out = runGw(it, it.repoDir, {"import", "--rebase"});
+        if (!out) return std::unexpected(out.error());
+        importJ = *out;
+        if (run < 2 && importJ.find("Parked") != std::string::npos) {
+            return std::unexpected("import parked a stack while it was still "
+                                   "within the restack limit:\n" + importJ);
+        }
+    }
+    if (importJ.find("Parked 1 stack(s)") == std::string::npos) {
+        return std::unexpected("import did not park work left untouched past "
+                               "the restack limit:\n" + importJ);
+    }
+    auto anchorJ = git::revParse("refs/p4gw/main.restacked", it.repoDir);
+    if (!anchorJ) {
+        return std::unexpected("import did not write the restack anchor log");
+    }
+    // --restack-all takes it anyway, and then it is current again.
+    auto allJ = runGw(it, it.repoDir, {"import", "--rebase", "--restack-all"});
+    if (!allJ) return std::unexpected(allJ.error());
+    if (allJ->find("Parked") != std::string::npos) {
+        return std::unexpected("--restack-all still parked a stack:\n" + *allJ);
     }
 
     // --- C: after uninstall, gw treats the repo as plain git again. ---
@@ -4599,8 +4814,8 @@ int cmdIntegtest(const std::string& gwExe, const Args& args) {
         steps.emplace_back("doctor catches each deliberate view "
                            "misconfiguration",
                            [&] { return itDoctorMisconfigs(it); });
-        steps.emplace_back("git-branchless: sync restack, detached preserved, "
-                           "uninstall",
+        steps.emplace_back("git-branchless: sync restack, conflicts, stale "
+                           "trunk, detached preserved, uninstall",
                            [&] { return itBranchless(it); });
         steps.emplace_back("checkout-mode import: ff, rebase, and worktree "
                            "flip-back self-heal",

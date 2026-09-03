@@ -3,6 +3,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -927,6 +928,17 @@ std::expected<Config, std::string> loadConfig(const std::string& path) {
                     where + ": import_mode must be 'checkout' or 'worktree', "
                     "got '" + value + "'");
             }
+        } else if (key == "restack_depth") {
+            int depth = 0;
+            const char* begin = value.data();
+            const char* end = begin + value.size();
+            auto parsed = std::from_chars(begin, end, depth);
+            if (parsed.ec != std::errc{} || parsed.ptr != end || depth < 0) {
+                return std::unexpected(
+                    where + ": restack_depth must be a non-negative whole "
+                    "number, got '" + value + "'");
+            }
+            config.restackDepth = depth;
         } else if (key == "rgignore") {
             if (value == "managed") {
                 config.manageRgignore = true;
@@ -1289,6 +1301,13 @@ bool pruneAllowed(const PruneCheck& check) {
 
 std::string depotTrackingRef(const Config& config) {
     return "refs/p4gw/" + config.baselineBranch;
+}
+
+std::string restackAnchorRef(const Config& config) {
+    // A sibling of the depot ref, not a child: "refs/p4gw/main/restacked" would
+    // collide with "refs/p4gw/main" (git cannot have a ref and a directory of
+    // the same name), while the suffixed form coexists with it.
+    return depotTrackingRef(config) + ".restacked";
 }
 
 }  // namespace p4gw

@@ -226,7 +226,62 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
 // analog of rebasing all descendants of the baseline at once. On conflict the
 // error includes branchless's output and the repo is left mid-rebase for the
 // user to resolve.
-std::expected<std::string, std::string> branchlessSync(const std::string& cwd = {});
+// With `revsets` empty this syncs *every* draft stack; pass commits to narrow
+// it to those stacks. Callers that mean "sync nothing" must not call it at all -
+// an empty list is branchless's "sync everything", the opposite.
+std::expected<std::string, std::string> branchlessSync(
+    const std::vector<std::string>& revsets = {}, const std::string& cwd = {});
+
+// `git branchless query --raw <revset>`: the commit oids matching a branchless
+// revset, one per line. `roots(draft())` is the one import uses - the root
+// commit of every visible stack, which is also what `sync` wants as an argument.
+std::expected<std::vector<std::string>, std::string> branchlessQuery(
+    const std::string& revset, const std::string& cwd = {});
+
+// The commit times (unix seconds) along `ref`'s first-parent chain, newest
+// first. Import reads this off the restack anchor, whose chain is one commit
+// per `--rebase`, so the times are exactly when past restacks ran.
+std::expected<std::vector<long long>, std::string> firstParentCommitTimes(
+    const std::string& ref, const std::string& cwd = {});
+
+// `git commit-tree`: builds a commit object for `tree` with `parents`, without
+// touching HEAD, the index, or the working tree. Used to extend the restack
+// anchor's log - the one place gw writes a commit that is not a snapshot.
+std::expected<std::string, std::string> commitTree(
+    const std::string& tree, const std::vector<std::string>& parents,
+    const std::string& message, const std::string& cwd = {});
+
+// The newest author time (unix seconds) among `commits`, or 0 when the list is
+// empty. Author time, not committer time: rebasing rewrites the latter, so only
+// the former still says when the work was written.
+std::expected<long long, std::string> newestAuthorTime(
+    const std::vector<std::string>& commits, const std::string& cwd = {});
+
+// `git log -1 --format=%h %s <commit>`: a short "<abbrev> <subject>" label for
+// messages about a commit the user has to recognize.
+std::expected<std::string, std::string> shortLog(const std::string& commit,
+                                                 const std::string& cwd = {});
+
+// One `git branchless sync` run, read back from its output.
+//
+// Sync exits 0 even when it could not move a stack: it rebases the stacks it
+// can, prints "Merge conflict ... for <commit>" for the ones it gave up on,
+// and returns success. The exit status therefore reads a partial restack as a
+// total one, and in a branchless repo (where stacks usually carry no branch at
+// all) no ref moves to give the lie away - so this output is the only record
+// of what actually happened. Each entry is the commit as branchless named it
+// ("70224ed C1"), suitable for quoting straight back at the user.
+struct BranchlessSyncOutcome {
+    std::vector<std::string> synced;      // "Synced <commit>": stacks it moved
+    std::vector<std::string> conflicted;  // stacks it skipped on a conflict
+    std::vector<std::string> upToDate;    // "Not moving up-to-date stack at ..."
+};
+
+// Parses `git branchless sync` output into the stacks it moved, skipped, and
+// found already on the trunk. Unrecognized lines (branchless's own progress
+// chatter) are ignored, so a future release adding lines cannot turn a clean
+// run into a reported failure - only the lines above are load-bearing.
+BranchlessSyncOutcome parseBranchlessSync(const std::string& output);
 
 // `git config <key> <value>`: set a repo-local config value. Used to point
 // branchless's main branch at the gw baseline so its restack lands on the

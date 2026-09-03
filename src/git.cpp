@@ -2,9 +2,12 @@
 
 #include "git.h"
 
+#include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 
 #include "subprocess.h"
@@ -398,10 +401,157 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd) {
     return false;
 }
 
-std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
+std::expected<std::string, std::string> branchlessSync(
+    const std::vector<std::string>& revsets, const std::string& cwd) {
     // Plain `sync` restacks onto the local main branch without pulling a
     // remote, which is exactly what we want: the depot baseline is local-only.
-    return run({"branchless", "sync"}, cwd);
+    std::vector<std::string> args{"branchless", "sync"};
+    args.insert(args.end(), revsets.begin(), revsets.end());
+    return run(args, cwd);
+}
+
+std::expected<std::vector<std::string>, std::string> branchlessQuery(
+    const std::string& revset, const std::string& cwd) {
+    // --raw prints bare oids; without it each line is "<abbrev> <subject>",
+    // which is not a revset and makes `sync` reject the whole argument.
+    auto out = run({"branchless", "query", "--raw", revset}, cwd);
+    if (!out) return std::unexpected(out.error());
+    std::vector<std::string> oids;
+    std::istringstream lines(*out);
+    std::string line;
+    while (std::getline(lines, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.pop_back();
+        if (!line.empty()) oids.push_back(line);
+    }
+    return oids;
+}
+
+namespace {
+
+// Parses whitespace-separated unix timestamps, ignoring anything unparseable
+// (git's --format lines can carry a "commit <oid>" header alongside the value).
+std::vector<long long> parseTimestamps(const std::string& text) {
+    std::vector<long long> times;
+    std::istringstream fields(text);
+    std::string field;
+    while (fields >> field) {
+        long long value = 0;
+        auto parsed = std::from_chars(field.data(),
+                                      field.data() + field.size(), value);
+        if (parsed.ec == std::errc{} &&
+            parsed.ptr == field.data() + field.size()) {
+            times.push_back(value);
+        }
+    }
+    return times;
+}
+
+}  // namespace
+
+std::expected<std::vector<long long>, std::string> firstParentCommitTimes(
+    const std::string& ref, const std::string& cwd) {
+    auto out = run({"rev-list", "--first-parent", "--format=%ct", ref}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return parseTimestamps(*out);
+}
+
+std::expected<std::string, std::string> commitTree(
+    const std::string& tree, const std::vector<std::string>& parents,
+    const std::string& message, const std::string& cwd) {
+    std::vector<std::string> args{"commit-tree", tree};
+    for (const auto& parent : parents) {
+        args.push_back("-p");
+        args.push_back(parent);
+    }
+    args.push_back("-m");
+    args.push_back(message);
+    auto out = run(args, cwd);
+    if (!out) return std::unexpected(out.error());
+    std::string oid = *out;
+    while (!oid.empty() && (oid.back() == '\n' || oid.back() == '\r'))
+        oid.pop_back();
+    return oid;
+}
+
+std::expected<long long, std::string> newestAuthorTime(
+    const std::vector<std::string>& commits, const std::string& cwd) {
+    if (commits.empty()) return 0LL;
+    // --no-walk: report exactly these commits, not their ancestry.
+    std::vector<std::string> args{"log", "--no-walk", "--format=%at"};
+    args.insert(args.end(), commits.begin(), commits.end());
+    auto out = run(args, cwd);
+    if (!out) return std::unexpected(out.error());
+    long long newest = 0;
+    for (long long time : parseTimestamps(*out)) newest = std::max(newest, time);
+    return newest;
+}
+
+std::expected<std::string, std::string> shortLog(const std::string& commit,
+                                                 const std::string& cwd) {
+    auto out = run({"log", "-1", "--format=%h %s", commit}, cwd);
+    if (!out) return std::unexpected(out.error());
+    std::string label = *out;
+    while (!label.empty() && (label.back() == '\n' || label.back() == '\r'))
+        label.pop_back();
+    return label;
+}
+
+namespace {
+
+// Drops ANSI SGR escapes ("\x1b[1;32m") from a line. Branchless writes plain
+// text to a pipe, but a colored line would silently defeat the prefix matches
+// below - and a missed conflict is exactly the failure this parsing exists to
+// catch - so strip them rather than trust the terminal detection.
+std::string stripAnsi(const std::string& line) {
+    std::string out;
+    out.reserve(line.size());
+    for (size_t i = 0; i < line.size(); ++i) {
+        if (line[i] == '\x1b' && i + 1 < line.size() && line[i + 1] == '[') {
+            i += 2;
+            while (i < line.size() && line[i] != 'm') ++i;
+            continue;  // the loop's ++i steps past the 'm'
+        }
+        out.push_back(line[i]);
+    }
+    return out;
+}
+
+// Trims trailing CR (Windows pipes) and surrounding spaces.
+std::string trimmed(std::string text) {
+    while (!text.empty() && (text.back() == '\r' || text.back() == ' '))
+        text.pop_back();
+    size_t start = text.find_first_not_of(' ');
+    return start == std::string::npos ? std::string{} : text.substr(start);
+}
+
+}  // namespace
+
+BranchlessSyncOutcome parseBranchlessSync(const std::string& output) {
+    BranchlessSyncOutcome outcome;
+    std::istringstream lines(output);
+    std::string raw;
+    while (std::getline(lines, raw)) {
+        const std::string line = trimmed(stripAnsi(raw));
+
+        // "Merge conflict (1 file) for 70224ed C1" - the parenthetical is not
+        // always there, so key off the prefix and take what follows " for ".
+        if (line.starts_with("Merge conflict")) {
+            const size_t at = line.find(" for ");
+            outcome.conflicted.push_back(
+                at == std::string::npos ? line : line.substr(at + 5));
+            continue;
+        }
+        if (line.starts_with("Synced ")) {
+            outcome.synced.push_back(line.substr(7));
+            continue;
+        }
+        constexpr std::string_view kUpToDate = "Not moving up-to-date stack at ";
+        if (line.starts_with(kUpToDate)) {
+            outcome.upToDate.push_back(line.substr(kUpToDate.size()));
+        }
+    }
+    return outcome;
 }
 
 std::expected<void, std::string> setConfig(const std::string& key,
