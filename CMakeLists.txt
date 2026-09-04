@@ -58,6 +58,7 @@ add_library(p4gw_core STATIC
     src/p4ops.cpp
     src/mirror.cpp
     src/statusview.cpp
+    src/restack.cpp
     src/shelf.cpp
     src/commands/setup.cpp
     src/commands/init.cpp

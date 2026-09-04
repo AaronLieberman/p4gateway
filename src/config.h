@@ -462,4 +462,12 @@ bool pruneAllowed(const PruneCheck& check);
 // fast-forwarded to it. Pure; unit-tested.
 std::string depotTrackingRef(const Config& config);
 
+// The ref namespace recording stacks `gw import --rebase-all` has given up on:
+// "refs/p4gw/<baselineBranch>-parked/<stack root oid>". A stack that could not
+// be rebased once conflicts again on every import, so it is remembered and
+// skipped until you ask for it by name (check it out and --rebase) or with
+// --force. Suffixed rather than nested under the depot ref, which git would
+// refuse: a ref cannot also be a directory. Pure; unit-tested.
+std::string parkedRefPrefix(const Config& config);
+
 }  // namespace p4gw

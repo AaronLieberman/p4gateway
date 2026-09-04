@@ -23,9 +23,9 @@ just as before.
 
 Two commands do the work:
 
-- **`gw import`** brings your p4 sync into the Git repo and rebases your
-  work on top. It's just like `git pull --rebase`, with the p4 depot as the
-  remote.
+- **`gw import`** brings your p4 sync into the Git repo — `git fetch`, with
+  the p4 depot as the remote. **`gw import --rebase`** then replays your work
+  on top, the `git pull --rebase` half.
 - **`gw prepare`** goes the other way: it turns your branch into a pending
   changelist — Git knows exactly what changed, and your commit messages
   become the description. You review and submit it from P4V, same as always.
@@ -41,7 +41,7 @@ of the multi-terabyte depot is never touched.
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
 
-gw import --rebase               # absorb it: commit to main, rebase your branch
+gw import --rebase               # absorb it: commit to main, bring your work up
 
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
@@ -50,8 +50,8 @@ gw prepare                       # ship it: builds the pending CL
 
 <review and submit in P4V>
 
-gw import                        # absorb your own submit into main, plus
-                                 # anything else you synced
+gw import --rebase               # absorb your own submit into main and come
+                                 # with it (plain 'gw import' imports only)
 ```
 
 That's the whole loop. When you need more — handing work off as a shelf,
@@ -72,9 +72,11 @@ stacks of commits:
 [git-branchless](https://github.com/arxanas/git-branchless) project.</sub>
 
 That's a natural fit here, where every stack is really pending work on top
-of the depot baseline. `gw` detects branchless automatically, and
-`gw import --rebase` restacks *all* of your stacks onto the fresh depot
-state — not just the branch you happen to be on. Details in
+of the depot baseline. `gw` detects branchless automatically:
+`gw import --rebase` restacks the stack you are on — a stack, not just the
+one commit — and `gw import --rebase-all` sweeps every visible stack.
+Anything that conflicts is parked where it is instead of fighting you on
+every import. Details in
 [INSTRUCTIONS.md](INSTRUCTIONS.md#using-git-branchless).
 
 ## Getting started

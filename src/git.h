@@ -226,7 +226,33 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd = {});
 // analog of rebasing all descendants of the baseline at once. On conflict the
 // error includes branchless's output and the repo is left mid-rebase for the
 // user to resolve.
-std::expected<std::string, std::string> branchlessSync(const std::string& cwd = {});
+// With `revsets` empty this syncs *every* draft stack; pass commits to narrow
+// it to those stacks. Callers that mean "sync nothing" must not call it at all -
+// an empty list is branchless's "sync everything", the opposite.
+std::expected<std::string, std::string> branchlessSync(
+    const std::vector<std::string>& revsets = {}, const std::string& cwd = {});
+
+// `git branchless query --raw <revset>`: the commit oids matching a branchless
+// revset, one per line. Import uses `roots(draft())` (every visible stack) and
+// `roots(stack())` (just the one HEAD is on) - the same commits `sync` takes as
+// arguments.
+std::expected<std::vector<std::string>, std::string> branchlessQuery(
+    const std::string& revset, const std::string& cwd = {});
+
+// The full names of the refs under `prefix` (e.g. "refs/p4gw/main-parked/").
+// Empty when none exist, which is not an error.
+std::expected<std::vector<std::string>, std::string> refNamesUnder(
+    const std::string& prefix, const std::string& cwd = {});
+
+// `git log -1 --format=%h %s <commit>`: a short "<abbrev> <subject>" label for
+// messages about a commit the user has to recognize.
+std::expected<std::string, std::string> shortLog(const std::string& commit,
+                                                 const std::string& cwd = {});
+
+// `git update-ref -d <ref>`: removes a ref. Deleting one that is already gone
+// succeeds, so callers need not check first.
+std::expected<void, std::string> deleteRef(const std::string& ref,
+                                           const std::string& cwd = {});
 
 // One `git branchless sync` run, read back from its output.
 //

@@ -399,10 +399,63 @@ std::expected<bool, std::string> isBranchless(const std::string& cwd) {
     return false;
 }
 
-std::expected<std::string, std::string> branchlessSync(const std::string& cwd) {
+std::expected<std::string, std::string> branchlessSync(
+    const std::vector<std::string>& revsets, const std::string& cwd) {
     // Plain `sync` restacks onto the local main branch without pulling a
     // remote, which is exactly what we want: the depot baseline is local-only.
-    return run({"branchless", "sync"}, cwd);
+    std::vector<std::string> args{"branchless", "sync"};
+    args.insert(args.end(), revsets.begin(), revsets.end());
+    return run(args, cwd);
+}
+
+namespace {
+
+// Splits command output into non-empty trimmed lines.
+std::vector<std::string> outputLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream stream(text);
+    std::string line;
+    while (std::getline(stream, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.pop_back();
+        if (!line.empty()) lines.push_back(line);
+    }
+    return lines;
+}
+
+}  // namespace
+
+std::expected<std::vector<std::string>, std::string> branchlessQuery(
+    const std::string& revset, const std::string& cwd) {
+    // --raw prints bare oids; without it each line is "<abbrev> <subject>",
+    // which is not a revset and makes `sync` reject the whole argument.
+    auto out = run({"branchless", "query", "--raw", revset}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return outputLines(*out);
+}
+
+std::expected<std::vector<std::string>, std::string> refNamesUnder(
+    const std::string& prefix, const std::string& cwd) {
+    auto out = run({"for-each-ref", "--format=%(refname)", prefix}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return outputLines(*out);
+}
+
+std::expected<std::string, std::string> shortLog(const std::string& commit,
+                                                 const std::string& cwd) {
+    auto out = run({"log", "-1", "--format=%h %s", commit}, cwd);
+    if (!out) return std::unexpected(out.error());
+    std::string label = *out;
+    while (!label.empty() && (label.back() == '\n' || label.back() == '\r'))
+        label.pop_back();
+    return label;
+}
+
+std::expected<void, std::string> deleteRef(const std::string& ref,
+                                           const std::string& cwd) {
+    auto out = run({"update-ref", "-d", ref}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return {};
 }
 
 namespace {

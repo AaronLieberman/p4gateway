@@ -1291,4 +1291,8 @@ std::string depotTrackingRef(const Config& config) {
     return "refs/p4gw/" + config.baselineBranch;
 }
 
+std::string parkedRefPrefix(const Config& config) {
+    return depotTrackingRef(config) + "-parked/";
+}
+
 }  // namespace p4gw

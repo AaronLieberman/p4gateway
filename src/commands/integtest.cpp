@@ -1623,7 +1623,7 @@ std::expected<void, std::string> itWorktreeImport(ItContext& it) {
     // (e) Clean the tree, import again: now the branch fast-forwards.
     auto restored = git::run({"restore", "src/util.cpp"}, it.repoDir);
     if (!restored) return std::unexpected(restored.error());
-    auto cleanImport = runGw(it, it.repoDir, {"import"});
+    auto cleanImport = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!cleanImport) return std::unexpected(cleanImport.error());
     auto branchAfter = git::revParse("refs/heads/main", it.repoDir);
     if (!branchAfter) return std::unexpected(branchAfter.error());
@@ -1714,7 +1714,7 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
                         p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
-    auto fast = runGw(it, it.repoDir, {"import"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!fast) return std::unexpected(fast.error());
     if (fast->find("Have manifest") == std::string::npos ||
         fast->find("1 changed, 0 deleted") == std::string::npos) {
@@ -1812,7 +1812,7 @@ std::expected<void, std::string> itHaveManifestIgnored(ItContext& it) {
     // but Git must not track it (the allowlist gitignores src/generated).
     std::error_code ec;
     fs::remove(manifest, ec);
-    auto full = runGw(it, it.repoDir, {"import"});
+    auto full = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!full) return std::unexpected(full.error());
     auto tracked = git::lsFiles(it.repoDir);
     if (!tracked) return std::unexpected(tracked.error());
@@ -1840,7 +1840,7 @@ std::expected<void, std::string> itHaveManifestIgnored(ItContext& it) {
                          p4::sync(it.p4, it.p4DepotPath));
     if (!synced2) return std::unexpected(synced2.error());
 
-    auto fast = runGw(it, it.repoDir, {"import"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!fast) {
         return std::unexpected("fast-path import failed on a changed ignored "
                                "file (the explicit-add bug):\n" + fast.error());
@@ -1982,7 +1982,7 @@ std::expected<void, std::string> itHaveManifestExclude(ItContext& it) {
                          p4::sync(it.p4, it.p4DepotPath));
     if (!synced2) return std::unexpected(synced2.error());
 
-    auto fast = runGw(it, it.repoDir, {"import"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!fast) {
         return std::unexpected("fast-path import failed on a changed excluded "
                                "carve-out (the manifest bug):\n" + fast.error());
@@ -3372,7 +3372,7 @@ std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
     auto submitted = trace(it, "p4 submit -c " + *addCl,
                            p4::submit(it.p4, *addCl));
     if (!submitted) return std::unexpected(submitted.error());
-    auto imported = runGw(it, it.repoDir, {"import"});
+    auto imported = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!imported) return std::unexpected(imported.error());
     auto isTracked = tracked(trackedRel);
     if (!isTracked) return std::unexpected(isTracked.error());
@@ -3431,7 +3431,7 @@ std::expected<void, std::string> itOrphanedFiles(ItContext& it) {
     // file stays in Git with nothing left to remove it - the whole reason the
     // doctor check exists. (If a future import learns to prune retired
     // subtrees, this is the assertion to revisit.)
-    auto reimported = runGw(it, it.repoDir, {"import"});
+    auto reimported = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!reimported) return std::unexpected(reimported.error());
     auto stillTracked = tracked(trackedRel);
     if (!stillTracked) return std::unexpected(stillTracked.error());
@@ -3864,6 +3864,8 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 //      (not a plain rebase) and left detached at the rewrite, not on a branch.
 //   B) When the checked-out commit was itself already submitted, branchless
 //      obsoletes it and gw leaves HEAD detached at the new depot baseline.
+//   D0) A bare `gw import` leaves a detached HEAD and its stack alone even
+//      when the depot moved; --rebase is what brings them up.
 //   D) A detached HEAD sitting on the baseline itself fast-forwards to the new
 //      one instead of being stranded on the prior baseline.
 //   E) A detached HEAD on a *descendant* of an absorbed commit lands on the
@@ -3878,6 +3880,13 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 //      completed restack.
 //   I) A baseline branch carrying commits of its own - the trunk the sync
 //      restacks onto - is called out rather than silently left stale.
+//   K) A stack that conflicts is parked as a ref and skipped by later
+//      --rebase-all runs; standing on it overrides that, --force retries all,
+//      and a resolved stack's parked ref is swept.
+//   L) The same restack under import_mode = checkout - the rest of this step
+//      runs in worktree mode, so nothing else covers branchless x checkout.
+//   M) Every visible stack parked: the sync is skipped outright rather than
+//      run with no revsets, which branchless reads as "sync everything".
 //   C) After `git branchless init --uninstall`, gw detects the repo as plain
 //      again and falls back to `git rebase`.
 std::expected<void, std::string> itBranchless(ItContext& it) {
@@ -3949,7 +3958,9 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (auto r = teammate("// branchless teammate A\n"); !r) return r;
     auto importA = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!importA) return std::unexpected(importA.error());
-    if (importA->find("Restacked your visible commits") == std::string::npos) {
+    // The wording is scope-aware now: "your stack" for --rebase, "every visible
+    // stack" for --rebase-all. Match the part both share.
+    if (importA->find("Restacked your stack") == std::string::npos) {
         return std::unexpected("branchless import did not take the branchless "
                                "sync path:\n" + *importA);
     }
@@ -4000,6 +4011,55 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (*headB != *baseB) {
         return std::unexpected("HEAD did not land on the new depot baseline "
                                "after the merged-away import");
+    }
+
+    // --- D0: a bare `gw import` with the depot genuinely moved must leave a
+    // detached HEAD and its stack exactly where they are. D3 below covers the
+    // no-op flavour (unmoved depot); this is the one that could regress
+    // silently, since the import half still does real work. ---
+    auto swD0 = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!swD0) return std::unexpected(swD0.error());
+    if (auto r = appendFile(util, "// branchless fetch-only stack\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: fetch-only stack",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    auto headD0 = git::revParse("HEAD", it.repoDir);
+    if (!headD0) return std::unexpected(headD0.error());
+    if (auto r = teammate("// branchless fetch-only teammate\n"); !r) return r;
+    auto fetchD0 = runGw(it, it.repoDir, {"import"});
+    if (!fetchD0) return std::unexpected(fetchD0.error());
+    auto movedBaselineD0 = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!movedBaselineD0) return std::unexpected(movedBaselineD0.error());
+    auto headAfterD0 = git::revParse("HEAD", it.repoDir);
+    if (!headAfterD0) return std::unexpected(headAfterD0.error());
+    if (*headAfterD0 != *headD0) {
+        return std::unexpected("a bare 'gw import' moved a detached HEAD; it "
+                               "is the fetch half and must not:\n" + *fetchD0);
+    }
+    auto carriedD0 = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!carriedD0) return std::unexpected(carriedD0.error());
+    if (*carriedD0) {
+        return std::unexpected("the bare import restacked the stack onto the "
+                               "new baseline instead of leaving it:\n" +
+                               *fetchD0);
+    }
+    if (fetchD0->find("gw import --rebase") == std::string::npos) {
+        return std::unexpected("a bare branchless import that left a stack "
+                               "behind did not point at --rebase:\n" +
+                               *fetchD0);
+    }
+    // --rebase is what brings that same stack up.
+    auto pullD0 = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!pullD0) return std::unexpected(pullD0.error());
+    auto carriedNowD0 = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!carriedNowD0) return std::unexpected(carriedNowD0.error());
+    if (!*carriedNowD0) {
+        return std::unexpected("'gw import --rebase' did not bring the stack "
+                               "the bare import left behind up:\n" + *pullD0);
     }
 
     // --- D: detached ON the baseline (no work of its own) fast-forwards to the
@@ -4155,6 +4215,28 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
                                "was dropped:\n" + *importF);
     }
 
+    // What the restack decisions are made from. Attached to a failure so a
+    // remote run explains itself instead of costing a round-trip to guess.
+    auto branchlessState = [&](ItContext& ctx) {
+        std::string out = "  state at failure:\n";
+        auto add = [&](const char* label, std::vector<std::string> args) {
+            auto got = git::run(args, ctx.repoDir);
+            out += std::string("    ") + label + ": " +
+                   (got ? *got : "<" + got.error() + ">") + "\n";
+        };
+        add("roots(draft())",
+            {"branchless", "query", "--raw", "roots(draft())"});
+        add("roots(stack())",
+            {"branchless", "query", "--raw", "roots(stack())"});
+        add("HEAD", {"rev-parse", "HEAD"});
+        add("refs/heads/main", {"rev-parse", "refs/heads/main"});
+        add("refs/p4gw/main", {"rev-parse", "refs/p4gw/main"});
+        add("parked", {"for-each-ref", "--format=%(refname)",
+                       "refs/p4gw/main-parked/"});
+        add("smartlog", {"branchless", "smartlog"});
+        return out;
+    };
+
     // Returns to the depot baseline and sweeps every draft commit out of the
     // smartlog, so each case below starts from the same state - a stack one
     // case leaves behind must not decide the next one's assertions, and a
@@ -4169,7 +4251,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         return {};
     };
 
-    // --- G: the sync moves someone else's stack but not the one you are
+    // --- G: --rebase-all moves someone else's stack but not the one you are
     // standing on. Branchless stacks usually carry no branch, so no ref import
     // watches moves, and the run was reported as a flat no-op ("Nothing to
     // restack") even though a stack really had been restacked. ---
@@ -4198,11 +4280,13 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         return std::unexpected(r.error());
     auto tipG = git::revParse("HEAD", it.repoDir);
     if (!tipG) return std::unexpected(tipG.error());
-    auto importG = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto importG =
+        runGw(it, it.repoDir, {"import", "--rebase-all", "--verbose"});
     if (!importG) return std::unexpected(importG.error());
     if (importG->find("Nothing to restack") != std::string::npos) {
         return std::unexpected("import called the run a no-op while the sync "
-                               "restacked another stack:\n" + *importG);
+                               "restacked another stack:\n" + *importG +
+                               "\n" + branchlessState(it));
     }
     if (importG->find("other visible stack") == std::string::npos) {
         return std::unexpected("import did not report the stacks the sync "
@@ -4236,7 +4320,8 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     auto importH =
         runGwExpectingFailure(it, it.repoDir, {"import", "--rebase"});
     if (!importH) return std::unexpected(importH.error());
-    if (importH->find("could not restack") == std::string::npos) {
+    if (importH->find("conflict with the new depot state") ==
+        std::string::npos) {
         return std::unexpected("import did not report the stack the sync "
                                "skipped on a conflict:\n" + *importH);
     }
@@ -4289,6 +4374,276 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (!snapI) return std::unexpected(snapI.error());
     auto restoredI = git::updateRef("refs/heads/main", *snapI, it.repoDir);
     if (!restoredI) return std::unexpected(restoredI.error());
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+
+    // --- K: the parking round trip. A stack that conflicts is recorded as a
+    // ref and skipped by later --rebase-all runs (it would conflict again
+    // every time); checking it out and asking for it by name overrides that
+    // with no flag; --force retries every parked stack at once. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    // A stack that will conflict, and one that will not, so the run has to
+    // tell them apart rather than giving up wholesale.
+    if (auto r = appendFile(main, "// branchless parked local\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: parks on conflict",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    auto parkTip = git::revParse("HEAD", it.repoDir);
+    if (!parkTip) return std::unexpected(parkTip.error());
+    auto swK = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swK) return std::unexpected(swK.error());
+    if (auto r = appendFile(util, "// branchless clean neighbour\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: clean neighbour",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    // The depot takes a different last line of the same file, so replaying the
+    // first stack onto the snapshot collides while the neighbour is untouched.
+    if (auto r = teammate("// branchless parked depot\n"); !r) return r;
+    auto importK = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!importK) return std::unexpected(importK.error());
+    if (importK->find("conflict with the new depot state") == std::string::npos) {
+        return std::unexpected("--rebase-all did not report the stack it "
+                               "could not move:\n" + *importK);
+    }
+    const std::string parkedPrefix = "refs/p4gw/main-parked/";
+    auto parkedK = git::refNamesUnder(parkedPrefix, it.repoDir);
+    if (!parkedK) return std::unexpected(parkedK.error());
+    if (parkedK->size() != 1) {
+        return std::unexpected("expected exactly one parked stack, got " +
+                               std::to_string(parkedK->size()) + ":\n" +
+                               *importK);
+    }
+    // The clean neighbour must have moved: parking is per stack, not a
+    // wholesale bail-out.
+    auto neighbourOn = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!neighbourOn) return std::unexpected(neighbourOn.error());
+    if (!*neighbourOn) {
+        return std::unexpected("the stack that did not conflict was left "
+                               "behind too:\n" + *importK);
+    }
+
+    // A second --rebase-all skips it rather than conflicting again.
+    auto skipK = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!skipK) return std::unexpected(skipK.error());
+    if (skipK->find("Skipped 1 parked stack") == std::string::npos) {
+        return std::unexpected("--rebase-all did not skip the parked stack:\n" +
+                               *skipK);
+    }
+    if (skipK->find("conflict with the new depot state") != std::string::npos) {
+        return std::unexpected("--rebase-all retried the parked stack:\n" +
+                               *skipK);
+    }
+
+    // Asking for it by name overrides the parking with no extra flag: check it
+    // out, --rebase, and it is attempted (and conflicts, so it fails loudly).
+    auto swK2 = git::run({"switch", "-f", "--detach", *parkTip}, it.repoDir);
+    if (!swK2) return std::unexpected(swK2.error());
+    auto mineK = runGwExpectingFailure(it, it.repoDir, {"import", "--rebase"});
+    if (!mineK) return std::unexpected(mineK.error());
+    if (mineK->find("conflict with the new depot state") == std::string::npos) {
+        return std::unexpected("--rebase on a parked stack you are standing on "
+                               "did not attempt it:\n" + *mineK);
+    }
+
+    // --force retries every parked stack.
+    auto swK3 = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!swK3) return std::unexpected(swK3.error());
+    auto forceK =
+        runGw(it, it.repoDir, {"import", "--rebase-all", "--force"});
+    if (!forceK) return std::unexpected(forceK.error());
+    if (forceK->find("Skipped") != std::string::npos) {
+        return std::unexpected("--force still skipped a parked stack:\n" +
+                               *forceK);
+    }
+    // Absence of "Skipped" alone would also hold if --force quietly did
+    // nothing. It was really retried when the conflict is reported again.
+    if (forceK->find("conflict with the new depot state") == std::string::npos) {
+        return std::unexpected("--force did not actually retry the parked "
+                               "stack:\n" + *forceK);
+    }
+
+    // Dealing with the stack - here by hiding it, the cheap stand-in for
+    // resolving it, since either way its root stops naming a visible stack -
+    // must sweep the parked entry, so the namespace tracks reality rather than
+    // growing forever. (Amending it would *not* do: the content still
+    // conflicts, so it would simply be parked again under a new root.)
+    auto swK4 = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!swK4) return std::unexpected(swK4.error());
+    auto hidden = git::run({"branchless", "hide", "-r", *parkTip}, it.repoDir);
+    if (!hidden) return std::unexpected(hidden.error());
+    auto sweepK = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!sweepK) return std::unexpected(sweepK.error());
+    auto parkedAfterK = git::refNamesUnder(parkedPrefix, it.repoDir);
+    if (!parkedAfterK) return std::unexpected(parkedAfterK.error());
+    for (const auto& ref : *parkedAfterK) {
+        for (const auto& before : *parkedK) {
+            if (ref == before) {
+                return std::unexpected("import kept a parked ref whose stack "
+                                       "no longer exists under that root");
+            }
+        }
+    }
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    for (const auto& ref : *parkedK) {
+        if (auto swept = git::deleteRef(ref, it.repoDir); !swept) {
+            return std::unexpected(swept.error());
+        }
+    }
+
+    // --- L: the same branchless restack under `import_mode = checkout`. The
+    // whole step above runs in worktree mode, so nothing else covers the
+    // combination - and the two modes reach the restack differently (checkout
+    // mode moves HEAD to stage and restores it; worktree mode never moves it),
+    // which is exactly where a detached HEAD has been mislaid before. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    const fs::path cfgL = fs::path(it.repoDir) / "p4gw.cfg";
+    auto savedCfgL = readFile(cfgL);
+    if (!savedCfgL) return std::unexpected(savedCfgL.error());
+    if (auto r = appendFile(cfgL, "\nimport_mode = checkout\n"); !r) return r;
+    if (auto r = appendFile(util, "// branchless checkout-mode stack\n"); !r)
+        return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: checkout-mode stack",
+                             it.repoDir);
+        !r)
+        return std::unexpected(r.error());
+    if (auto r = teammate("// branchless checkout-mode teammate\n"); !r)
+        return r;
+    // Bare import: the fetch half must not move a detached HEAD here either.
+    auto headBeforeL = git::revParse("HEAD", it.repoDir);
+    if (!headBeforeL) return std::unexpected(headBeforeL.error());
+    auto fetchL = runGw(it, it.repoDir, {"import"});
+    if (!fetchL) return std::unexpected(fetchL.error());
+    auto headAfterFetchL = git::revParse("HEAD", it.repoDir);
+    if (!headAfterFetchL) return std::unexpected(headAfterFetchL.error());
+    if (*headAfterFetchL != *headBeforeL) {
+        return std::unexpected("a bare checkout-mode import moved a detached "
+                               "HEAD in a branchless repo:\n" + *fetchL);
+    }
+    // --rebase: restacks and leaves HEAD detached at the rewrite, as in
+    // worktree mode.
+    auto restackL = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!restackL) return std::unexpected(restackL.error());
+    if (!detached()) {
+        return std::unexpected("checkout-mode branchless restack left HEAD on "
+                               "a branch:\n" + *restackL);
+    }
+    auto onBaseL = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!onBaseL) return std::unexpected(onBaseL.error());
+    if (!*onBaseL) {
+        return std::unexpected("checkout-mode branchless restack did not bring "
+                               "the stack onto the new baseline:\n" +
+                               *restackL);
+    }
+    auto utilL = readFile(util);
+    if (!utilL) return std::unexpected(utilL.error());
+    if (utilL->find("// branchless checkout-mode stack") == std::string::npos) {
+        return std::unexpected("the checkout-mode restack lost its local "
+                               "change");
+    }
+    // ...and --rebase-all under checkout mode too: the depot moves again, the
+    // bare import leaves the stack behind, and the sweep brings it up.
+    if (auto r = teammate("// branchless checkout-mode second teammate\n"); !r)
+        return r;
+    if (auto fetchL2 = runGw(it, it.repoDir, {"import"}); !fetchL2)
+        return std::unexpected(fetchL2.error());
+    auto behindL = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!behindL) return std::unexpected(behindL.error());
+    if (*behindL) {
+        return std::unexpected("a bare checkout-mode import brought the stack "
+                               "up; it is the fetch half and must not");
+    }
+    auto sweepL = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!sweepL) return std::unexpected(sweepL.error());
+    if (sweepL->find("every visible stack") == std::string::npos) {
+        return std::unexpected("checkout-mode --rebase-all did not report its "
+                               "scope:\n" + *sweepL);
+    }
+    auto sweptOnBaseL = git::isAncestor("refs/p4gw/main", "HEAD", it.repoDir);
+    if (!sweptOnBaseL) return std::unexpected(sweptOnBaseL.error());
+    if (!*sweptOnBaseL) {
+        return std::unexpected("checkout-mode --rebase-all left the stack "
+                               "behind the new baseline:\n" + *sweepL);
+    }
+    if (!detached()) {
+        return std::unexpected("checkout-mode --rebase-all left HEAD on a "
+                               "branch:\n" + *sweepL);
+    }
+
+    if (auto r = writeFile(cfgL, *savedCfgL); !r) return r;
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+
+    // --- M: every visible stack parked, so nothing is left to carry. The sync
+    // must then be skipped outright, because `git branchless sync` with no
+    // arguments means "sync every draft stack" - the exact opposite of what was
+    // asked. That is what makes this worth an end-to-end case: a regression in
+    // the empty-list guard would hand branchless no revsets, it would restack
+    // the very stacks being skipped, and (since they conflict) the import would
+    // fail. Two stacks, so multi-stack parking is covered at the same time. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = appendFile(main, "// branchless parked one\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: parked one", it.repoDir); !r)
+        return std::unexpected(r.error());
+    auto swM = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swM) return std::unexpected(swM.error());
+    if (auto r = appendFile(main, "// branchless parked two\n"); !r) return r;
+    if (auto r = git::addAll(it.repoDir); !r) return std::unexpected(r.error());
+    if (auto r = git::commit("integtest branchless: parked two", it.repoDir); !r)
+        return std::unexpected(r.error());
+    // Stand clear of both, so neither rides along as "the stack you are on".
+    auto swM2 = git::run({"switch", "-f", "--detach", "refs/p4gw/main"},
+                         it.repoDir);
+    if (!swM2) return std::unexpected(swM2.error());
+    // The depot takes a third version of the same last line, so both conflict.
+    if (auto r = teammate("// branchless parked depot\n"); !r) return r;
+    auto parkBoth = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!parkBoth) return std::unexpected(parkBoth.error());
+    if (parkBoth->find("2 stack(s) conflict") == std::string::npos) {
+        return std::unexpected("--rebase-all did not report both conflicting "
+                               "stacks:\n" + *parkBoth + "\n" +
+                               branchlessState(it));
+    }
+    auto parkedM = git::refNamesUnder(parkedPrefix, it.repoDir);
+    if (!parkedM) return std::unexpected(parkedM.error());
+    if (parkedM->size() != 2) {
+        return std::unexpected("expected two parked stacks, got " +
+                               std::to_string(parkedM->size()) + ":\n" +
+                               branchlessState(it));
+    }
+
+    // Nothing left to carry. This must be a clean no-op, not a bare sync.
+    auto allParked = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    if (!allParked) return std::unexpected(allParked.error());
+    if (allParked->find("Skipped 2 parked stack") == std::string::npos) {
+        return std::unexpected("--rebase-all with every stack parked did not "
+                               "report skipping them:\n" + *allParked);
+    }
+    if (allParked->find("conflict with the new depot state") !=
+        std::string::npos) {
+        return std::unexpected("--rebase-all retried the parked stacks - the "
+                               "empty carry list reached 'git branchless sync' "
+                               "as 'sync everything':\n" + *allParked);
+    }
+    auto parkedStillM = git::refNamesUnder(parkedPrefix, it.repoDir);
+    if (!parkedStillM) return std::unexpected(parkedStillM.error());
+    if (parkedStillM->size() != 2) {
+        return std::unexpected("the no-op run disturbed the parked set:\n" +
+                               branchlessState(it));
+    }
+    for (const auto& ref : *parkedStillM) {
+        if (auto swept = git::deleteRef(ref, it.repoDir); !swept) {
+            return std::unexpected(swept.error());
+        }
+    }
     if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
 
     // --- C: after uninstall, gw treats the repo as plain git again. ---
@@ -4395,11 +4750,47 @@ std::expected<void, std::string> itCheckoutMode(ItContext& it) {
     auto flipped = appendFile(cfg, "\nimport_mode = checkout\n");
     if (!flipped) return flipped;
 
+    // (a0) A bare `gw import` is the fetch half and must not move you, even on
+    // a branch that could fast-forward cleanly. It used to, which made "which
+    // command brings me forward" depend on whether you were on a branch.
+    if (auto r = teammate("// checkout-fetch-only change\n"); !r) return r;
+    auto beforeFetch = git::revParse("refs/heads/main", it.repoDir);
+    if (!beforeFetch) return std::unexpected(beforeFetch.error());
+    auto fetchOnly = runGw(it, it.repoDir, {"import"});
+    if (!fetchOnly) return std::unexpected(fetchOnly.error());
+    auto afterFetch = git::revParse("refs/heads/main", it.repoDir);
+    if (!afterFetch) return std::unexpected(afterFetch.error());
+    if (*afterFetch != *beforeFetch) {
+        return std::unexpected("a bare 'gw import' fast-forwarded 'main'; it "
+                               "is the fetch half and must not move you:\n" +
+                               *fetchOnly);
+    }
+    auto fetchedBaseline = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!fetchedBaseline) return std::unexpected(fetchedBaseline.error());
+    if (*fetchedBaseline == *beforeFetch) {
+        return std::unexpected("the bare import did not advance the baseline, "
+                               "so it proves nothing about not moving you");
+    }
+    if (fetchOnly->find("gw import --rebase") == std::string::npos) {
+        return std::unexpected("a bare import that left the branch behind did "
+                               "not point at --rebase:\n" + *fetchOnly);
+    }
+    // ...and --rebase is what moves it. Same repo, same pending depot state.
+    auto pullHalf = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!pullHalf) return std::unexpected(pullHalf.error());
+    auto afterPull = git::revParse("refs/heads/main", it.repoDir);
+    if (!afterPull) return std::unexpected(afterPull.error());
+    if (*afterPull != *fetchedBaseline) {
+        return std::unexpected("'gw import --rebase' did not bring 'main' up "
+                               "to the baseline the bare import fetched:\n" +
+                               *pullHalf);
+    }
+
     // (a) Clean-tree fast-forward on 'main': the full checkout staging path
     // (detach onto the old baseline, overlay, commit, switch back) must run
     // and leave the user exactly where they were, brought up to date.
     if (auto r = teammate("// checkout-ff change\n"); !r) return r;
-    auto ffOut = runGw(it, it.repoDir, {"import"});
+    auto ffOut = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!ffOut) return std::unexpected(ffOut.error());
     if (ffOut->find("You are on 'main'") == std::string::npos) {
         return std::unexpected("checkout-mode ff import did not end on "
@@ -4482,7 +4873,7 @@ std::expected<void, std::string> itCheckoutMode(ItContext& it) {
     // next import must self-heal it rather than trust its stamps.
     if (auto r = writeFile(cfg, *savedCfg); !r) return r;
     if (auto r = teammate("// flip-back change\n"); !r) return r;
-    auto healOut = runGw(it, it.repoDir, {"import"});
+    auto healOut = runGw(it, it.repoDir, {"import", "--rebase"});
     if (!healOut) return std::unexpected(healOut.error());
     auto healed = readFile(repoMain);
     if (!healed) return std::unexpected(healed.error());
