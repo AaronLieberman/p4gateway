@@ -43,4 +43,51 @@ std::vector<std::string> staleParkedRoots(
     const std::vector<std::string>& parkedRoots,
     const std::vector<std::string>& visibleRoots);
 
+// One commit of a line of local work (a branchless stack, or the commits a
+// branch or detached HEAD carries past the depot baseline), as absorption sees
+// it. The facts are gathered by the caller from git; the decision is pure.
+struct LineCommit {
+    std::string oid;
+    std::vector<std::string> parents;
+    // The commit's tree equals its parent's: it changes nothing on its own.
+    bool empty = false;
+    // Every path the line changed from its base up to and including this
+    // commit (`git diff --name-only <base> <oid>`).
+    std::vector<std::string> touched;
+    // Every path whose content differs between this commit and the new depot
+    // snapshot (`git diff --name-only <oid> <snapshot>`).
+    std::vector<std::string> differsFromDepot;
+};
+
+// What `gw import --rebase` can drop from a line instead of replaying it.
+struct Absorption {
+    // Commits whose content the depot snapshot already carries - hide/drop
+    // them. Parents before children.
+    std::vector<std::string> absorbed;
+    // Commits that are not absorbed but whose parent is: each is moved (with
+    // its descendants) straight onto the snapshot.
+    std::vector<std::string> frontier;
+};
+
+// Decides which commits of a line the new depot snapshot already carries, so
+// the restack drops them instead of replaying them.
+//
+// Git and git-branchless only skip a commit whose *patch* matches an upstream
+// commit. One import commits everything submitted since the last one, so
+// preparing and submitting A and then B, then importing once, yields a single
+// snapshot holding A+B: neither patch matches, and replaying A onto a file
+// that already has B's lines on top conflicts. Content catches that: a commit
+// is absorbed when the line has changed something by then and every path it
+// changed reads the same at that commit as in the snapshot - so the line's
+// state up to there is already in the depot, whoever submitted it.
+//
+// A commit that changes nothing itself is never absorbed on its own (an empty
+// placeholder on top of submitted work survives); an ancestor is absorbed when
+// every child is, so a line that forks keeps any shared commit a surviving
+// branch still needs. A line with merge commits (or any commit whose parent
+// count is not one) is left alone: the plan is empty.
+//
+// `commits` must list parents before children. Pure; unit-tested.
+Absorption planAbsorption(const std::vector<LineCommit>& commits);
+
 }  // namespace p4gw::restack

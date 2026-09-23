@@ -211,6 +211,40 @@ std::expected<std::string, std::string> commit(const std::string& message,
 std::expected<std::string, std::string> rebase(const std::string& onto,
                                                const std::string& cwd = {});
 
+// `git rebase --onto <newBase> <upstream>` for the current checkout (branch or
+// detached): replays only the commits after `upstream`. Import uses it to drop
+// the part of a line the depot snapshot already carries - with `upstream` the
+// line's tip, nothing is replayed and HEAD lands on `newBase`. Conflicts leave
+// the normal mid-rebase state, as `rebase` does.
+std::expected<std::string, std::string> rebaseOnto(const std::string& newBase,
+                                                   const std::string& upstream,
+                                                   const std::string& cwd = {});
+
+// `git merge-base <a> <b>`: the best common ancestor's oid.
+std::expected<std::string, std::string> mergeBase(const std::string& a,
+                                                  const std::string& b,
+                                                  const std::string& cwd = {});
+
+// Every path whose content differs between two commits (`git diff --name-only
+// --no-renames -z`), repo-relative with forward slashes. A rename shows as its
+// old and new paths.
+std::expected<std::vector<std::string>, std::string> changedPaths(
+    const std::string& fromRef, const std::string& toRef,
+    const std::string& cwd = {});
+
+// One commit of `commitGraph`.
+struct CommitNode {
+    std::string oid;
+    std::string tree;
+    std::vector<std::string> parents;
+};
+
+// The commits reachable from `tips` but not from `exclude`, parents before
+// children (`git log --topo-order --reverse`). Empty `tips` returns nothing.
+std::expected<std::vector<CommitNode>, std::string> commitGraph(
+    const std::vector<std::string>& tips, const std::string& exclude,
+    const std::string& cwd = {});
+
 // True when git-branchless is initialized in *this* repo - its main-branch
 // config key is set in the repository's worktree or local config (branchless
 // writes it to the per-worktree config). Read those scopes only, never
@@ -238,6 +272,31 @@ std::expected<std::string, std::string> branchlessSync(
 // arguments.
 std::expected<std::vector<std::string>, std::string> branchlessQuery(
     const std::string& revset, const std::string& cwd = {});
+
+// `git branchless move -s <source> -d <dest>`: moves `source` and its
+// descendants onto `dest`, recording the rewrite (and carrying branches and a
+// checked-out HEAD along). --in-memory and without --merge, so a conflict fails
+// the command and leaves the repo untouched.
+std::expected<std::string, std::string> branchlessMove(const std::string& source,
+                                                       const std::string& dest,
+                                                       const std::string& cwd = {});
+
+// `git branchless hide <commits...>`: hides the commits from
+// the smartlog (recoverable with `git undo`) and deletes branches pointing at
+// them - what `sync` does to a commit it skips as already applied. An empty
+// list is a no-op.
+std::expected<std::string, std::string> branchlessHide(
+    const std::vector<std::string>& commits, const std::string& cwd = {});
+
+// `git branch <branch> <commit>`: creates `branch` at `commit` without checking
+// it out. Fails if the branch already exists.
+std::expected<void, std::string> createBranchAt(const std::string& branch,
+                                                const std::string& commit,
+                                                const std::string& cwd = {});
+
+// `git branch -D <branch>`.
+std::expected<void, std::string> deleteBranch(const std::string& branch,
+                                              const std::string& cwd = {});
 
 // The full names of the refs under `prefix` (e.g. "refs/p4gw/main-parked/").
 // Empty when none exist, which is not an error.

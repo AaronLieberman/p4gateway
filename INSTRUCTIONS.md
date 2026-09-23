@@ -91,6 +91,22 @@ gw prepare --update 4821         # revert CL 4821's opens, re-stage the branch i
 `--update` keeps the changelist's number and description; a plain
 `gw prepare` would refuse here because CL 4821's files are still open.
 
+### Shipping a stack one commit at a time
+
+A stack of commits can go out as one CL per commit (`gw prepare <commit>`,
+submit, next commit) and come back with a single `gw import --rebase`. That
+one import commits everything you submitted as one snapshot, so no single
+commit's patch matches it - and Git (like git-branchless) only recognizes an
+"already applied" commit by its patch, so replaying the first commit under the
+second one's lines would conflict. `gw import --rebase` checks content instead:
+a commit whose changes the new depot state already carries - every file the
+stack changed up to it reads the same in the snapshot - is dropped rather than
+replayed, and whatever you have on top of it is moved straight onto the
+snapshot. It reports what it dropped. This works on a branch, detached, and
+with git-branchless alike; a commit that also changes something the depot does
+not have (a file you edited but never shipped, or one a teammate changed
+since) is never dropped.
+
 ### Resolving in P4 before submitting
 
 Sometimes P4 won't take the changelist `gw prepare` built until you resolve:
@@ -412,11 +428,16 @@ config) and adapts:
   - detached at the rewrite of the commit you were on, if it survived
     (including when it is a **descendant** of the commit that was absorbed —
     you end up on the rewritten descendant, not on the baseline);
-  - detached at the new depot baseline, if the commit you were on was the one
-    that got absorbed (it is now part of that baseline);
-  - back on your branch, if you were on one — or, when the branch held only
-    work the depot now carries and branchless dropped it, on the baseline
-    branch with a note saying so.
+  - detached at the rewrite of the commit **under** the one you were on, if
+    only yours was absorbed (you shipped the top of `main -> C -> D`, so you
+    land on `C'`, not on the baseline where `C` would look lost);
+  - detached at the new depot baseline, if everything under you was absorbed
+    too (it is now part of that baseline);
+  - back on your branch, if you were on one — moved down to the rewrite of
+    the commit under its top when only the top was absorbed (where a plain
+    `git rebase` would leave it), or, when the branch held only work the depot
+    now carries and branchless dropped it, on the baseline branch with a note
+    saying so.
 - **`--rebase` moves the stack you are on; `--rebase-all` moves them all.**
   The default is deliberately narrow: importing should not rewrite work you
   were not thinking about. `--rebase-all` is there for when you do want the

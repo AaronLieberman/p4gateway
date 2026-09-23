@@ -8,6 +8,7 @@
 #include <functional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -561,7 +562,85 @@ constexpr const char* kImportUsage =
     "                path (use when the working tree may not match what the\n"
     "                stamped stats claim - 'gw doctor --verify' checks that)\n"
     "  -h, --help    Show this help\n"
+    "\n"
+    "Commits whose changes the new depot state already carries - typically a\n"
+    "stack you prepared and submitted commit by commit, then imported once -\n"
+    "are dropped by --rebase rather than replayed on top of themselves.\n"
     "\n";
+
+// The facts restack::planAbsorption decides from, for the commits `tips`
+// carries past `base`: each commit's parents, whether it changes anything
+// itself, what the line has changed by then, and where that commit disagrees
+// with `snapshot`. Only tree diffs - no checkout, no working-tree reads.
+std::expected<std::vector<restack::LineCommit>, std::string> describeLine(
+    const std::vector<std::string>& tips, const std::string& base,
+    const std::string& snapshot, const std::string& root) {
+    auto nodes = git::commitGraph(tips, base, root);
+    if (!nodes) return std::unexpected(nodes.error());
+
+    std::vector<restack::LineCommit> line;
+    for (const auto& node : *nodes) {
+        restack::LineCommit commit;
+        commit.oid = node.oid;
+        commit.parents = node.parents;
+        line.push_back(std::move(commit));
+    }
+    // A merge anywhere makes the plan empty; gathering facts for it is waste.
+    const bool linear = std::all_of(nodes->begin(), nodes->end(),
+                                    [](const git::CommitNode& node) {
+                                        return node.parents.size() == 1;
+                                    });
+    if (!linear) return line;
+
+    for (size_t i = 0; i < nodes->size(); ++i) {
+        const auto& node = (*nodes)[i];
+        auto& commit = line[i];
+        auto parentTree = git::revParse(node.parents.front() + "^{tree}", root);
+        if (!parentTree) return std::unexpected(parentTree.error());
+        commit.empty = *parentTree == node.tree;
+        if (commit.empty) continue;
+        auto touched = git::changedPaths(base, node.oid, root);
+        if (!touched) return std::unexpected(touched.error());
+        commit.touched = std::move(*touched);
+        if (commit.touched.empty()) continue;
+        auto differs = git::changedPaths(node.oid, snapshot, root);
+        if (!differs) return std::unexpected(differs.error());
+        commit.differsFromDepot = std::move(*differs);
+    }
+    return line;
+}
+
+// The absorption plan for the line HEAD is on in a plain-git repo: the commits
+// between where HEAD forked from the depot baseline and HEAD itself.
+std::expected<restack::Absorption, std::string> planHeadAbsorption(
+    const std::string& snapshot, const std::string& root) {
+    auto base = git::mergeBase("HEAD", snapshot, root);
+    if (!base) return std::unexpected(base.error());
+    auto line = describeLine({"HEAD"}, *base, snapshot, root);
+    if (!line) return std::unexpected(line.error());
+    return restack::planAbsorption(*line);
+}
+
+// One line for the commits a restack dropped as already submitted, so a stack
+// that got shorter says why.
+void reportDropped(size_t count) {
+    if (count == 0) return;
+    std::printf("Dropped %zu commit(s) whose changes the new depot state "
+                "already carries.\n", count);
+}
+
+// `git rebase <snapshot>` for a plain-git line, minus what `plan` absorbed.
+// Git itself drops a replayed commit only when its patch matches an upstream
+// one, which fails the moment one import carries two submitted commits; the
+// plan catches those by content, and `--onto` replays only what is left above
+// them (nothing, when the whole line was submitted).
+std::expected<std::string, std::string> rebaseLine(
+    const std::string& snapshot, const restack::Absorption& plan,
+    const std::string& root) {
+    if (plan.absorbed.empty()) return git::rebase(snapshot, root);
+    // A linear line's absorbed commits are a prefix, so the last is the top.
+    return git::rebaseOnto(snapshot, plan.absorbed.back(), root);
+}
 
 }  // namespace
 
@@ -1194,7 +1273,7 @@ int cmdImport(const Args& args) {
                 }
             }
 
-            const restack::RestackSelection selection = restack::selectStacks(
+            restack::RestackSelection selection = restack::selectStacks(
                 *allRoots, *currentRoots, parkedRoots, rebaseAll, forceParked);
 
             const std::string carrier = "gw-import-restack";
@@ -1223,6 +1302,151 @@ int cmdImport(const Args& args) {
                     return fail(made.error());
                 }
             }
+            // Mark the commits under HEAD too, so HEAD can land on the right
+            // one when its own commit disappears. The sync skips a commit whose
+            // patch the snapshot already carries - the one you just prepared
+            // and submitted, when it sits on work you have not - and drops the
+            // branch on it along with it. HEAD belongs on the rewrite of the
+            // nearest commit under it that survived, and branchless moves a
+            // branch onto a commit's rewrite, so one marker per ancestor (nearest
+            // first) finds it afterwards. Both ways of standing on a stack need
+            // it: detached (the carrier above) and on a branch of your own.
+            std::vector<std::string> ancestorCarriers;
+            struct CarrierSweep {  // every exit path, including failures
+                const std::vector<std::string>& names;
+                const std::string& root;
+                ~CarrierSweep() {
+                    for (const auto& name : names) {
+                        (void)git::deleteBranch(name, root);
+                    }
+                }
+            } sweepAncestorCarriers{ancestorCarriers, root};
+            if (!*headBehind && !originalHead.empty()) {
+                auto under = git::commitGraph({originalHead}, newDepot, root);
+                if (!under) return fail(under.error());
+                std::unordered_map<std::string, std::string> firstParent;
+                for (const auto& node : *under) {
+                    if (!node.parents.empty()) {
+                        firstParent[node.oid] = node.parents.front();
+                    }
+                }
+                std::string at = originalHead;
+                for (auto parent = firstParent.find(at);
+                     parent != firstParent.end();
+                     parent = firstParent.find(at)) {
+                    at = parent->second;
+                    if (!firstParent.contains(at)) break;  // off the stack
+                    const std::string name =
+                        carrier + "-" + std::to_string(ancestorCarriers.size() + 1);
+                    if (auto made = git::createBranchAt(name, at, root); !made) {
+                        std::fflush(stdout);
+                        std::fprintf(stderr,
+                                     "note: '%s' is a temporary branch import "
+                                     "marks your stack with. A leftover from an "
+                                     "interrupted run must go first: 'git branch "
+                                     "-D %s'.\n",
+                                     name.c_str(), name.c_str());
+                        return fail(made.error());
+                    }
+                    ancestorCarriers.push_back(name);
+                }
+            }
+
+            // Drop what the depot already carries before the sync sees it. The
+            // sync (like git rebase) skips a commit only when its patch matches
+            // an upstream one, and one import commits everything submitted since
+            // the last: prepare and submit A, then B, import once, and the
+            // snapshot holds A+B - neither patch matches, and replaying A under
+            // B's lines conflicts. Content catches it (restack::planAbsorption):
+            // hide the commits the snapshot carries and move what sits on them
+            // straight onto it. Parked stacks are included - absorbing cannot
+            // conflict, and a parked stack that was since submitted would
+            // otherwise sit parked forever.
+            std::vector<std::string> absorbedCommits;
+            {
+                std::vector<std::string> absorbRoots = selection.carryRoots;
+                absorbRoots.insert(absorbRoots.end(),
+                                   selection.skippedParked.begin(),
+                                   selection.skippedParked.end());
+                for (const auto& stackRoot : absorbRoots) {
+                    auto onDepot = git::isAncestor(newDepot, stackRoot, root);
+                    if (!onDepot) return fail(onDepot.error());
+                    if (*onDepot) continue;  // nothing new under it
+                    auto base = git::revParse(stackRoot + "^", root);
+                    if (!base) return fail(base.error());
+                    auto heads = git::branchlessQuery(
+                        "heads(draft() & descendants(" + stackRoot + "))", root);
+                    if (!heads) return fail(heads.error());
+                    auto line = describeLine(*heads, *base, newDepot, root);
+                    if (!line) return fail(line.error());
+                    const restack::Absorption plan =
+                        restack::planAbsorption(*line);
+                    if (plan.absorbed.empty()) continue;
+
+                    // Move first, hide second: a move that conflicts (the depot
+                    // also changed a file the surviving commit touches) changes
+                    // nothing, and leaving the whole stack to the sync then
+                    // costs no more than it did before this pass existed.
+                    bool movedAll = true;
+                    for (const auto& survivor : plan.frontier) {
+                        auto moved = git::branchlessMove(survivor, newDepot, root);
+                        if (!moved) {
+                            if (verbose()) {
+                                std::printf("could not move %s onto the depot "
+                                            "state; leaving its stack to the "
+                                            "sync:\n%s\n",
+                                            survivor.c_str(),
+                                            moved.error().c_str());
+                            }
+                            movedAll = false;
+                            break;
+                        }
+                    }
+                    if (!movedAll) continue;
+
+                    // Hiding deletes the branches on these commits, and git
+                    // will not delete the one checked out, so step HEAD off
+                    // first. Where it finally lands is decided after the sync,
+                    // from the carriers, like any other absorbed HEAD.
+                    auto head = git::revParse("HEAD", root);
+                    if (!head) return fail(head.error());
+                    if (std::find(plan.absorbed.begin(), plan.absorbed.end(),
+                                  *head) != plan.absorbed.end()) {
+                        auto off = git::switchDetached(newDepot, root);
+                        if (!off) return fail(off.error());
+                    }
+                    auto hidden = git::branchlessHide(plan.absorbed, root);
+                    if (!hidden) return fail(hidden.error());
+                    auto unparked = git::deleteRef(parkedPrefix + stackRoot, root);
+                    if (!unparked) return fail(unparked.error());
+                    absorbedCommits.insert(absorbedCommits.end(),
+                                           plan.absorbed.begin(),
+                                           plan.absorbed.end());
+                }
+            }
+            if (!absorbedCommits.empty()) {
+                // A stack absorbed whole is gone; one absorbed in part now sits
+                // on the snapshot under a new root. Either way it must not be
+                // handed to the sync (or reported as parked) under its old root.
+                auto visible = git::branchlessQuery("roots(draft())", root);
+                if (!visible) return fail(visible.error());
+                auto keepVisible = [&](std::vector<std::string>& roots) {
+                    std::erase_if(roots, [&](const std::string& r) {
+                        return std::find(visible->begin(), visible->end(), r) ==
+                               visible->end();
+                    });
+                };
+                keepVisible(selection.carryRoots);
+                keepVisible(selection.skippedParked);
+                std::printf("Dropped %zu commit(s) whose changes the new depot "
+                            "state already carries:\n",
+                            absorbedCommits.size());
+                for (const auto& commit : absorbedCommits) {
+                    auto label = git::shortLog(commit, root);
+                    std::printf("  %s\n", label ? label->c_str() : commit.c_str());
+                }
+            }
+
             // An empty revset list is branchless's "sync everything", so a
             // selection that carries nothing must skip the command entirely
             // rather than run it with no arguments.
@@ -1294,6 +1518,23 @@ int cmdImport(const Args& args) {
             // user's real branch.
             bool mergedAway = false;      // HEAD's own commit was absorbed
             bool absorbedBranch = false;  // the branch itself was dropped
+            // Where HEAD's commit went when it was absorbed: the restacked
+            // rewrite of the nearest commit under it that survived - or empty
+            // when nothing under it did, and the depot state itself is the
+            // landing. A marker that was not carried onto the snapshot (its
+            // stack conflicted) is no landing at all.
+            std::string survivor;
+            auto findSurvivor = [&]() -> std::expected<void, std::string> {
+                for (const auto& name : ancestorCarriers) {
+                    auto tip = git::revParse("refs/heads/" + name, root);
+                    if (!tip) continue;  // skipped or hidden with its commit
+                    auto onDepot = git::isAncestor(newDepot, *tip, root);
+                    if (!onDepot) return std::unexpected(onDepot.error());
+                    if (*onDepot) survivor = *tip;
+                    return {};
+                }
+                return {};
+            };
             if (useCarrier) {
                 auto tip = git::revParse(carrier, root);
                 if (tip) {
@@ -1302,13 +1543,18 @@ int cmdImport(const Args& args) {
                     auto dropped = git::run({"branch", "-D", carrier}, root);
                     if (!dropped) return fail(dropped.error());
                 } else {
-                    // The whole carried line was already applied upstream, so
-                    // branchless obsoleted it and removed the ephemeral branch,
+                    // The commit HEAD was on is already in the depot state, so
+                    // branchless dropped it and the ephemeral branch with it,
                     // leaving HEAD on the baseline branch. The user was detached,
-                    // so detach at the new baseline too - their work now lives in
-                    // that commit. Sweep the branch if it somehow lingers.
-                    (void)git::run({"branch", "-D", carrier}, root);
-                    auto det = git::switchDetached(newDepot, root);
+                    // so stay detached: on the restacked commit that was under it
+                    // (main -> C -> D with D submitted lands on C'), or on the
+                    // new baseline when the whole line is in the depot. Sweep
+                    // the branch if it somehow lingers.
+                    (void)git::deleteBranch(carrier, root);
+                    if (auto found = findSurvivor(); !found)
+                        return fail(found.error());
+                    auto det = git::switchDetached(
+                        survivor.empty() ? newDepot : survivor, root);
                     if (!det) return fail(det.error());
                     mergedAway = true;
                 }
@@ -1325,9 +1571,20 @@ int cmdImport(const Args& args) {
                 // deliberately, with a message that says so.
                 auto stillThere = git::branchExists(originalBranch, root);
                 if (!stillThere) return fail(stillThere.error());
+                if (auto found = findSurvivor(); !found)
+                    return fail(found.error());
                 if (*stillThere) {
                     auto back = git::switchBranch(originalBranch, root);
                     if (!back) return fail(back.error());
+                } else if (!survivor.empty()) {
+                    // Only the branch's top commit was absorbed: put the branch
+                    // back on the restacked commit under it, which is where a
+                    // plain `git rebase` would have left it.
+                    auto made = git::createBranchAt(originalBranch, survivor, root);
+                    if (!made) return fail(made.error());
+                    auto back = git::switchBranch(originalBranch, root);
+                    if (!back) return fail(back.error());
+                    mergedAway = true;
                 } else {
                     absorbedBranch = true;
                     auto baselineExists = git::branchExists(baseline, root);
@@ -1348,6 +1605,9 @@ int cmdImport(const Args& args) {
                 if (!det) return fail(det.error());
             }
             if (auto kept = keepDetached(); !kept) return fail(kept.error());
+            for (const auto& name : ancestorCarriers) {
+                (void)git::deleteBranch(name, root);  // gone already is fine
+            }
 
             // Measured after the repositioning above, so it reflects where the
             // user actually lands. (Re-detaching never changes what HEAD
@@ -1423,7 +1683,17 @@ int cmdImport(const Args& args) {
             // about all of them; saying "your visible commits" for both was
             // what made a partial run read as a total one.
             const char* scope = rebaseAll ? "every visible stack" : "your stack";
-            if (mergedAway) {
+            if (mergedAway && !survivor.empty()) {
+                auto label = git::shortLog(survivor, root);
+                std::printf("Restacked %s. The commit you had checked out was "
+                            "already in the depot state; %s now on the "
+                            "restacked commit under it:\n  %s\n",
+                            scope,
+                            originalBranch.empty()
+                                ? "HEAD is detached"
+                                : ("'" + originalBranch + "' is").c_str(),
+                            label ? label->c_str() : survivor.c_str());
+            } else if (mergedAway) {
                 std::printf("Restacked %s. The commit you had checked out was "
                             "already in the depot state; HEAD is detached at "
                             "the new depot baseline.\n", scope);
@@ -1433,7 +1703,7 @@ int cmdImport(const Args& args) {
                             "are on '%s'. Start new work with: "
                             "git switch -c <branch>\n",
                             scope, originalBranch.c_str(), baseline.c_str());
-            } else if (restacked) {
+            } else if (restacked || !absorbedCommits.empty()) {
                 std::printf("Restacked %s onto the new depot state.\n", scope);
             } else if (!outcome.synced.empty()) {
                 // Your own stack sat still, but others moved - the message used
@@ -1469,7 +1739,9 @@ int cmdImport(const Args& args) {
                             "on the depot baseline.\n");
                 return 0;
             }
-            auto rebased = git::rebase(newDepot, root);
+            auto plan = planHeadAbsorption(newDepot, root);
+            if (!plan) return fail(plan.error());
+            auto rebased = rebaseLine(newDepot, *plan, root);
             if (!rebased) {
                 std::fflush(stdout);  // keep messages ordered with stderr
                 std::fprintf(stderr, "gw import: rebase stopped:\n%s\n",
@@ -1479,6 +1751,7 @@ int cmdImport(const Args& args) {
                              "--continue' (or 'git rebase --abort' to undo).\n");
                 return 1;
             }
+            reportDropped(plan->absorbed.size());
             if (auto kept = keepDetached(); !kept) return fail(kept.error());
             std::printf("Rebased your detached work onto the new depot state "
                         "(HEAD is still detached).\n");
@@ -1574,7 +1847,9 @@ int cmdImport(const Args& args) {
         auto ff = git::mergeFastForward(newDepot, root);  // no-op when in sync
         if (!ff) return fail(ff.error());
     } else if (behind && rebase) {
-        auto rebased = git::rebase(newDepot, root);
+        auto plan = planHeadAbsorption(newDepot, root);
+        if (!plan) return fail(plan.error());
+        auto rebased = rebaseLine(newDepot, *plan, root);
         if (!rebased) {
             std::fflush(stdout);  // keep messages ordered with stderr
             std::fprintf(stderr, "gw import: rebase stopped:\n%s\n",
@@ -1584,6 +1859,7 @@ int cmdImport(const Args& args) {
                          "(or 'git rebase --abort' to undo).\n");
             return 1;
         }
+        reportDropped(plan->absorbed.size());
         std::printf("Rebased '%s' onto the new depot state.\n", current.c_str());
     }
 

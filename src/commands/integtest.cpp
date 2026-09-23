@@ -3887,8 +3887,16 @@ std::expected<void, std::string> itDoctorMisconfigs(ItContext& it) {
 //      runs in worktree mode, so nothing else covers branchless x checkout.
 //   M) Every visible stack parked: the sync is skipped outright rather than
 //      run with no revsets, which branchless reads as "sync everything".
+//   N) HEAD on the submitted top of main -> C -> D lands on C', the rewrite of
+//      the commit under it, not on the baseline.
+//   O) Two commits submitted separately but imported once (one snapshot, so
+//      no patch matches) are dropped by content and the commit on top of them
+//      moves straight onto the snapshot instead of conflicting.
+//   P) The same with nothing on top: the whole stack is absorbed and HEAD
+//      lands detached on the new baseline.
 //   C) After `git branchless init --uninstall`, gw detects the repo as plain
 //      again and falls back to `git rebase`.
+//   Q) Plain git, on a branch: the O case, dropped by `git rebase --onto`.
 std::expected<void, std::string> itBranchless(ItContext& it) {
     if (!git::run({"branchless", "--version"}, it.repoDir)) {
         std::printf("note  git-branchless is not on PATH - skipping the "
@@ -4646,6 +4654,160 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     }
     if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
 
+    auto commitAppend = [&](const fs::path& file, const std::string& marker,
+                            const std::string& subject)
+        -> std::expected<void, std::string> {
+        if (auto r = appendFile(file, marker); !r) return r;
+        if (auto r = git::addAll(it.repoDir); !r)
+            return std::unexpected(r.error());
+        if (auto r = git::commit(subject, it.repoDir); !r)
+            return std::unexpected(r.error());
+        return {};
+    };
+    // Import's temporary markers (the carrier and one per commit under HEAD)
+    // must never outlive the run.
+    auto noCarriersLeft = [&](const std::string& label,
+                              const std::string& out)
+        -> std::expected<void, std::string> {
+        auto left = git::run({"for-each-ref", "--format=%(refname:short)",
+                              "refs/heads/gw-import-restack*"},
+                             it.repoDir);
+        if (!left) return std::unexpected(left.error());
+        if (!left->empty()) {
+            return std::unexpected(label + ": import left its temporary "
+                                   "branches behind (" + *left + "):\n" + out);
+        }
+        return {};
+    };
+    auto subjectOf = [&](const std::string& ref) -> std::string {
+        auto subject = git::commitSubject(ref, it.repoDir);
+        return subject ? *subject : "<" + subject.error() + ">";
+    };
+
+    // --- N: main -> C -> D, HEAD on D, only D prepared and submitted. The sync
+    // rewrites C and skips D as already applied, dropping the carrier branch
+    // on it; HEAD must land on C' - the restacked commit under it - not on the
+    // baseline, where the user's unsubmitted C would look lost. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = commitAppend(util, "// branchless kept parent\n",
+                              "integtest branchless: kept parent (still local)");
+        !r)
+        return r;
+    if (auto r = commitAppend(main, "// branchless submitted top\n",
+                              "integtest branchless: submitted top");
+        !r)
+        return r;
+    if (auto r = teammate("// branchless submitted top\n"); !r) return r;
+    auto importN = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importN) return std::unexpected(importN.error());
+    if (!detached()) {
+        return std::unexpected("N: HEAD is on a branch after its commit was "
+                               "absorbed:\n" + *importN);
+    }
+    auto parentN = git::revParse("HEAD^", it.repoDir);
+    auto baseN = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!parentN) return std::unexpected(parentN.error());
+    if (!baseN) return std::unexpected(baseN.error());
+    if (*parentN != *baseN ||
+        subjectOf("HEAD") != "integtest branchless: kept parent (still local)") {
+        return std::unexpected("N: HEAD did not land on the restacked parent of "
+                               "the submitted commit (HEAD is '" +
+                               subjectOf("HEAD") + "'):\n" + *importN + "\n" +
+                               branchlessState(it));
+    }
+    if (importN->find("restacked commit under it") == std::string::npos) {
+        return std::unexpected("N: import did not say where HEAD landed:\n" +
+                               *importN);
+    }
+    if (auto r = noCarriersLeft("N", *importN); !r) return r;
+
+    // --- O: main -> A -> B -> C. A and B edit the same lines' neighborhood
+    // and were submitted as two CLs but imported once, so the snapshot holds
+    // A+B and neither patch matches it: replaying A under B's lines conflicts.
+    // Import must drop A and B by content and carry C straight onto the
+    // snapshot, HEAD with it. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = commitAppend(main, "// branchless absorbed A\n",
+                              "integtest branchless: absorbed A");
+        !r)
+        return r;
+    if (auto r = commitAppend(main, "// branchless absorbed B\n",
+                              "integtest branchless: absorbed B");
+        !r)
+        return r;
+    if (auto r = commitAppend(util, "// branchless above absorbed\n",
+                              "integtest branchless: above absorbed");
+        !r)
+        return r;
+    if (auto r = teammate("// branchless absorbed A\n// branchless absorbed B\n");
+        !r)
+        return r;
+    auto importO = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importO) {
+        return std::unexpected("O: " + importO.error() + "\n" +
+                               branchlessState(it));
+    }
+    if (importO->find("Dropped 2 commit(s)") == std::string::npos) {
+        return std::unexpected("O: import did not report dropping the two "
+                               "submitted commits:\n" + *importO);
+    }
+    auto parentO = git::revParse("HEAD^", it.repoDir);
+    auto baseO = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!parentO) return std::unexpected(parentO.error());
+    if (!baseO) return std::unexpected(baseO.error());
+    if (*parentO != *baseO ||
+        subjectOf("HEAD") != "integtest branchless: above absorbed") {
+        return std::unexpected("O: the surviving commit is not directly on the "
+                               "new baseline (HEAD is '" + subjectOf("HEAD") +
+                               "'):\n" + *importO + "\n" + branchlessState(it));
+    }
+    if (!detached()) {
+        return std::unexpected("O: HEAD is on a branch:\n" + *importO);
+    }
+    auto utilO = readFile(util);
+    if (!utilO) return std::unexpected(utilO.error());
+    if (utilO->find("// branchless above absorbed") == std::string::npos) {
+        return std::unexpected("O: the surviving commit lost its change");
+    }
+    if (auto r = noCarriersLeft("O", *importO); !r) return r;
+
+    // --- P: the same two submitted commits with nothing on top, HEAD on the
+    // second: the whole stack is absorbed, HEAD lands on the new baseline and
+    // no stack is left visible. ---
+    if (auto r = resetToBaseline(); !r) return std::unexpected(r.error());
+    if (auto r = commitAppend(main, "// branchless whole A\n",
+                              "integtest branchless: whole A");
+        !r)
+        return r;
+    if (auto r = commitAppend(main, "// branchless whole B\n",
+                              "integtest branchless: whole B");
+        !r)
+        return r;
+    if (auto r = teammate("// branchless whole A\n// branchless whole B\n"); !r)
+        return r;
+    auto importP = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importP) {
+        return std::unexpected("P: " + importP.error() + "\n" +
+                               branchlessState(it));
+    }
+    auto headP = git::revParse("HEAD", it.repoDir);
+    auto baseP = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!headP) return std::unexpected(headP.error());
+    if (!baseP) return std::unexpected(baseP.error());
+    if (*headP != *baseP || !detached()) {
+        return std::unexpected("P: HEAD is not detached at the new baseline "
+                               "after its whole stack was absorbed:\n" +
+                               *importP + "\n" + branchlessState(it));
+    }
+    auto draftP =
+        git::run({"branchless", "query", "--raw", "draft()"}, it.repoDir);
+    if (!draftP) return std::unexpected(draftP.error());
+    if (!draftP->empty()) {
+        return std::unexpected("P: the absorbed commits are still visible:\n" +
+                               branchlessState(it));
+    }
+    if (auto r = noCarriersLeft("P", *importP); !r) return r;
+
     // --- C: after uninstall, gw treats the repo as plain git again. ---
     auto uninstall = git::run({"branchless", "init", "--uninstall"}, it.repoDir);
     if (!uninstall) {
@@ -4689,6 +4851,46 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     if (bareCNoop->find("left as-is") != std::string::npos) {
         return std::unexpected("import told the user to rebase while HEAD "
                                "already contained the baseline:\n" + *bareCNoop);
+    }
+
+    // --- Q: the plain-git branch flavor of O. `git rebase` skips a commit
+    // only by patch-id, so two commits submitted separately but imported once
+    // conflicted there exactly the same way. ---
+    const std::string plainBranch = "gw-integtest-plain-absorb";
+    auto swQ = git::run({"switch", "-f", "-c", plainBranch, "refs/p4gw/main"},
+                        it.repoDir);
+    if (!swQ) return std::unexpected(swQ.error());
+    if (auto r = commitAppend(main, "// plain absorbed A\n",
+                              "integtest plain: absorbed A");
+        !r)
+        return r;
+    if (auto r = commitAppend(main, "// plain absorbed B\n",
+                              "integtest plain: absorbed B");
+        !r)
+        return r;
+    if (auto r = commitAppend(util, "// plain above absorbed\n",
+                              "integtest plain: above absorbed");
+        !r)
+        return r;
+    if (auto r = teammate("// plain absorbed A\n// plain absorbed B\n"); !r)
+        return r;
+    auto importQ = runGw(it, it.repoDir, {"import", "--rebase"});
+    if (!importQ) return std::unexpected("Q: " + importQ.error());
+    if (importQ->find("Dropped 2 commit(s)") == std::string::npos) {
+        return std::unexpected("Q: import did not report dropping the two "
+                               "submitted commits:\n" + *importQ);
+    }
+    auto branchQ = git::currentBranch(it.repoDir);
+    if (!branchQ) return std::unexpected(branchQ.error());
+    auto parentQ = git::revParse("HEAD^", it.repoDir);
+    auto baseQ = git::revParse("refs/p4gw/main", it.repoDir);
+    if (!parentQ) return std::unexpected(parentQ.error());
+    if (!baseQ) return std::unexpected(baseQ.error());
+    if (*branchQ != plainBranch || *parentQ != *baseQ ||
+        subjectOf("HEAD") != "integtest plain: above absorbed") {
+        return std::unexpected("Q: the branch is not the surviving commit on "
+                               "the new baseline (on '" + *branchQ + "', HEAD "
+                               "'" + subjectOf("HEAD") + "'):\n" + *importQ);
     }
 
     // Leave a clean main for cleanup (branchless is already uninstalled).

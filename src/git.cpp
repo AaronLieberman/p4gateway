@@ -37,6 +37,18 @@ std::vector<std::string> nonEmptyLines(const std::string& text) {
     return lines;
 }
 
+// Splits `-z` output into its non-empty NUL-terminated entries.
+std::vector<std::string> nulSeparated(const std::string& out) {
+    std::vector<std::string> entries;
+    for (size_t start = 0; start < out.size();) {
+        const size_t nul = out.find('\0', start);
+        const size_t end = nul == std::string::npos ? out.size() : nul;
+        if (end > start) entries.emplace_back(out.substr(start, end - start));
+        start = end + 1;
+    }
+    return entries;
+}
+
 }  // namespace
 
 std::expected<std::string, std::string> run(const std::vector<std::string>& args,
@@ -302,15 +314,7 @@ std::expected<std::vector<std::string>, std::string> ignoredPaths(
         return std::unexpected("git check-ignore failed:\n" +
                                result->combined());
     }
-    std::vector<std::string> ignored;
-    const std::string& out = result->stdoutText;
-    for (size_t start = 0; start < out.size();) {
-        const size_t nul = out.find('\0', start);
-        const size_t end = nul == std::string::npos ? out.size() : nul;
-        if (end > start) ignored.emplace_back(out.substr(start, end - start));
-        start = end + 1;
-    }
-    return ignored;
+    return nulSeparated(result->stdoutText);
 }
 
 std::expected<void, std::string> addPaths(const std::vector<std::string>& paths,
@@ -366,6 +370,60 @@ std::expected<std::string, std::string> commit(const std::string& message,
 std::expected<std::string, std::string> rebase(const std::string& onto,
                                                const std::string& cwd) {
     return run({"rebase", onto}, cwd);
+}
+
+std::expected<std::string, std::string> rebaseOnto(const std::string& newBase,
+                                                   const std::string& upstream,
+                                                   const std::string& cwd) {
+    return run({"rebase", "--onto", newBase, upstream}, cwd);
+}
+
+std::expected<std::string, std::string> mergeBase(const std::string& a,
+                                                  const std::string& b,
+                                                  const std::string& cwd) {
+    return run({"merge-base", a, b}, cwd);
+}
+
+std::expected<std::vector<std::string>, std::string> changedPaths(
+    const std::string& fromRef, const std::string& toRef,
+    const std::string& cwd) {
+    // Both sides of a rename are separate paths here (--no-renames), which is
+    // what a "does every path read the same" comparison needs; -z keeps
+    // unusual file names unquoted.
+    auto result = p4gw::run(
+        "git", {"diff", "--name-only", "--no-renames", "-z", fromRef, toRef},
+        cwd);
+    if (!result) return std::unexpected(result.error());
+    if (result->exitCode != 0) {
+        return std::unexpected("git diff --name-only --no-renames -z " +
+                               fromRef + " " + toRef + " failed:\n" +
+                               result->combined());
+    }
+    return nulSeparated(result->stdoutText);
+}
+
+std::expected<std::vector<CommitNode>, std::string> commitGraph(
+    const std::vector<std::string>& tips, const std::string& exclude,
+    const std::string& cwd) {
+    if (tips.empty()) return std::vector<CommitNode>{};
+    std::vector<std::string> args{"log", "--topo-order", "--reverse",
+                                  "--format=%H %T %P"};
+    args.insert(args.end(), tips.begin(), tips.end());
+    args.push_back("^" + exclude);
+    args.push_back("--");
+    auto out = run(args, cwd);
+    if (!out) return std::unexpected(out.error());
+    std::vector<CommitNode> nodes;
+    for (const auto& line : nonEmptyLines(*out)) {
+        std::istringstream fields(line);
+        CommitNode node;
+        fields >> node.oid >> node.tree;
+        for (std::string parent; fields >> parent;) {
+            node.parents.push_back(parent);
+        }
+        nodes.push_back(std::move(node));
+    }
+    return nodes;
 }
 
 std::expected<bool, std::string> isBranchless(const std::string& cwd) {
@@ -432,6 +490,40 @@ std::expected<std::vector<std::string>, std::string> branchlessQuery(
     auto out = run({"branchless", "query", "--raw", revset}, cwd);
     if (!out) return std::unexpected(out.error());
     return outputLines(*out);
+}
+
+std::expected<std::string, std::string> branchlessMove(
+    const std::string& source, const std::string& dest, const std::string& cwd) {
+    // No --merge: a conflict aborts and changes nothing, which is what lets the
+    // caller fall back to the ordinary restack. --in-memory rules out the
+    // on-disk fallback, so a failure can never leave a rebase in progress.
+    return run({"branchless", "move", "--in-memory", "-s", source, "-d", dest},
+               cwd);
+}
+
+std::expected<std::string, std::string> branchlessHide(
+    const std::vector<std::string>& commits, const std::string& cwd) {
+    if (commits.empty()) return std::string{};
+    // Deleting the branches on hidden commits is hide's default (it has only
+    // an opt-out), matching what `sync` does to a commit it skips.
+    std::vector<std::string> args{"branchless", "hide"};
+    args.insert(args.end(), commits.begin(), commits.end());
+    return run(args, cwd);
+}
+
+std::expected<void, std::string> createBranchAt(const std::string& branch,
+                                                const std::string& commit,
+                                                const std::string& cwd) {
+    auto out = run({"branch", branch, commit}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return {};
+}
+
+std::expected<void, std::string> deleteBranch(const std::string& branch,
+                                              const std::string& cwd) {
+    auto out = run({"branch", "-D", branch}, cwd);
+    if (!out) return std::unexpected(out.error());
+    return {};
 }
 
 std::expected<std::vector<std::string>, std::string> refNamesUnder(
