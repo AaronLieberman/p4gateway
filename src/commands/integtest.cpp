@@ -1714,7 +1714,7 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
                         p4::sync(it.p4, it.p4DepotPath));
     if (!synced) return std::unexpected(synced.error());
 
-    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!fast) return std::unexpected(fast.error());
     if (fast->find("Have manifest") == std::string::npos ||
         fast->find("1 changed, 0 deleted") == std::string::npos) {
@@ -1736,7 +1736,7 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
     // stay correct, and rewrite the manifest.
     std::error_code ec;
     fs::remove(manifest, ec);
-    auto fallback = runGw(it, it.repoDir, {"import", "--no-rebase"});
+    auto fallback = runGw(it, it.repoDir, {"import", "--no-rebase", "--verbose"});
     if (!fallback) return std::unexpected(fallback.error());
     if (fallback->find("Listing mirror files") == std::string::npos) {
         return std::unexpected("import without a manifest did not fall back "
@@ -1755,7 +1755,7 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
     // (full walk again), then replaced with a correctly bound one.
     auto corrupted = writeFile(manifest, "snapshot 0000bogus\n");
     if (!corrupted) return corrupted;
-    auto rebound = runGw(it, it.repoDir, {"import", "--no-rebase"});
+    auto rebound = runGw(it, it.repoDir, {"import", "--no-rebase", "--verbose"});
     if (!rebound) return std::unexpected(rebound.error());
     if (rebound->find("Listing mirror files") == std::string::npos) {
         return std::unexpected("import with a stale manifest binding did not "
@@ -1763,7 +1763,7 @@ std::expected<void, std::string> itHaveManifest(ItContext& it) {
     }
 
     // And with the rewritten manifest, the fast path is back.
-    auto fastAgain = runGw(it, it.repoDir, {"import", "--no-rebase"});
+    auto fastAgain = runGw(it, it.repoDir, {"import", "--no-rebase", "--verbose"});
     if (!fastAgain) return std::unexpected(fastAgain.error());
     if (fastAgain->find("Have manifest") == std::string::npos ||
         fastAgain->find("Already up to date") == std::string::npos) {
@@ -1840,7 +1840,7 @@ std::expected<void, std::string> itHaveManifestIgnored(ItContext& it) {
                          p4::sync(it.p4, it.p4DepotPath));
     if (!synced2) return std::unexpected(synced2.error());
 
-    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!fast) {
         return std::unexpected("fast-path import failed on a changed ignored "
                                "file (the explicit-add bug):\n" + fast.error());
@@ -1982,7 +1982,7 @@ std::expected<void, std::string> itHaveManifestExclude(ItContext& it) {
                          p4::sync(it.p4, it.p4DepotPath));
     if (!synced2) return std::unexpected(synced2.error());
 
-    auto fast = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto fast = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!fast) {
         return std::unexpected("fast-path import failed on a changed excluded "
                                "carve-out (the manifest bug):\n" + fast.error());
@@ -2318,7 +2318,7 @@ std::expected<void, std::string> itSyncback(ItContext& it) {
 
     // The manifest still describes the baseline, so the next import takes the
     // fast path and finds nothing at all to do.
-    auto noop = runGw(it, it.repoDir, {"import", "--no-rebase"});
+    auto noop = runGw(it, it.repoDir, {"import", "--no-rebase", "--verbose"});
     if (!noop) return std::unexpected(noop.error());
     if (noop->find("Already up to date") == std::string::npos) {
         return std::unexpected("import after syncback was not a clean no-op - "
@@ -2675,9 +2675,10 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     }
 
     // (7b) Two mappings are live here, which is the only place the suite can
-    // check that import reports them as one step. A plain run emits a single
-    // aggregate tally for the whole view; --verbose keeps the per-include
-    // breakdown. (Both take the manifest fast path - (6) rewrote it.)
+    // check that import reports them as one step. A plain run announces at
+    // most one aggregate tally for the whole view (and only a phase slow
+    // enough to notice at all); --verbose keeps the per-include breakdown.
+    // (Both take the manifest fast path - (6) rewrote it.)
     auto countOf = [](const std::string& haystack, const std::string& needle) {
         size_t n = 0;
         for (size_t at = haystack.find(needle); at != std::string::npos;
@@ -2688,12 +2689,14 @@ std::expected<void, std::string> itSecondInclude(ItContext& it) {
     };
     auto terse = runGw(it, it.repoDir, {"import", "--no-rebase"});
     if (!terse) return std::unexpected(terse.error());
-    if (countOf(*terse, "Have manifest") != 1) {
+    if (countOf(*terse, "Have manifest") > 1 ||
+        terse->find("Have manifest for ") != std::string::npos) {
         return std::unexpected("import did not report one tally for the whole "
-                               "view (expected a single 'Have manifest' "
-                               "line):\n" + *terse);
+                               "view (expected at most a single 'Have "
+                               "manifest' line):\n" + *terse);
     }
-    if (countOf(*terse, "Querying p4 have") != 1) {
+    if (countOf(*terse, "Querying p4 have") > 1 ||
+        terse->find("Querying p4 have for ") != std::string::npos) {
         return std::unexpected("import announced the have query once per "
                                "include instead of once:\n" + *terse);
     }
@@ -3964,7 +3967,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         !r)
         return std::unexpected(r.error());
     if (auto r = teammate("// branchless teammate A\n"); !r) return r;
-    auto importA = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto importA = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!importA) return std::unexpected(importA.error());
     // The wording is scope-aware now: "your stack" for --rebase, "every visible
     // stack" for --rebase-all. Match the part both share.
@@ -4100,7 +4103,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     // HEAD sits on the baseline from D and no teammate change follows, so the
     // sync moves nothing; before the fix this still reported "Restacked your
     // visible commits onto the new depot state". ---
-    auto importNoop = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto importNoop = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!importNoop) return std::unexpected(importNoop.error());
     if (importNoop->find("Restacked") != std::string::npos) {
         return std::unexpected("import --rebase claimed a restack while the "
@@ -4569,7 +4572,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         return std::unexpected("a bare checkout-mode import brought the stack "
                                "up; it is the fetch half and must not");
     }
-    auto sweepL = runGw(it, it.repoDir, {"import", "--rebase-all"});
+    auto sweepL = runGw(it, it.repoDir, {"import", "--rebase-all", "--verbose"});
     if (!sweepL) return std::unexpected(sweepL.error());
     if (sweepL->find("every visible stack") == std::string::npos) {
         return std::unexpected("checkout-mode --rebase-all did not report its "
@@ -4824,7 +4827,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
         !r)
         return std::unexpected(r.error());
     if (auto r = teammate("// post-uninstall teammate\n"); !r) return r;
-    auto importC = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto importC = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!importC) return std::unexpected(importC.error());
     if (importC->find("Rebased your detached work") == std::string::npos ||
         importC->find("Restacked") != std::string::npos) {
@@ -4834,7 +4837,7 @@ std::expected<void, std::string> itBranchless(ItContext& it) {
     // The same no-op guard on the plain-detached path: HEAD now contains the
     // baseline, so a second --rebase has nothing to do and must say so instead
     // of reporting a rebase git would decline as "up to date".
-    auto importCNoop = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto importCNoop = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!importCNoop) return std::unexpected(importCNoop.error());
     if (importCNoop->find("Rebased your detached work") != std::string::npos) {
         return std::unexpected("import --rebase claimed a rebase while HEAD "
@@ -4994,7 +4997,7 @@ std::expected<void, std::string> itCheckoutMode(ItContext& it) {
     // (detach onto the old baseline, overlay, commit, switch back) must run
     // and leave the user exactly where they were, brought up to date.
     if (auto r = teammate("// checkout-ff change\n"); !r) return r;
-    auto ffOut = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto ffOut = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!ffOut) return std::unexpected(ffOut.error());
     if (ffOut->find("You are on 'main'") == std::string::npos) {
         return std::unexpected("checkout-mode ff import did not end on "
@@ -5043,7 +5046,7 @@ std::expected<void, std::string> itCheckoutMode(ItContext& it) {
         return std::unexpected(r.error());
     }
     if (auto r = teammate("// checkout-rebase change\n"); !r) return r;
-    auto rebaseOut = runGw(it, it.repoDir, {"import", "--rebase"});
+    auto rebaseOut = runGw(it, it.repoDir, {"import", "--rebase", "--verbose"});
     if (!rebaseOut) return std::unexpected(rebaseOut.error());
     if (rebaseOut->find("Rebased 'it-checkout' onto the new depot state") ==
         std::string::npos) {

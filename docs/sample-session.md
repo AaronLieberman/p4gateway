@@ -51,15 +51,17 @@ live in the mirror now.) Then:
 
 ```
 C:\work\project\src> gw import
-[+  0.0s] Reading P4 state...
-[+  0.4s] Querying p4 have...
-[+  1.1s] Listing mirror files...
-[+  3.9s] Importing 38114 mirror file(s) to scan, 0 to delete...
-[+ 41.3s] Staging snapshot in Git...
-[+ 88.6s] Snapshot staged. Updating branch...
+Importing...
+[+  3.1s] Listing mirror files...
+[+  5.9s] Importing 38114 mirror file(s) to scan, 0 to delete...
+[+ 43.3s] Staging snapshot in Git...
 Imported depot state to 'refs/p4gw/main' (38114 file(s) updated, 0 deleted)
 You are on 'main'. Start work with: git switch -c <branch>
 ```
+
+(A phase only gets a line once it has run for a couple of seconds, so a big
+first import shows where the time goes while a quick re-import prints just
+its result; `gw --verbose import` shows every phase and command.)
 
 (The pristine depot state lives on the hidden ref `refs/p4gw/main`; the local
 `main` branch is a convenience pointer kept fast-forwarded to it.) From here
@@ -73,9 +75,8 @@ directory to its own known-good CL. Whenever you feel like absorbing it:
 
 ```
 C:\work\project\src> gw import
-  ...progress lines...
+Importing...
 Imported depot state to 'refs/p4gw/main' (214 file(s) updated, 3 deleted)
-You are on 'main'. Start work with: git switch -c <branch>
 ```
 
 It's `git pull --rebase` with the depot as the remote (`--no-rebase` makes
@@ -130,9 +131,8 @@ Absorb the latest depot state first so the changelist is built against it:
 
 ```
 C:\work\project\src> gw import
-  ...progress lines...
+Importing...
 Imported depot state to 'refs/p4gw/main' (89 file(s) updated, 0 deleted)
-Rebased 'fix-anim-blend' onto the new depot state.
 ```
 
 (If the rebase had conflicted, gw would stop and leave you in a normal
@@ -170,9 +170,8 @@ submit it there. Then:
 
 ```
 C:\work\project\src> gw import
-  ...progress lines...
+Importing...
 Imported depot state to 'refs/p4gw/main' (3 file(s) updated, 0 deleted)
-Rebased 'fix-anim-blend' onto the new depot state.
 ```
 
 The branch's commits melt away during that rebase — the depot already has

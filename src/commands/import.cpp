@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -25,6 +28,97 @@ namespace fs = std::filesystem;
 namespace p4gw {
 
 namespace {
+
+// Announces import's phases (`[+  2.1s] Staging snapshot in Git...`, timed
+// from the start of the import). With --verbose every phase prints as it
+// starts. Otherwise a phase prints only once it has run for kQuietPhaseDelay,
+// from a watcher thread, so a fast import says nothing but its result while a
+// slow one still shows which phase it is sitting in.
+//
+// All printing - the watcher's and every announcement - happens under one
+// mutex, and only while a phase is running; end() before printing anything
+// else so the two never interleave.
+class PhaseReporter {
+public:
+    static constexpr std::chrono::seconds kQuietPhaseDelay{2};
+
+    explicit PhaseReporter(bool announceAll) : announceAll_(announceAll) {}
+    PhaseReporter(const PhaseReporter&) = delete;
+    PhaseReporter& operator=(const PhaseReporter&) = delete;
+
+    ~PhaseReporter() {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_all();
+        if (watcher_.joinable()) watcher_.join();
+    }
+
+    // A new phase starts now (replacing any running one).
+    void begin(std::string phase) {
+        std::lock_guard lock(mutex_);
+        phase_ = std::move(phase);
+        phaseStart_ = std::chrono::steady_clock::now();
+        ++generation_;
+        if (announceAll_) {
+            announce();
+            return;
+        }
+        if (!watcher_.joinable()) watcher_ = std::thread([this] { watch(); });
+        wake_.notify_all();
+    }
+
+    // No phase is running; safe to print results.
+    void end() {
+        std::lock_guard lock(mutex_);
+        phase_.clear();
+        ++generation_;
+        wake_.notify_all();
+    }
+
+private:
+    void watch() {
+        std::unique_lock lock(mutex_);
+        while (!stopping_) {
+            if (phase_.empty()) {
+                wake_.wait(lock);
+                continue;
+            }
+            const unsigned long long generation = generation_;
+            const auto deadline = phaseStart_ + kQuietPhaseDelay;
+            wake_.wait_until(lock, deadline, [&] {
+                return stopping_ || generation_ != generation;
+            });
+            if (stopping_ || generation_ != generation) continue;
+            announce();
+            // This phase has had its line; sleep until the next one starts.
+            wake_.wait(lock, [&] {
+                return stopping_ || generation_ != generation;
+            });
+        }
+    }
+
+    // Caller holds mutex_.
+    void announce() {
+        const double secs = std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - importStart_)
+                                .count();
+        std::printf("[+%5.1fs] %s\n", secs, phase_.c_str());
+        std::fflush(stdout);
+    }
+
+    const bool announceAll_;
+    const std::chrono::steady_clock::time_point importStart_ =
+        std::chrono::steady_clock::now();
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::thread watcher_;
+    std::string phase_;
+    std::chrono::steady_clock::time_point phaseStart_;
+    unsigned long long generation_ = 0;
+    bool stopping_ = false;
+};
 
 // Files copied and deleted while building a snapshot, for the summary line.
 struct SnapshotStats {
@@ -547,6 +641,10 @@ constexpr const char* kImportUsage =
     "your branch up (do that yourself once the tree is clean). Set\n"
     "'import_mode = checkout' in p4gw.cfg to stage in your own tree instead.\n"
     "\n"
+    "Output is terse: a phase is only named once it has run for a couple of\n"
+    "seconds, and only restack news worth reading is printed. The global\n"
+    "--verbose shows every phase, command, and outcome.\n"
+    "\n"
     "options:\n"
     "      --no-rebase\n"
     "                Only advance the depot baseline; leave your branch or\n"
@@ -621,12 +719,17 @@ std::expected<restack::Absorption, std::string> planHeadAbsorption(
     return restack::planAbsorption(*line);
 }
 
-// One line for the commits a restack dropped as already submitted, so a stack
-// that got shorter says why.
-void reportDropped(size_t count) {
-    if (count == 0) return;
+// The commits a restack dropped as already submitted, one line each, so a
+// stack that got shorter says why.
+void reportDropped(const std::vector<std::string>& commits,
+                   const std::string& root) {
+    if (commits.empty()) return;
     std::printf("Dropped %zu commit(s) whose changes the new depot state "
-                "already carries.\n", count);
+                "already carries:\n", commits.size());
+    for (const auto& commit : commits) {
+        auto label = git::shortLog(commit, root);
+        std::printf("  %s\n", label ? label->c_str() : commit.c_str());
+    }
 }
 
 // `git rebase <snapshot>` for a plain-git line, minus what `plan` absorbed.
@@ -869,6 +972,21 @@ int cmdImport(const Args& args) {
         if (*branch != "HEAD") originalBranch = *branch;
     }
 
+    // Import touches the P4 server (per-mapping `p4 have`, opened-file lookup),
+    // walks and copies the whole mirror into the working tree, and hashes it
+    // all into Git's index - any of which can run for a while on a large depot.
+    // The reporter names each phase that runs long enough to notice (every
+    // phase under --verbose), stamped with elapsed-since-start, so the wait
+    // reads as progress and shows which phase is the slow one.
+    if (!verbose()) {
+        std::printf("Importing...\n");
+        std::fflush(stdout);
+    }
+    PhaseReporter phases(verbose());
+    auto progress = [&phases](const std::string& message) {
+        phases.begin(message);
+    };
+
     // From here failures may have moved HEAD off the user's branch or half-
     // written the working tree (checkout mode) or the hidden worktree
     // (worktree mode). Once `mutating` is set, fail() restores the pre-import
@@ -877,6 +995,7 @@ int cmdImport(const Args& args) {
     // worktree (worktree mode) and recopies everything.
     bool mutating = false;
     auto fail = [&](const std::string& message) {
+        phases.end();
         std::fprintf(stderr, "gw import: %s\n", message.c_str());
         if (mutating && worktreeMode) {
             // The user's checkout was never touched - only the hidden worktree
@@ -1010,21 +1129,6 @@ int cmdImport(const Args& args) {
         if (!switched) return fail(switched.error());
     }
 
-    // Import touches the P4 server (per-mapping `p4 have`, opened-file lookup),
-    // walks and copies the whole mirror into the working tree, and hashes it
-    // all into Git's index - any of which can run for a while on a large depot.
-    // Emit a line at the start of each phase, prefixed with elapsed-since-start
-    // (flushed so it shows immediately), so the wait reads as progress and the
-    // gaps between lines show which phase is the slow one.
-    const auto importStart = std::chrono::steady_clock::now();
-    auto progress = [&importStart](const std::string& message) {
-        const double secs = std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() - importStart)
-                                .count();
-        std::printf("[+%5.1fs] %s\n", secs, message.c_str());
-        std::fflush(stdout);
-    };
-
     // Build and commit the depot snapshot at the staging area positioned above
     // (the user's checkout in checkout mode, the hidden worktree in worktree
     // mode). The mirror is always resolved against the main tree (`root`).
@@ -1081,6 +1185,7 @@ int cmdImport(const Args& args) {
             }
         }
 
+        phases.end();  // results from here on
         // A first import against an empty mirror never created any commit.
         if (newDepot.empty()) {
             std::printf("Nothing to import - the mirror has no files yet.\n");
@@ -1368,6 +1473,7 @@ int cmdImport(const Args& args) {
             // conflict, and a parked stack that was since submitted would
             // otherwise sit parked forever.
             std::vector<std::string> absorbedCommits;
+            progress("Restacking...");
             {
                 std::vector<std::string> absorbRoots = selection.carryRoots;
                 absorbRoots.insert(absorbRoots.end(),
@@ -1397,6 +1503,7 @@ int cmdImport(const Args& args) {
                         auto moved = git::branchlessMove(survivor, newDepot, root);
                         if (!moved) {
                             if (verbose()) {
+                                phases.end();
                                 std::printf("could not move %s onto the depot "
                                             "state; leaving its stack to the "
                                             "sync:\n%s\n",
@@ -1429,6 +1536,7 @@ int cmdImport(const Args& args) {
                                            plan.absorbed.end());
                 }
             }
+            phases.end();
             if (!absorbedCommits.empty()) {
                 // A stack absorbed whole is gone; one absorbed in part now sits
                 // on the snapshot under a new root. Either way it must not be
@@ -1443,13 +1551,7 @@ int cmdImport(const Args& args) {
                 };
                 keepVisible(selection.carryRoots);
                 keepVisible(selection.skippedParked);
-                std::printf("Dropped %zu commit(s) whose changes the new depot "
-                            "state already carries:\n",
-                            absorbedCommits.size());
-                for (const auto& commit : absorbedCommits) {
-                    auto label = git::shortLog(commit, root);
-                    std::printf("  %s\n", label ? label->c_str() : commit.c_str());
-                }
+                reportDropped(absorbedCommits, root);
             }
 
             // An empty revset list is branchless's "sync everything", so a
@@ -1457,7 +1559,9 @@ int cmdImport(const Args& args) {
             // rather than run it with no arguments.
             git::BranchlessSyncOutcome outcome;
             if (!selection.carryRoots.empty()) {
+                progress("Running git branchless sync...");
                 auto synced = git::branchlessSync(selection.carryRoots, root);
+                phases.end();
                 if (!synced) {
                     std::fflush(stdout);  // keep messages ordered with stderr
                     std::fprintf(stderr, "gw import: branchless sync stopped:\n%s\n",
@@ -1684,30 +1788,38 @@ int cmdImport(const Args& args) {
                 return 1;
             }
 
+            // Where HEAD ended up is only news when the commit you had
+            // checked out is gone (the dropped list above says why); then the
+            // landing is printed alone. The nominal outcomes - restacked, or
+            // nothing to restack - print only under --verbose.
+            //
             // `--rebase` speaks about the stack you are on, `--rebase-all`
             // about all of them; saying "your visible commits" for both was
             // what made a partial run read as a total one.
             const char* scope = rebaseAll ? "every visible stack" : "your stack";
+            const std::string restackedPrefix =
+                verbose() ? std::string("Restacked ") + scope +
+                                ". The commit you had checked out was already "
+                                "in the depot state; "
+                          : std::string();
             if (mergedAway && !survivor.empty()) {
                 auto label = git::shortLog(survivor, root);
-                std::printf("Restacked %s. The commit you had checked out was "
-                            "already in the depot state; %s now on the "
-                            "restacked commit under it:\n  %s\n",
-                            scope,
-                            originalBranch.empty()
-                                ? "HEAD is detached"
-                                : ("'" + originalBranch + "' is").c_str(),
+                const std::string who = originalBranch.empty()
+                                            ? "HEAD is detached"
+                                            : "'" + originalBranch + "' is";
+                std::printf("%s%s on the restacked commit under it:\n  %s\n",
+                            restackedPrefix.c_str(), who.c_str(),
                             label ? label->c_str() : survivor.c_str());
             } else if (mergedAway) {
-                std::printf("Restacked %s. The commit you had checked out was "
-                            "already in the depot state; HEAD is detached at "
-                            "the new depot baseline.\n", scope);
+                std::printf("%sHEAD is detached at the new depot baseline.\n",
+                            restackedPrefix.c_str());
             } else if (absorbedBranch) {
-                std::printf("Restacked %s. '%s' held only work the depot state "
-                            "already carries, so git-branchless dropped it; you "
-                            "are on '%s'. Start new work with: "
-                            "git switch -c <branch>\n",
-                            scope, originalBranch.c_str(), baseline.c_str());
+                std::printf("'%s' held only work the depot state already "
+                            "carries, so git-branchless dropped it; you are on "
+                            "'%s'. Start new work with: git switch -c <branch>\n",
+                            originalBranch.c_str(), baseline.c_str());
+            } else if (!verbose()) {
+                // Nominal: nothing to add to the import line.
             } else if (restacked || !absorbedCommits.empty()) {
                 std::printf("Restacked %s onto the new depot state.\n", scope);
             } else if (!outcome.synced.empty()) {
@@ -1740,13 +1852,17 @@ int cmdImport(const Args& args) {
             auto headHasDepot = git::isAncestor(newDepot, "HEAD", root);
             if (!headHasDepot) return fail(headHasDepot.error());
             if (*headHasDepot) {
-                std::printf("Nothing to rebase - your detached work is already "
-                            "on the depot baseline.\n");
+                if (verbose()) {
+                    std::printf("Nothing to rebase - your detached work is "
+                                "already on the depot baseline.\n");
+                }
                 return 0;
             }
+            progress("Rebasing...");
             auto plan = planHeadAbsorption(newDepot, root);
             if (!plan) return fail(plan.error());
             auto rebased = rebaseLine(newDepot, *plan, root);
+            phases.end();
             if (!rebased) {
                 std::fflush(stdout);  // keep messages ordered with stderr
                 std::fprintf(stderr, "gw import: rebase stopped:\n%s\n",
@@ -1756,10 +1872,12 @@ int cmdImport(const Args& args) {
                              "--continue' (or 'git rebase --abort' to undo).\n");
                 return 1;
             }
-            reportDropped(plan->absorbed.size());
+            reportDropped(plan->absorbed, root);
             if (auto kept = keepDetached(); !kept) return fail(kept.error());
-            std::printf("Rebased your detached work onto the new depot state "
-                        "(HEAD is still detached).\n");
+            if (verbose()) {
+                std::printf("Rebased your detached work onto the new depot "
+                            "state (HEAD is still detached).\n");
+            }
         }
         return 0;
     }
@@ -1776,6 +1894,7 @@ int cmdImport(const Args& args) {
         }
     }
 
+    phases.end();  // results from here on
     // A first import against an empty mirror never created any commit, so there
     // is no depot state to sync a branch to.
     if (newDepot.empty()) {
@@ -1798,7 +1917,7 @@ int cmdImport(const Args& args) {
     if (auto rg = refreshRgignore(*config, root); !rg) {
         std::printf("note: could not update .rgignore (%s)\n",
                     rg.error().c_str());
-    } else if (*rg) {
+    } else if (*rg && verbose()) {
         std::printf("Refreshed the managed .rgignore block\n");
     }
 
@@ -1850,9 +1969,11 @@ int cmdImport(const Args& args) {
         auto ff = git::mergeFastForward(newDepot, root);  // no-op when in sync
         if (!ff) return fail(ff.error());
     } else if (behind && rebase) {
+        progress("Rebasing...");
         auto plan = planHeadAbsorption(newDepot, root);
         if (!plan) return fail(plan.error());
         auto rebased = rebaseLine(newDepot, *plan, root);
+        phases.end();
         if (!rebased) {
             std::fflush(stdout);  // keep messages ordered with stderr
             std::fprintf(stderr, "gw import: rebase stopped:\n%s\n",
@@ -1862,8 +1983,11 @@ int cmdImport(const Args& args) {
                          "(or 'git rebase --abort' to undo).\n");
             return 1;
         }
-        reportDropped(plan->absorbed.size());
-        std::printf("Rebased '%s' onto the new depot state.\n", current.c_str());
+        reportDropped(plan->absorbed, root);
+        if (verbose()) {
+            std::printf("Rebased '%s' onto the new depot state.\n",
+                        current.c_str());
+        }
     }
 
     // Keep the convenience baseline branch tracking the depot ref when it has
@@ -1893,7 +2017,10 @@ int cmdImport(const Args& args) {
                     catchUpRef(baseline, depotRef, newDepot, root).c_str());
         return 0;
     }
-    if (originalBranch.empty() || (originalBranch == baseline && *ffable)) {
+    // Where to start work is a first-import hint; afterwards it is only
+    // repeated under --verbose.
+    if ((firstImport || verbose()) &&
+        (originalBranch.empty() || (originalBranch == baseline && *ffable))) {
         std::printf("You are on '%s'. Start work with: git switch -c <branch>\n",
                     baseline.c_str());
     }

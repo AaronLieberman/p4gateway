@@ -209,6 +209,12 @@ tool — to the hidden `refs/p4gw/main` ref that tracks pristine depot state
   stops there — on a branch exactly as when detached. That is the `git fetch`
   half alone. The one exception is the very first import, which has no work of
   yours to leave alone and populates the checkout (see [SETUP.md](SETUP.md)).
+- Output is quiet by default: `Importing...`, a timed line for any phase
+  that runs longer than a couple of seconds, the import result, and only the
+  restack news worth reading — dropped commits, parked stacks, or where HEAD
+  landed when the commit you had checked out was absorbed. `--verbose` prints
+  every phase (per include), every git/p4 command, and the nominal outcomes
+  ("Restacked …", "Rebased …").
 - Imports are incremental: gw records the `p4 have` state behind each
   snapshot (`.git/p4gw/have-<baseline>`) and the next import copies only
   files whose have revision moved — no mirror walk, no per-file stat pass.
