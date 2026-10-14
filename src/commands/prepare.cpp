@@ -376,7 +376,7 @@ int cmdPrepare(const Args& args) {
     if (!*onBaseline) {
         std::fprintf(stderr,
                      "gw prepare: %s is not based on the latest depot state - "
-                     "run 'gw import --rebase' to rebase onto it first\n",
+                     "run 'gw import' to rebase onto it first\n",
                      slice->target.c_str());
         return 1;
     }

@@ -78,8 +78,8 @@ Imported depot state to 'refs/p4gw/main' (214 file(s) updated, 3 deleted)
 You are on 'main'. Start work with: git switch -c <branch>
 ```
 
-It's `git fetch` (and later, with `--rebase`, `git pull --rebase`) with the
-depot as the remote. Sync timing doesn't matter: a sync can land while
+It's `git pull --rebase` with the depot as the remote (`--no-rebase` makes
+it just `git fetch`). Sync timing doesn't matter: a sync can land while
 you're mid-edit on any branch, because it only ever writes to the mirror.
 (Re-imports are far quicker than the first one: unchanged files are skipped
 by a stat, not recopied.)
@@ -129,7 +129,7 @@ state is always one `git switch` away, without touching the server.
 Absorb the latest depot state first so the changelist is built against it:
 
 ```
-C:\work\project\src> gw import --rebase
+C:\work\project\src> gw import
   ...progress lines...
 Imported depot state to 'refs/p4gw/main' (89 file(s) updated, 0 deleted)
 Rebased 'fix-anim-blend' onto the new depot state.
@@ -169,7 +169,7 @@ colleague would make, description stitched from your commit messages — and
 submit it there. Then:
 
 ```
-C:\work\project\src> gw import --rebase
+C:\work\project\src> gw import
   ...progress lines...
 Imported depot state to 'refs/p4gw/main' (3 file(s) updated, 0 deleted)
 Rebased 'fix-anim-blend' onto the new depot state.

@@ -536,13 +536,11 @@ constexpr const char* kImportUsage =
     "usage: gw import [options]\n"
     "\n"
     "Commit the mirror's current state - whatever you last synced, with any\n"
-    "tool - to the depot baseline (the hidden refs/p4gw/<baseline> ref).\n"
-    "\n"
-    "Plain 'gw import' is 'git fetch': it advances the baseline and never\n"
-    "moves you, on a branch or detached. 'gw import --rebase' is the\n"
-    "'git pull --rebase' half, bringing your own work up to it. The very\n"
-    "first import is the exception - there is no work of yours yet, so it\n"
-    "populates the checkout the way 'gw init' promises.\n"
+    "tool - to the depot baseline (the hidden refs/p4gw/<baseline> ref), then\n"
+    "bring your work up to it: 'git fetch' plus 'git pull --rebase'. In a\n"
+    "git-branchless repo every visible stack is restacked, not just the one\n"
+    "you are on. 'gw import --no-rebase' is the 'git fetch' half alone: it\n"
+    "advances the baseline and never moves you, on a branch or detached.\n"
     "\n"
     "By default (import_mode = worktree) the snapshot is built in a hidden\n"
     "worktree, so import works even with a dirty tree - it just skips bringing\n"
@@ -550,14 +548,16 @@ constexpr const char* kImportUsage =
     "'import_mode = checkout' in p4gw.cfg to stage in your own tree instead.\n"
     "\n"
     "options:\n"
-    "  -r, --rebase  Bring your work up to the new depot state: the stack you\n"
-    "                are on (git-branchless), or the branch you are on. Plain\n"
-    "                'gw import' is the 'git fetch' half and never moves you\n"
+    "      --no-rebase\n"
+    "                Only advance the depot baseline; leave your branch or\n"
+    "                stacks exactly where they are (the 'git fetch' half)\n"
+    "  -r, --rebase  Bring up only the stack you are on (git-branchless), or\n"
+    "                the branch you are on, instead of every visible stack\n"
     "      --rebase-all\n"
-    "                Restack every visible stack, not just the one you are on\n"
-    "                (git-branchless). Stacks that could not be rebased before\n"
-    "                are skipped; --force retries them\n"
-    "      --force   With --rebase-all, retry the stacks a previous run parked\n"
+    "                Restack every visible stack (git-branchless) - the\n"
+    "                default. Stacks that could not be rebased before are\n"
+    "                skipped; --force retries them\n"
+    "      --force   Retry the stacks a previous run parked\n"
     "      --full    Recopy every mirror file, ignoring the size+mtime fast\n"
     "                path (use when the working tree may not match what the\n"
     "                stamped stats claim - 'gw doctor --verify' checks that)\n"
@@ -565,7 +565,7 @@ constexpr const char* kImportUsage =
     "\n"
     "Commits whose changes the new depot state already carries - typically a\n"
     "stack you prepared and submitted commit by commit, then imported once -\n"
-    "are dropped by --rebase rather than replayed on top of themselves.\n"
+    "are dropped rather than replayed on top of themselves.\n"
     "\n";
 
 // The facts restack::planAbsorption decides from, for the commits `tips`
@@ -654,19 +654,22 @@ std::expected<std::string, std::string> rebaseLine(
 //   * Where you are working is then brought up to the new depot state. Because
 //     the baseline lives on the hidden ref, import never needs you to be on a
 //     branch - a detached HEAD is fine. On a named branch it fast-forwards (no
-//     local commits) or, with --rebase, replays your commits on top. Detached,
-//     it leaves HEAD where it is or - with --rebase - rebases that line; a
+//     local commits) or replays your commits on top. Detached, it rebases
+//     the line HEAD is on; a
 //     git-branchless repo instead restacks every visible stack via
 //     `git branchless sync` (the one place a branchless command is needed).
-//     Without --rebase, divergent commits are left exactly where they are
+//     With --no-rebase, divergent commits are left exactly where they are
 //     (never stomped) and you are told how to restack.
 //   * The like-named local branch (e.g. main) is a convenience pointer kept
 //     fast-forwarded to the hidden ref whenever it has no local commits, so the
 //     feature-branch workflow (`git rebase main`, prepare against it) keeps
 //     working.
 int cmdImport(const Args& args) {
-    bool rebase = false;
-    bool rebaseAll = false;
+    // Restacking every visible stack is the default; --rebase narrows it to
+    // the stack you are on and --no-rebase is the fetch-only half. The last of
+    // the three on the command line wins.
+    bool rebase = true;
+    bool rebaseAll = true;
     bool forceParked = false;
     bool fullCopy = false;
     for (const auto& arg : args) {
@@ -675,9 +678,13 @@ int cmdImport(const Args& args) {
             return 0;
         } else if (arg == "--rebase" || arg == "-r") {
             rebase = true;
+            rebaseAll = false;
         } else if (arg == "--rebase-all") {
             rebase = true;  // --rebase-all is --rebase, widened
             rebaseAll = true;
+        } else if (arg == "--no-rebase") {
+            rebase = false;
+            rebaseAll = false;
         } else if (arg == "--force") {
             forceParked = true;
         } else if (arg == "--full") {
@@ -778,7 +785,7 @@ int cmdImport(const Args& args) {
     // The very first import is repo bootstrap, not a pull. "Never move you"
     // protects work you already have; a repo that has never imported has none,
     // and SETUP.md documents `gw init` + `gw import` as the pair that populates
-    // the checkout - leaving it empty until you learned about --rebase would be
+    // the checkout - leaving it empty under --no-rebase would be
     // a broken first run. So the bootstrap brings you up either way.
     if (neverImported) rebase = true;
 
@@ -824,7 +831,7 @@ int cmdImport(const Args& args) {
         auto mainBranch = git::configValue("branchless.core.mainBranch", root);
         if (mainBranch && !mainBranch->empty() && *mainBranch != baseline) {
             std::printf("note  git-branchless's main branch is '%s', not the "
-                        "baseline '%s';\n      --rebase restacks onto "
+                        "baseline '%s';\n      the restack lands on "
                         "branchless's main branch. Align them to avoid "
                         "restacking\n      onto the wrong trunk (set "
                         "baseline_branch, or 'git config --worktree "
@@ -1133,11 +1140,11 @@ int cmdImport(const Args& args) {
         if (skipBranchUpdate) {
             std::printf("note: working tree is not clean - the depot baseline "
                         "was imported, but your work was left as-is. Commit or "
-                        "stash, then rerun 'gw import --rebase'.\n");
+                        "stash, then rerun 'gw import'.\n");
             return 0;
         }
 
-        // Without --rebase, leave the user's work where it is (the same "never
+        // With --no-rebase, leave the user's work where it is (the same "never
         // stomp" default as the branch workflow) and point them at the restack -
         // but only when there is somewhere new to restack onto. The branch
         // epilogue has always gated this on `behind`; this one printed
@@ -1155,10 +1162,8 @@ int cmdImport(const Args& args) {
                 // not a caveat worth printing next to it - the message is
                 // advice the user did not ask for, so it stays one line.
                 if (importedNew) {
-                    std::printf("Your stacks were left as-is. Bring the one you "
-                                "are on up to the new depot state with: gw "
-                                "import --rebase (--rebase-all for every "
-                                "stack)\n");
+                    std::printf("Your stacks were left as-is. Bring them up "
+                                "to the new depot state with: gw import\n");
                 }
             } else {
                 // A detached HEAD that already contains the new baseline has
@@ -1169,7 +1174,7 @@ int cmdImport(const Args& args) {
                 if (!*headHasDepot) {
                     std::printf("Your detached work was left as-is. Rebase it "
                                 "onto the new depot state with: "
-                                "gw import --rebase\n");
+                                "gw import\n");
                 }
             }
             return 0;
@@ -1208,7 +1213,7 @@ int cmdImport(const Args& args) {
             // user's call (it holds their commits).
             if (baselineTrunkStale) {
                 std::printf("note  '%s' has commits of its own, so it still "
-                            "points at old depot state.\n      --rebase "
+                            "points at old depot state.\n      import "
                             "restacks onto that branch, not onto '%s'. Move "
                             "those commits\n      off '%s' (git log %s..%s) "
                             "and rerun, or the restack lands behind the "
@@ -1248,7 +1253,7 @@ int cmdImport(const Args& args) {
             // Which stacks to carry. `git branchless sync` with no arguments
             // moves every draft stack; naming roots narrows it to the ones we
             // chose - the stack HEAD is on by default, all of them under
-            // --rebase-all, minus whatever a previous run parked.
+            // default (--rebase-all), minus whatever a previous run parked.
             auto allRoots = git::branchlessQuery("roots(draft())", root);
             if (!allRoots) return fail(allRoots.error());
             auto currentRoots = git::branchlessQuery("roots(stack())", root);
@@ -1652,7 +1657,7 @@ int cmdImport(const Args& args) {
                              depotRef.c_str());
                 if (rebaseAll) {
                     std::fprintf(out,
-                                 "--rebase-all will skip them from now on; "
+                                 "'gw import' will skip them from now on; "
                                  "--force retries them.\n");
                 }
                 if (yoursFailed) return 1;
@@ -1721,7 +1726,7 @@ int cmdImport(const Args& args) {
             }
 
             // Stacks a previous run parked and this one deliberately skipped.
-            // Quiet by design: it is the steady state under --rebase-all, not
+            // Quiet by design: it is the steady state of a default import, not
             // news, but it must not look like they were carried.
             if (!selection.skippedParked.empty()) {
                 std::printf("Skipped %zu parked stack(s) that conflicted "
@@ -1837,12 +1842,10 @@ int cmdImport(const Args& args) {
     if (!contains) return fail(contains.error());
     const bool behind = !*contains;
 
-    // `gw import` is the fetch half and never moves you - on a branch any more
-    // than detached. Fast-forwarding a branch with no local commits is still
-    // moving your checkout, and having it happen on a branch but not detached
-    // was the inconsistency: which command brought you forward depended on how
-    // you happened to be working. --rebase is the pull half, and it is what
-    // moves you now.
+    // `gw import --no-rebase` is the fetch half and never moves you - on a
+    // branch any more than detached. Fast-forwarding a branch with no local
+    // commits is still moving your checkout, so it follows the same switch as
+    // a replay: the default brings you up either way, --no-rebase never does.
     if (*ffable && rebase) {
         auto ff = git::mergeFastForward(newDepot, root);  // no-op when in sync
         if (!ff) return fail(ff.error());
@@ -1885,7 +1888,7 @@ int cmdImport(const Args& args) {
     // fast-forward or need a replay, the catch-up command is the same one now.
     if (behind && !rebase) {
         std::printf("'%s' is behind the new depot state and was left as-is. "
-                    "Bring it up with: gw import --rebase (or git %s %s)\n",
+                    "Bring it up with: gw import (or git %s %s)\n",
                     current.c_str(), *ffable ? "merge --ff-only" : "rebase",
                     catchUpRef(baseline, depotRef, newDepot, root).c_str());
         return 0;

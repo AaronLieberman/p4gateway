@@ -388,7 +388,7 @@ int cmdInit(const Args& args) {
     // A committed .gitattributes pins line-ending handling so it never depends
     // on each machine's core.autocrlf (see buildGitattributes). Without it, the
     // CRLF mirror gets committed as CRLF on one machine and LF-normalized on
-    // another, so commits drift apart and every 'gw import --rebase' conflicts
+    // another, so commits drift apart and every 'gw import' rebase conflicts
     // on line endings. Write a starter when there is none; leave an existing
     // file alone (a deliberate policy is the user's to keep) but warn when it
     // does not pin EOL for every path.
@@ -455,7 +455,7 @@ int cmdInit(const Args& args) {
     }
 
     // If the repo is managed by git-branchless, its main branch is the trunk
-    // `gw import --rebase` restacks onto (via `git branchless sync`), so it
+    // `gw import` restacks onto (via `git branchless sync`), so it
     // should be the gw baseline. We don't modify branchless's config - that is
     // the user's tool to manage - we just flag a mismatch so the restack does
     // not land on the wrong trunk.
@@ -464,7 +464,7 @@ int cmdInit(const Args& args) {
         if (mainBranch && !mainBranch->empty() &&
             *mainBranch != config->baselineBranch) {
             std::printf("note  git-branchless's main branch is '%s', not the gw "
-                        "baseline '%s';\n      'gw import --rebase' restacks "
+                        "baseline '%s';\n      'gw import' restacks "
                         "onto branchless's main branch, so align them - set\n"
                         "      baseline_branch in p4gw.cfg, or repoint "
                         "branchless: git config --worktree\n"

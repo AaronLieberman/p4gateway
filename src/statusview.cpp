@@ -57,7 +57,7 @@ std::string nextStep(const StatusInfo& info) {
     }
     if (info.behind > 0) {
         return "Depot has moved on. Catch up and rebase with:  "
-               "gw import --rebase";
+               "gw import";
     }
     if (info.ahead > 0 && info.dirty) {
         return "Commit your changes, then ship them with:  gw prepare";
@@ -69,7 +69,7 @@ std::string nextStep(const StatusInfo& info) {
         return "Commit your work, then ship it with:  gw prepare";
     }
     return "Nothing to ship yet. Pull in depot changes with:  "
-           "gw import --rebase";
+           "gw import";
 }
 
 std::string renderStatus(const StatusInfo& info) {

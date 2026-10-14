@@ -645,7 +645,7 @@ int cmdDoctor(const Args& args) {
         } else {
             std::printf("WARN  no .gitattributes pinning line endings - git "
                         "will follow core.autocrlf, which can drift between "
-                        "commits and\n      make 'gw import --rebase' conflict "
+                        "commits and\n      make 'gw import' conflict "
                         "on CRLF/LF. Add '* -text' (or rerun 'gw init')\n");
             ++warnings;
         }

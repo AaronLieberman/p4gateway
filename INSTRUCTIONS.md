@@ -17,8 +17,8 @@ For building and first-time setup, see [SETUP.md](SETUP.md).
 |---|---|
 | `gw setup` | Write the `p4gw.cfg` config template — offline, no p4 or git calls. |
 | `gw init` | Verify the client view against the config, then create the Git repo. |
-| `gw import` | Absorb whatever the mirror has synced into the `main` baseline (fetch). |
-| `gw import --rebase` | The same, then bring the stack or branch you are on up to it (pull). |
+| `gw import` | Absorb whatever the mirror has synced into the `main` baseline, then bring your branch or every visible stack up to it (pull). |
+| `gw import --no-rebase` | Only absorb into the baseline; leave your work where it is (fetch). |
 | `gw prepare` | Turn the current branch into a pending P4 changelist (or a shelf). |
 | `gw syncback` | Put the mirror back on the baseline's revisions after a P4 resolve. |
 | `gw status` | One screen of where Git and P4 stand, plus the most useful next step. |
@@ -63,7 +63,7 @@ the line to include when you report a problem.
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
 
-gw import --rebase               # absorb it: commit to main, rebase your branch
+gw import                        # absorb it: commit to main, rebase your branch
 
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
@@ -72,8 +72,8 @@ gw prepare                       # ship it: builds the pending CL
 
 <review and submit in P4V>
 
-gw import --rebase               # absorb your own submit into main and come
-                                 # with it (plain 'gw import' imports only)
+gw import                        # absorb your own submit into main and come
+                                 # with it (--no-rebase imports only)
 ```
 
 ### Refreshing a pending changelist
@@ -83,7 +83,7 @@ still-pending CL, refresh that changelist in place instead of building a new
 one:
 
 ```
-git commit / git rebase          # make the tweak; maybe gw import --rebase first
+git commit / git rebase          # make the tweak; maybe gw import first
 gw prepare --update 4821         # revert CL 4821's opens, re-stage the branch into it
 <re-review and submit in P4V>
 ```
@@ -94,11 +94,11 @@ gw prepare --update 4821         # revert CL 4821's opens, re-stage the branch i
 ### Shipping a stack one commit at a time
 
 A stack of commits can go out as one CL per commit (`gw prepare <commit>`,
-submit, next commit) and come back with a single `gw import --rebase`. That
+submit, next commit) and come back with a single `gw import`. That
 one import commits everything you submitted as one snapshot, so no single
 commit's patch matches it - and Git (like git-branchless) only recognizes an
 "already applied" commit by its patch, so replaying the first commit under the
-second one's lines would conflict. `gw import --rebase` checks content instead:
+second one's lines would conflict. `gw import` checks content instead:
 a commit whose changes the new depot state already carries - every file the
 stack changed up to it reads the same in the snapshot - is dropped rather than
 replayed, and whatever you have on top of it is moved straight onto the
@@ -128,14 +128,14 @@ moved back where the baseline has them, so you keep working against the depot
 state you already have.
 
 Nothing forces you to take the latest now. When you do want it, sync
-everything and `gw import --rebase` as usual — the commit you submitted
+everything and `gw import` as usual — the commit you submitted
 rebases away as an empty change.
 
 **Expect that restack to conflict on the file you resolved.** What you
 submitted is your change merged with theirs; the commit in your stack only
 ever had your half. When that merged content finally arrives in the baseline,
-replaying your commit onto it collides in the region you resolved. `gw import
---rebase` reports the stack it could not restack and exits non-zero — finish
+replaying your commit onto it collides in the region you resolved. `gw import`
+reports the stack it could not restack and exits non-zero — finish
 it by hand and resolve once more:
 
 ```
@@ -197,16 +197,18 @@ Commits the mirror's current state — whatever you last synced, with any
 tool — to the hidden `refs/p4gw/main` ref that tracks pristine depot state
 (the `origin/main` analog).
 
-- **`gw import` never moves you.** It advances the baseline and stops there —
-  on a branch exactly as when detached. That is the `git fetch` half. The one
-  exception is the very first import, which has no work of yours to leave
-  alone and populates the checkout (see [SETUP.md](SETUP.md)).
-- **`gw import --rebase` (`-r`) is the `git pull --rebase` half.** It brings
-  the branch you are on up (fast-forward, or replaying local commits), or in a
-  git-branchless repo restacks the stack you are on. `--rebase-all` restacks
-  every visible stack; `--force` with it retries stacks a previous run parked.
-  Work is never stomped: what cannot be replayed is left where it is and
-  reported.
+- **`gw import` is `git fetch` plus `git pull --rebase`.** It advances the
+  baseline, then brings the branch you are on up (fast-forward, or replaying
+  local commits), or in a git-branchless repo restacks every visible stack
+  (`--rebase-all`, the default). `--force` retries stacks a previous run
+  parked. Work is never stomped: what cannot be replayed is left where it is
+  and reported.
+- **`gw import --rebase` (`-r`) narrows that to the stack you are on** in a
+  git-branchless repo (on a plain branch it is the same as the default).
+- **`gw import --no-rebase` never moves you.** It advances the baseline and
+  stops there — on a branch exactly as when detached. That is the `git fetch`
+  half alone. The one exception is the very first import, which has no work of
+  yours to leave alone and populates the checkout (see [SETUP.md](SETUP.md)).
 - Imports are incremental: gw records the `p4 have` state behind each
   snapshot (`.git/p4gw/have-<baseline>`) and the next import copies only
   files whose have revision moved — no mirror walk, no per-file stat pass.
@@ -410,21 +412,20 @@ config) and adapts:
 
 - gw never modifies branchless's config — it just warns if branchless's main
   branch isn't your gw baseline (`main` by default), since that's the trunk
-  `gw import --rebase` restacks onto.
+  `gw import` restacks onto.
 - `gw import` accepts a **detached HEAD** — no need to mint a throwaway
   branch to absorb the depot (this works with or without branchless).
-- `gw import --rebase` restacks **every visible stack** onto the new depot
+- `gw import` restacks **every visible stack** onto the new depot
   state via `git branchless sync`, not just the commit you happen to be on,
   and records the rewrites so the pre-import commits go obsolete (hidden
-  from the smartlog). Without `--rebase`, your stacks are left untouched; if
-  the import brought in new depot state, you're pointed at
-  `gw import --rebase`.
+  from the smartlog). With `--no-rebase`, your stacks are left untouched; if
+  the import brought in new depot state, you're pointed at `gw import`.
 - **It puts you back where you were afterwards.** This matters most right
   after you ship: the commit you prepared and submitted is already in the
   depot snapshot, so the restack skips it as already-applied — and a bare
   `git sync` reacts to that by checking out the main *branch*, quietly ending
   your detached-HEAD session on the trunk. Run the restack through
-  `gw import --rebase` instead and you land:
+  `gw import` instead and you land:
   - detached at the rewrite of the commit you were on, if it survived
     (including when it is a **descendant** of the commit that was absorbed —
     you end up on the rewritten descendant, not on the baseline);
@@ -438,22 +439,22 @@ config) and adapts:
     `git rebase` would leave it), or, when the branch held only work the depot
     now carries and branchless dropped it, on the baseline branch with a note
     saying so.
-- **`--rebase` moves the stack you are on; `--rebase-all` moves them all.**
-  The default is deliberately narrow: importing should not rewrite work you
-  were not thinking about. `--rebase-all` is there for when you do want the
-  sweep.
+- **The default moves every stack; `--rebase` moves only the one you are
+  on.** Keeping every stack on the latest depot state is what you want almost
+  always; `--rebase` is there for when an import should not rewrite work you
+  were not thinking about.
 - **A stack that conflicts gets parked, once.** `git branchless sync` moves the
   stacks it can, prints the ones it gave up on, and exits 0 either way — and in
   a branchless repo most stacks carry no branch, so nothing moves to give that
   away. gw checks afterwards which stacks are still sitting off the snapshot,
   and records each as a ref under `refs/p4gw/<baseline>-parked/`. Those stacks
-  are left exactly where they are and **skipped by later `--rebase-all` runs**,
+  are left exactly where they are and **skipped by later imports**,
   because a stack that conflicts once will conflict again on every import.
   Parked work is not hidden, changed, or at risk — it is just not being
   dragged forward.
 
   To take one back, check it out and `gw import --rebase`: an explicit ask for
-  the stack you are standing on always wins, no flag needed. `--rebase-all
+  the stack you are standing on always wins, no flag needed. `gw import
   --force` retries every parked stack at once. The repo is never left
   mid-rebase (the in-memory rebase is discarded), so resolving by hand means
   `git branchless move -s <commit> -d refs/p4gw/main --merge`, not

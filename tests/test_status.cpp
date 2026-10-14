@@ -53,7 +53,7 @@ TEST(next_step_behind_suggests_rebase) {
     StatusInfo info = featureBranch();
     info.ahead = 1;
     info.behind = 2;
-    CHECK(contains(p4gw::nextStep(info), "gw import --rebase"));
+    CHECK(contains(p4gw::nextStep(info), "gw import"));
 }
 
 TEST(next_step_ahead_and_clean_suggests_prepare) {
@@ -74,7 +74,7 @@ TEST(next_step_ahead_and_dirty_says_commit_first) {
 
 TEST(next_step_nothing_to_ship_suggests_import) {
     StatusInfo info = featureBranch();  // ahead == 0, clean, no pending
-    CHECK(contains(p4gw::nextStep(info), "gw import --rebase"));
+    CHECK(contains(p4gw::nextStep(info), "gw import"));
 }
 
 TEST(next_step_detached_is_not_nagged_about_head) {

@@ -462,7 +462,7 @@ bool pruneAllowed(const PruneCheck& check);
 // fast-forwarded to it. Pure; unit-tested.
 std::string depotTrackingRef(const Config& config);
 
-// The ref namespace recording stacks `gw import --rebase-all` has given up on:
+// The ref namespace recording stacks `gw import` (restacking every stack) has given up on:
 // "refs/p4gw/<baselineBranch>-parked/<stack root oid>". A stack that could not
 // be rebased once conflicts again on every import, so it is remembered and
 // skipped until you ask for it by name (check it out and --rebase) or with

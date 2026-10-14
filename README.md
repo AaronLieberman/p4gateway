@@ -23,9 +23,9 @@ just as before.
 
 Two commands do the work:
 
-- **`gw import`** brings your p4 sync into the Git repo — `git fetch`, with
-  the p4 depot as the remote. **`gw import --rebase`** then replays your work
-  on top, the `git pull --rebase` half.
+- **`gw import`** brings your p4 sync into the Git repo and replays your
+  work on top — `git pull --rebase`, with the p4 depot as the remote.
+  (`gw import --no-rebase` is the `git fetch` half alone.)
 - **`gw prepare`** goes the other way: it turns your branch into a pending
   changelist — Git knows exactly what changed, and your commit messages
   become the description. You review and submit it from P4V, same as always.
@@ -41,7 +41,7 @@ of the multi-terabyte depot is never touched.
 ```
 <sync however you like>          # P4V, p4 sync, your team's sync tool...
 
-gw import --rebase               # absorb it: commit to main, bring your work up
+gw import                        # absorb it: commit to main, bring your work up
 
 git switch -c fix-anim-blend     # work normally: branch, commit, rebase, bisect
 ...
@@ -50,8 +50,8 @@ gw prepare                       # ship it: builds the pending CL
 
 <review and submit in P4V>
 
-gw import --rebase               # absorb your own submit into main and come
-                                 # with it (plain 'gw import' imports only)
+gw import                        # absorb your own submit into main and come
+                                 # with it (--no-rebase imports only)
 ```
 
 That's the whole loop. When you need more — handing work off as a shelf,
@@ -73,8 +73,9 @@ stacks of commits:
 
 That's a natural fit here, where every stack is really pending work on top
 of the depot baseline. `gw` detects branchless automatically:
-`gw import --rebase` restacks the stack you are on — a stack, not just the
-one commit — and `gw import --rebase-all` sweeps every visible stack.
+`gw import` restacks every visible stack — whole stacks, not just the
+commit you are on — and `gw import --rebase` narrows that to the one you
+are on.
 Anything that conflicts is parked where it is instead of fighting you on
 every import. Details in
 [INSTRUCTIONS.md](INSTRUCTIONS.md#using-git-branchless).
